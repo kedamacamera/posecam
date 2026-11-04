@@ -125,7 +125,6 @@ final class CameraManager: NSObject, ObservableObject {
         Diagnostics.mark("構成: 映像出力の設定")
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.deliversPreviewSizedOutputBuffers = true
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         Diagnostics.mark("構成: 出力を追加")
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
@@ -149,8 +148,6 @@ final class CameraManager: NSObject, ObservableObject {
             self.sessionQueue.async {
                 self.session.beginConfiguration()
                 self.session.sessionPreset = newMode == .photo ? .photo : .hd1920x1080
-                // 写真モードはプレビュー用の小さいフレームで十分。動画は書き出すのでフルサイズで受ける
-                self.videoOutput.deliversPreviewSizedOutputBuffers = newMode == .photo
                 if newMode == .video {
                     self.attachAudio()
                 } else {
@@ -455,6 +452,16 @@ final class CameraManager: NSObject, ObservableObject {
         return smoothed
     }
 
+    /// 写真モードではカメラが大きなフレームを渡してくることがあるので、加工が重くならないよう
+    /// 長辺 1920 までに縮める（動画モードの 1080p はそのまま通る）。
+    private static func limitedForPreview(_ image: CIImage) -> CIImage {
+        let longSide = max(image.extent.width, image.extent.height)
+        guard longSide > 1920 else { return image }
+        let scale = 1920 / longSide
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return scaled.transformed(by: CGAffineTransform(translationX: -scaled.extent.minX, y: -scaled.extent.minY))
+    }
+
     private func publishFrameSizeIfNeeded(_ size: CGSize) {
         guard size != lastFrameSize, size.height > 0 else { return }
         lastFrameSize = size
@@ -491,7 +498,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         if frameCount == 90 { Diagnostics.markHealthy() }
 
         detectPoseIfIdle(pixelBuffer)
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let image = Self.limitedForPreview(CIImage(cvPixelBuffer: pixelBuffer))
         publishFrameSizeIfNeeded(image.extent.size)
 
         let settings = settingsBox.value
