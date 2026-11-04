@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// 組み込みのポーズ。
 /// 見本写真（Resources/Poses/pose_NN.jpg、specs と同じ順番）があれば、起動後にその写真から
