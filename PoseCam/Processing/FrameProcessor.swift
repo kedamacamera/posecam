@@ -104,10 +104,12 @@ final class FrameProcessor {
         let clamped = image.clampedToExtent()
         let mean = clamped.applyingGaussianBlur(sigma: radius).cropped(to: image.extent)
         let local = clamped.applyingGaussianBlur(sigma: max(1, radius * 0.2)).cropped(to: image.extent)
+        let darkest = clamped.applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: max(2, radius * 0.4)])
+            .cropped(to: image.extent)
         let output = kernel.apply(
             extent: image.extent,
             roiCallback: { _, rect in rect },
-            arguments: [image, local, mean, Float(strength), Float(low), Float(high), Float(cap)])
+            arguments: [image, local, darkest, mean, Float(strength), Float(low), Float(high), Float(cap)])
         return output?.cropped(to: image.extent) ?? image
     }
 

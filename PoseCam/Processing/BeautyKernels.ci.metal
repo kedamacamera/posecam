@@ -36,15 +36,20 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
 /// 明るい部分（ハイライト）や、周りと同じ明るさの所も変えない。
 /// local: src をごく少しだけぼかしたもの。暗さの判定はこれで行い、画素ごとのばらつきで
 /// 「消す画素」と「残す画素」が交互になって点線のようなむらが出るのを防ぐ。
-float4 darkSpotRemoval(sampler src, sampler local, sampler mean, float strength, float low, float high, float cap,
-                       destination dest) {
+/// darkest: 近くの画素のうちいちばん暗い値。近くにメガネのフチ・髪のような真っ黒なものがあれば、
+/// その周りは細い所も含めて一切変えない（cap による判定。範囲で決まるので点々にもならない）。
+float4 darkSpotRemoval(sampler src, sampler local, sampler darkest, sampler mean,
+                       float strength, float low, float high, float cap, destination dest) {
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
     float4 nearby = local.sample(local.transform(coord));
+    float4 darkestNearby = darkest.sample(darkest.transform(coord));
     float4 average = mean.sample(mean.transform(coord));
     float3 lumaWeights = float3(0.299, 0.587, 0.114);
-    float darker = dot(average.rgb, lumaWeights) - dot(nearby.rgb, lumaWeights);
-    float weight = smoothstep(low, high, darker) * (1.0 - smoothstep(cap * 0.5, cap, darker)) * strength;
+    float averageLuma = dot(average.rgb, lumaWeights);
+    float darker = averageLuma - dot(nearby.rgb, lumaWeights);
+    float darkestGap = averageLuma - dot(darkestNearby.rgb, lumaWeights);
+    float weight = smoothstep(low, high, darker) * (1.0 - smoothstep(cap * 0.5, cap, darkestGap)) * strength;
     return float4(mix(color.rgb, average.rgb, weight), color.a);
 }
 
