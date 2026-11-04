@@ -2,4 +2,5 @@
 PoseCam/Info.plist
 xcuserdata/
 DerivedData/
+dist/
 .DS_Store

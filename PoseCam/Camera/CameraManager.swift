@@ -367,7 +367,7 @@ final class CameraManager: NSObject, ObservableObject {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
-            let audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) as? [String: Any]
+            let audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
             do {
                 recorder = try VideoRecorder(url: url, size: image.extent.size,
                                              audioSettings: audioSettings, context: renderer.ciContext)
