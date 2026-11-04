@@ -1,0 +1,29 @@
+# 肌のマスクの Core ML モデルを作る（手動で実行する）。結果は SkinSegmenter-mlmodel として取り出せる。
+name: Convert skin model
+
+on:
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install converters
+        run: |
+          pip install "tensorflow==2.15.*" "tf2onnx==1.16.*" "onnx==1.15.*" onnx2torch \
+            "torch==2.2.*" "coremltools==7.2" tflite-support pillow "numpy<2"
+
+      - name: Convert
+        run: python tools/convert_skin_model.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkinSegmenter-mlmodel
+          path: out/SkinSegmenter.mlmodel

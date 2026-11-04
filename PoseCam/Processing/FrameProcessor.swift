@@ -35,9 +35,8 @@ final class FrameProcessor {
         var result = image
 
         if settings.smoothing > 0.01 {
-            let smooth = edgePreservingSmooth(image, amount: settings.smoothing)
-            // 完全に置き換えるとのっぺりするので、元の質感を少し残す
-            result = blend(smooth, over: result, mask: mask, amount: 0.9 * settings.smoothing)
+            let smooth = frequencySeparatedSmooth(image, amount: settings.smoothing, longSide: longSide)
+            result = blend(smooth, over: result, mask: mask, amount: min(1, 1.1 * settings.smoothing))
         }
         if settings.brightening > 0.01 {
             let brightened = result
@@ -50,6 +49,42 @@ final class FrameProcessor {
             result = blend(brightened, over: result, mask: mask, amount: settings.brightening)
         }
         return result
+    }
+
+    /// 周波数分離の美肌（プロのレタッチと同じ考え方）。
+    /// 画像を「色むら・凹凸などの大きな成分」と「毛穴やきめなどの細かい成分」に分け、
+    /// 大きな成分だけをなめらかにしてから、細かい成分を一定量戻す。
+    /// こうすると、むらは消えても肌の質感が残り、のっぺりした「塗った肌」にならない。
+    private func frequencySeparatedSmooth(_ image: CIImage, amount: Double, longSide: CGFloat) -> CIImage {
+        let extent = image.extent
+        // 細かい成分 = 元の画像 − 少しだけぼかした画像。負の値を扱えないので 0.5 を足して持つ
+        let fine = image.clampedToExtent()
+            .applyingGaussianBlur(sigma: longSide * 0.0012)
+            .cropped(to: extent)
+        let shifted = image.applyingFilter("CIColorMatrix", parameters: [
+            "inputBiasVector": CIVector(x: 0.5, y: 0.5, z: 0.5, w: 0),
+        ])
+        let detail = shifted.applyingFilter("CISubtractBlendMode", parameters: [
+            kCIInputBackgroundImageKey: fine,
+        ])
+
+        // 大きな成分は、輪郭を残したままなめらかにする
+        let base = edgePreservingSmooth(image, amount: amount)
+
+        // 細かい成分を戻す量。強くするほど少なめに戻す（0.6 → 0.3）
+        let keep = CGFloat(0.6 - 0.3 * amount)
+        // リニアライト合成は「下 + 2 ×（上 − 0.5）」なので、上を 0.5 + keep/2 ×（細かい成分）にしておく
+        let scaledDetail = detail.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: keep / 2, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: keep / 2, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: keep / 2, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            "inputBiasVector": CIVector(x: 0.5 - keep / 4, y: 0.5 - keep / 4, z: 0.5 - keep / 4, w: 0),
+        ])
+        return scaledDetail.applyingFilter("CILinearLightBlendMode", parameters: [
+            kCIInputBackgroundImageKey: base,
+        ])
+        .cropped(to: extent)
     }
 
     /// 輪郭を保ったまま、平らな部分（肌）だけをなめらかにする。

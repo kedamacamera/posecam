@@ -4,6 +4,11 @@ name: Build iOS
 on:
   push:
     branches: [main]
+    # アプリに関係ない変更ではビルドしない（macOS の実行時間を節約する）
+    paths-ignore:
+      - "README.md"
+      - "tools/**"
+      - ".github/workflows/convert-model.yml"
   workflow_dispatch:
 
 jobs:
