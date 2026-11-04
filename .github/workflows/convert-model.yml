@@ -15,10 +15,12 @@ jobs:
         with:
           python-version: "3.10"
 
+      # GPU 用の部品を入れるとディスクが足りなくなるので、CPU 版だけを入れる
       - name: Install converters
         run: |
-          pip install "tensorflow==2.15.*" "tf2onnx==1.16.*" "onnx==1.15.*" onnx2torch \
-            "torch==2.2.*" "coremltools==7.2" tflite-support pillow "numpy<2"
+          pip install --no-cache-dir "torch==2.2.*" --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir "tensorflow-cpu==2.15.*" "tf2onnx==1.16.*" "onnx==1.15.*" onnx2torch \
+            "coremltools==7.2" tflite-support pillow "numpy<2"
 
       - name: Convert
         run: python tools/convert_skin_model.py
