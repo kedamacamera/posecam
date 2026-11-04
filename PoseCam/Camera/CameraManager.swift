@@ -101,7 +101,11 @@ final class CameraManager: NSObject, ObservableObject {
         didSet { updateTargetAspect() }
     }
     @Published var settings = ProcessingSettings() {
-        didSet { settingsBox.value = settings }
+        didSet { updateSettingsBox() }
+    }
+    /// 比較ボタンを押している間だけ、加工をすべて外したプレビューにする（撮影結果には影響しない）
+    @Published var showOriginal = false {
+        didSet { updateSettingsBox() }
     }
     @Published var template: PoseTemplate? {
         didSet {
@@ -382,6 +386,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     // MARK: - 比率
+
+    private func updateSettingsBox() {
+        settingsBox.value = showOriginal ? ProcessingSettings(filter: .none, smoothing: 0, brightening: 0) : settings
+    }
 
     func setScreenAspect(_ value: CGFloat) {
         guard value > 0 else { return }

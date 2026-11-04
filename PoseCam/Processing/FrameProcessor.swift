@@ -37,12 +37,12 @@ final class FrameProcessor {
         // シミ（暗い点）は広めの範囲、シワ（暗い細い線）は狭めの範囲の平均と比べて、暗い所だけ埋める
         if settings.blemish > 0.01 {
             let removed = removeDarkSpots(result, strength: settings.blemish, radius: longSide * 0.008,
-                                          low: 0.008, high: 0.05)
+                                          low: 0.008, high: 0.05, cap: 0.12)
             result = blend(removed, over: result, mask: mask, amount: 1)
         }
         if settings.wrinkle > 0.01 {
             let removed = removeDarkSpots(result, strength: settings.wrinkle, radius: longSide * 0.004,
-                                          low: 0.005, high: 0.035)
+                                          low: 0.005, high: 0.035, cap: 0.09)
             result = blend(removed, over: result, mask: mask, amount: 1)
         }
         if settings.smoothing > 0.01 {
@@ -103,13 +103,13 @@ final class FrameProcessor {
 
     /// 周りの平均より暗い所（シミ・シワ）を、周りの平均の色で埋める。
     private func removeDarkSpots(_ image: CIImage, strength: Double, radius: CGFloat,
-                                 low: Double, high: Double) -> CIImage {
+                                 low: Double, high: Double, cap: Double) -> CIImage {
         guard let kernel = Self.darkSpotKernel else { return image }
         let mean = image.clampedToExtent().applyingGaussianBlur(sigma: radius).cropped(to: image.extent)
         let output = kernel.apply(
             extent: image.extent,
             roiCallback: { _, rect in rect },
-            arguments: [image, mean, Float(strength), Float(low), Float(high)])
+            arguments: [image, mean, Float(strength), Float(low), Float(high), Float(cap)])
         return output?.cropped(to: image.extent) ?? image
     }
 
@@ -179,13 +179,15 @@ final class FrameProcessor {
             "inputCubeData": skinCube,
             "inputColorSpace": sRGB,
         ])
-        // 肌のモデル（なければ人物の領域）と肌の色の両方に当てはまる所だけにする。
-        // モデルはメガネのフチなども「顔」に含めるが、黒いフチ・眉・髪は肌の色ではないので外れる
+        // 肌のモデル（なければ人物の領域）は境目をぼかしてなじませる
+        let region = (masks.skin ?? masks.person ?? black)
+            .clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
+        // そのうえで、肌の色の所だけにくっきり絞る。モデルはメガネのフチなども「顔」に含めるが、
+        // 黒いフチ・眉・髪は肌の色ではないので外れる（ぼかした後に絞るので、はみ出さない）
         var mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: black,
-            kCIInputMaskImageKey: masks.skin ?? masks.person ?? black,
+            kCIInputMaskImageKey: region,
         ])
-        mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
         if let features = masks.features {
             mask = mask.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: black,

@@ -408,24 +408,108 @@ private extension PhotoFilter {
     }
 }
 
-struct BeautyPanel: View {
-    @Binding var settings: ProcessingSettings
+/// 美肌・スタイルの項目。BeautyCam と同じく、項目を選んでから 1 本のスライダーで強さを決める。
+/// 項目を増やすときは、ここに 1 行足して ProcessingSettings に値を追加する。
+enum BeautyItem: String, CaseIterable, Identifiable {
+    case smoothing = "美肌"
+    case brightening = "美白"
+    case redness = "赤み"
+    case blemish = "シミ"
+    case wrinkle = "シワ"
+    case legLength = "脚長"
 
-    var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 2) {
-                SliderRow(title: "美肌", value: $settings.smoothing)
-                SliderRow(title: "美白", value: $settings.brightening)
-                SliderRow(title: "赤み", value: $settings.redness)
-                SliderRow(title: "シミ", value: $settings.blemish)
-                SliderRow(title: "シワ", value: $settings.wrinkle)
-                SliderRow(title: "脚長", value: $settings.legLength)
-            }
-            .padding(.horizontal)
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .smoothing: return "sparkles"
+        case .brightening: return "sun.max"
+        case .redness: return "drop"
+        case .blemish: return "circle.dotted"
+        case .wrinkle: return "water.waves"
+        case .legLength: return "arrow.up.and.down"
+        }
+    }
+
+    var keyPath: WritableKeyPath<ProcessingSettings, Double> {
+        switch self {
+        case .smoothing: return \.smoothing
+        case .brightening: return \.brightening
+        case .redness: return \.redness
+        case .blemish: return \.blemish
+        case .wrinkle: return \.wrinkle
+        case .legLength: return \.legLength
         }
     }
 }
 
+struct BeautyPanel: View {
+    @Binding var settings: ProcessingSettings
+    /// 押している間だけ加工前の映像に戻す（比べるため）
+    @Binding var showOriginal: Bool
+
+    @State private var selected: BeautyItem = .smoothing
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // 選んでいる項目のスライダーと、押している間だけ加工前に戻すボタン
+            HStack(spacing: 12) {
+                Text(selected.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 36, alignment: .leading)
+                Slider(value: $settings[dynamicMember: selected.keyPath], in: 0...1)
+                    .tint(.yellow)
+                Text("\(Int(settings[keyPath: selected.keyPath] * 100))")
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 28, alignment: .trailing)
+                Image(systemName: "square.split.2x1")
+                    .font(.system(size: 18))
+                    .foregroundStyle(showOriginal ? Color.yellow : .white)
+                    .frame(width: 36, height: 30)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture(minimumDuration: 0, pressing: { pressing in
+                        showOriginal = pressing
+                    }, perform: {})
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    Button { settings = ProcessingSettings(filter: settings.filter) } label: {
+                        itemLabel(systemImage: "arrow.counterclockwise", title: "リセット", active: false, value: nil)
+                    }
+                    ForEach(BeautyItem.allCases) { item in
+                        Button { selected = item } label: {
+                            itemLabel(systemImage: item.systemImage, title: item.rawValue,
+                                      active: selected == item, value: settings[keyPath: item.keyPath])
+                        }
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    /// 丸いアイコンと名前。値が 0 でなければアイコンの右上に小さな点を付けて、かかっている項目が分かるようにする
+    private func itemLabel(systemImage: String, title: String, active: Bool, value: Double?) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 19))
+                .frame(width: 50, height: 50)
+                .background(Circle().fill(Color.white.opacity(active ? 0.25 : 0.12)))
+                .overlay(Circle().stroke(active ? Color.yellow : .clear, lineWidth: 2))
+                .overlay(alignment: .topTrailing) {
+                    if let value, value > 0.01 {
+                        Circle().fill(Color.yellow).frame(width: 7, height: 7).offset(x: -3, y: 3)
+                    }
+                }
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(active ? Color.yellow : .white)
+    }
+}
 struct SliderRow: View {
     let title: String
     @Binding var value: Double

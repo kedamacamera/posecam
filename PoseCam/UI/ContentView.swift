@@ -253,11 +253,11 @@ struct ContentView: View {
                     case .filter:
                         FilterStrip(selection: $camera.settings.filter)
                     case .beauty:
-                        BeautyPanel(settings: $camera.settings)
+                        BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal)
                     }
                 }
                 // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）
-                .frame(height: panel == .beauty ? 160 : 104)
+                .frame(height: panel == .beauty ? 120 : 104)
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
                 .padding(.horizontal, 8)
