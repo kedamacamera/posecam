@@ -188,6 +188,8 @@ final class FrameProcessor {
             kCIInputBackgroundImageKey: black,
             kCIInputMaskImageKey: region,
         ])
+        // 肌の色の判定は画素ごとにばらつくので、ごく軽くぼかして境目が点々にならないようにする
+        mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius * 0.4).cropped(to: image.extent)
         if let features = masks.features {
             mask = mask.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: black,
@@ -225,8 +227,8 @@ final class FrameProcessor {
                     let luma: Float = 0.299 * red + 0.587 * green + 0.114 * blue
                     let cb: Float = 128 - 0.168736 * red - 0.331264 * green + 0.5 * blue
                     let cr: Float = 128 + 0.5 * red - 0.418688 * green - 0.081312 * blue
-                    // 灰色（Cb・Cr ≒ 128）が肌と判定されないよう、範囲の外はすぐ 0 にする
-                    let v = soft(cb, 80, 125, 4) * soft(cr, 136, 170, 4) * soft(luma, 40, 250, 15)
+                    // 範囲の外はなだらかに 0 にする（背景などは肌のモデルの範囲で先に除いている）
+                    let v = soft(cb, 80, 125, 10) * soft(cr, 136, 170, 10) * soft(luma, 40, 250, 20)
                     values[index] = v
                     values[index + 1] = v
                     values[index + 2] = v
