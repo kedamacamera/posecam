@@ -75,17 +75,13 @@ final class FrameProcessor {
         return result
     }
 
-    /// 美肌をかける範囲（白）。肌の領域から、目・眉・唇と、メガネのフチなどのはっきりした線を除いたもの。
+    /// 美肌をかける範囲（白）。肌の領域のうち肌の色の所だけで、目・眉・唇を除いたもの。
+    /// メガネのフチ・髪の毛・眉は肌の色ではないので、肌の色の判定で外れる。
+    /// （以前ははっきりした線を別に検出して外していたが、細い毛筋で点線のむらが出たのでやめた）
     /// 確認用のツール（tools/verify）からも使う。
     func beautyMask(_ image: CIImage, masks: BeautyMasks) -> CIImage {
-        let extent = image.extent
-        let longSide = max(extent.width, extent.height)
-        let black = CIImage(color: .black).cropped(to: extent)
+        let longSide = max(image.extent.width, image.extent.height)
         return skinMask(image, masks: masks, blurRadius: longSide * 0.003)
-            .applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: black,
-                kCIInputMaskImageKey: edgeProtection(image, longSide: longSide),
-            ])
     }
 
     /// 自作のバイラテラルフィルタ（BeautyKernels.ci.metal）。アプリに入っていなければ nil
@@ -144,30 +140,6 @@ final class FrameProcessor {
             "inputLumaSigma": 0.03 + 0.05 * amount,
         ])
         .cropped(to: extent)
-    }
-
-    /// はっきりした線（メガネのフチ・まつ毛・髪の毛先）が黒、それ以外が白のマスク。
-    /// 毛穴のような細かい凹凸は拾わないよう、強い線だけを残してから少し太らせる。
-    private func edgeProtection(_ image: CIImage, longSide: CGFloat) -> CIImage {
-        let extent = image.extent
-        let strongEdges = image
-            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.0])
-            .applyingFilter("CIEdges", parameters: [kCIInputIntensityKey: 1.0])
-            // 線の強さ v を (v - 0.12) × 5 にして、弱い凹凸を 0 にする
-            .applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: 5, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: 5, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: 5, w: 0),
-                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
-                "inputBiasVector": CIVector(x: -0.6, y: -0.6, z: -0.6, w: 0),
-            ])
-            .applyingFilter("CIColorClamp")
-        return strongEdges
-            .clampedToExtent()
-            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: max(1, longSide * 0.003)])
-            .applyingGaussianBlur(sigma: longSide * 0.0015)
-            .applyingFilter("CIColorInvert")
-            .cropped(to: extent)
     }
 
     /// 肌の部分だけが白で、目・眉・唇は黒になるマスク。
