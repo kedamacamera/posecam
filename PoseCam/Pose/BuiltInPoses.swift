@@ -4,13 +4,32 @@ import CoreGraphics
 /// 見本写真（Resources/Poses/pose_NN.jpg、specs と同じ順番）があれば、起動後にその写真から
 /// 骨格と輪郭を取り出して置き換える（PoseLibrary）。ここでの角度は写真が使えないときの代わり。
 enum BuiltInPoses {
-    static let categories = ["立ち", "寄りかかり", "歩き", "座り", "上半身", "アクション"]
+    static let categories = ["立ち", "寄りかかり", "歩き", "座り", "後ろ姿", "上半身", "自撮り", "タバコ", "2人", "アクション"]
 
-    static let all: [PoseTemplate] = specs.enumerated().map { index, spec in
+    /// 組み込みポーズすべて。サンプル写真から作ったポーズ（sample_poses.json）を先に並べる
+    static let all: [PoseTemplate] = samplePoses + specs.enumerated().map { index, spec in
         var template = spec.makeTemplate(id: "builtin_\(index)")
         template.imageName = String(format: "pose_%02d", index)
         return template
     }
+
+    private struct SampleEntry: Decodable {
+        let image: String
+        let category: String
+    }
+
+    /// サンプル写真をもとに AI で作った見本写真のポーズ。骨格と輪郭は builtin_shapes.json から読み込む
+    private static let samplePoses: [PoseTemplate] = {
+        guard let url = Bundle.main.url(forResource: "sample_poses", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([SampleEntry].self, from: data) else { return [] }
+        var counts: [String: Int] = [:]
+        return entries.map { entry in
+            counts[entry.category, default: 0] += 1
+            return PoseTemplate(id: "sample_\(entry.image)", name: "\(entry.category) \(counts[entry.category]!)",
+                                category: entry.category, joints: [:], isUserCreated: false, imageName: entry.image)
+        }
+    }()
 
     // 男性向けのスナップでよく使うポーズ。角度は見本写真が使えないときの大まかな代わり
     private static let specs: [PoseSpec] = [

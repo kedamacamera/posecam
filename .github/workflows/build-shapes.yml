@@ -1,0 +1,29 @@
+# 組み込みポーズの型の形（骨格と輪郭）を Mac で事前に計算する（手動で実行する）。
+# 結果の builtin_shapes.json を PoseCam/Resources/Poses/ に入れてコミットする。
+name: Build pose shapes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shapes:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          swiftc -O -o bin/shapes \
+            PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseTemplate.swift \
+            PoseCam/Pose/PoseImporter.swift tools/shapes/main.swift
+
+      - name: Run
+        run: ./bin/shapes PoseCam/Resources/Poses
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shapes-output
+          path: out/

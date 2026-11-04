@@ -13,17 +13,24 @@ final class PoseLibrary: ObservableObject {
 
     init() {
         load()
+        applyBundledShapes()
         prepareBuiltInShapes()
     }
 
-    var allPoses: [PoseTemplate] { userPoses + builtInPoses }
+    /// 形（骨格か輪郭）がまだないポーズは、選んでも何も表示されないので一覧に出さない
+    private var readyBuiltInPoses: [PoseTemplate] {
+        builtInPoses.filter { !$0.points.isEmpty || !$0.allOutlines.isEmpty }
+    }
+
+    var allPoses: [PoseTemplate] { userPoses + readyBuiltInPoses }
 
     var categories: [String] {
-        (userPoses.isEmpty ? [] : [Self.userCategory]) + BuiltInPoses.categories
+        let used = Set(readyBuiltInPoses.map(\.category))
+        return (userPoses.isEmpty ? [] : [Self.userCategory]) + BuiltInPoses.categories.filter { used.contains($0) }
     }
 
     func poses(in category: String) -> [PoseTemplate] {
-        category == Self.userCategory ? userPoses : builtInPoses.filter { $0.category == category }
+        category == Self.userCategory ? userPoses : readyBuiltInPoses.filter { $0.category == category }
     }
 
     func add(_ pose: PoseTemplate) {
@@ -55,7 +62,21 @@ final class PoseLibrary: ObservableObject {
 
     // MARK: - 組み込みポーズの見本写真
 
-    /// 見本写真から骨格と輪郭を取り出す。1 枚あたり 0.2 秒ほどかかるので、結果は保存して次回から使い回す。
+    /// Mac で事前に計算してアプリに同梱した型の形（tools/shapes）を当てはめる。
+    private func applyBundledShapes() {
+        guard let url = Bundle.main.url(forResource: "builtin_shapes", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let shapes = try? JSONDecoder().decode([String: PoseShape].self, from: data) else { return }
+        for index in builtInPoses.indices {
+            guard let name = builtInPoses[index].imageName, let shape = shapes[name] else { continue }
+            builtInPoses[index].points = shape.points
+            builtInPoses[index].outline = shape.outline
+            builtInPoses[index].extraOutlines = shape.extraOutlines
+        }
+    }
+
+    /// 同梱の形がない見本写真だけ、iPhone 上で骨格と輪郭を取り出す。
+    /// 1 枚あたり 0.2 秒ほどかかるので、結果は保存して次回から使い回す。
     /// 写真が差し替わったときに古い結果を使わないよう、写真のファイルサイズをキーに含める。
     private func prepareBuiltInShapes() {
         let poses = builtInPoses
@@ -69,7 +90,9 @@ final class PoseLibrary: ObservableObject {
             var changed = false
 
             for index in updated.indices {
-                guard let name = updated[index].imageName,
+                // 同梱の形がすでに当たっているものは飛ばす
+                guard updated[index].allOutlines.isEmpty,
+                      let name = updated[index].imageName,
                       let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
                       let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
                 else { continue }

@@ -9,6 +9,8 @@ on:
       - "README.md"
       - "tools/**"
       - ".github/workflows/convert-model.yml"
+      - ".github/workflows/verify-processing.yml"
+      - ".github/workflows/build-shapes.yml"
   workflow_dispatch:
 
 jobs:
