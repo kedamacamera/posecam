@@ -180,6 +180,60 @@ struct RecordingBadge: View {
     }
 }
 
+/// 前回の起動で落ちたときの記録。テキストをコピーして共有できる。
+struct CrashReportView: View {
+    let report: CrashReport
+    /// 引数は「美肌・美白をオフにして起動するか」
+    let onStart: (Bool) -> Void
+
+    @State private var copied = false
+
+    private var text: String {
+        var lines = ["iOS \(UIDevice.current.systemVersion) / \(UIDevice.current.model)"]
+        lines += report.steps
+        if let exception = report.exception {
+            lines.append("例外: \(exception)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("前回の起動で問題が起きました")
+                .font(.headline)
+            Text("最後の行の処理の途中で止まっています。下の「記録をコピー」を押して、内容を開発者に送ってください。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                Text(text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.08)))
+
+            Button(copied ? "コピーしました" : "記録をコピー") {
+                UIPasteboard.general.string = text
+                copied = true
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(maxWidth: .infinity)
+
+            HStack {
+                Button("そのまま起動") { onStart(false) }
+                Spacer()
+                Button("美肌・美白オフで起動") { onStart(true) }
+            }
+            .font(.subheadline)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+        .foregroundStyle(.white)
+    }
+}
+
 struct PermissionView: View {
     var body: some View {
         VStack(spacing: 16) {

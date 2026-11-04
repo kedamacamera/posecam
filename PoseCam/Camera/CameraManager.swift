@@ -79,6 +79,10 @@ final class CameraManager: NSObject, ObservableObject {
     private var wantsRecording = false
     private var recorder: VideoRecorder?
     private var lastRecordedFrame: CIImage?
+    private var frameCount = 0
+
+    // detectionQueue 専用
+    private var hasDetectedOnce = false
 
     // メインスレッド専用
     private var recordTimer: Timer?
@@ -91,11 +95,14 @@ final class CameraManager: NSObject, ObservableObject {
         Task {
             let granted = await AVCaptureDevice.requestAccess(for: .video)
             await MainActor.run { self.cameraAuthorized = granted }
+            Diagnostics.mark("カメラ許可: \(granted)")
             guard granted else { return }
             sessionQueue.async {
                 self.configureIfNeeded()
                 if !self.session.isRunning {
+                    Diagnostics.mark("startRunning 開始")
                     self.session.startRunning()
+                    Diagnostics.mark("startRunning 完了")
                 }
             }
         }
@@ -105,24 +112,30 @@ final class CameraManager: NSObject, ObservableObject {
         guard !isConfigured else { return }
         isConfigured = true
 
+        Diagnostics.mark("構成: 開始")
         session.beginConfiguration()
         session.sessionPreset = .photo
+        Diagnostics.mark("構成: 入力を追加")
         if let device = Self.camera(at: .back),
            let input = try? AVCaptureDeviceInput(device: device),
            session.canAddInput(input) {
             session.addInput(input)
             videoInput = input
         }
+        Diagnostics.mark("構成: 映像出力の設定")
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.deliversPreviewSizedOutputBuffers = true
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        Diagnostics.mark("構成: 出力を追加")
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
         audioOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        Diagnostics.mark("構成: commit")
         session.commitConfiguration()
 
         updateConnections(position: .back)
+        Diagnostics.mark("構成: 完了")
     }
 
     /// 写真は 4:3 の高画質、動画は 9:16 の 1080p。動画モードのときだけマイクをつなぐ。
@@ -200,6 +213,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// フレームを縦向きにし、インカメラは鏡像にする（プレビュー・写真・動画で揃える）。
     private func updateConnections(position: AVCaptureDevice.Position) {
         let connections = [videoOutput.connection(with: .video), photoOutput.connection(with: .video)]
+        Diagnostics.mark("接続: 向きと鏡像の設定（\(connections.compactMap { $0 }.count) 本）")
         for connection in connections.compactMap({ $0 }) {
             if connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
@@ -209,6 +223,7 @@ final class CameraManager: NSObject, ObservableObject {
                 connection.isVideoMirrored = position == .front
             }
         }
+        Diagnostics.mark("接続: 写真サイズの設定")
         updatePhotoDimensions()
     }
 
@@ -219,6 +234,7 @@ final class CameraManager: NSObject, ObservableObject {
         let candidates = device.activeFormat.supportedMaxPhotoDimensions
         let best = candidates.filter { pixels($0) <= 12_600_000 }.max { pixels($0) < pixels($1) } ?? candidates.first
         if let best {
+            Diagnostics.mark("写真サイズ: \(best.width)x\(best.height)（候補 \(candidates.count) 個）")
             photoOutput.maxPhotoDimensions = best
         }
     }
@@ -393,7 +409,11 @@ final class CameraManager: NSObject, ObservableObject {
         let aspect = CGFloat(CVPixelBufferGetWidth(pixelBuffer)) / CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
         detectionQueue.async {
+            let first = !self.hasDetectedOnce
+            self.hasDetectedOnce = true
+            if first { Diagnostics.mark("骨格検出: 初回開始") }
             let pose = self.detector.detect(pixelBuffer: pixelBuffer)
+            if first { Diagnostics.mark("骨格検出: 初回完了（関節 \(pose?.count ?? 0) 個）") }
             self.poseBox.value = pose
             var score: Double?
             if let pose, let template = self.templateBox.value {
@@ -462,13 +482,23 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
+        // 最初の 1 コマだけ各段階を記録し、3 秒ほど動いたら正常とみなす
+        frameCount += 1
+        let first = frameCount == 1
+        if first {
+            Diagnostics.mark("フレーム: 初回受信 \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))")
+        }
+        if frameCount == 90 { Diagnostics.markHealthy() }
+
         detectPoseIfIdle(pixelBuffer)
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         publishFrameSizeIfNeeded(image.extent.size)
 
         let settings = settingsBox.value
         let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
+        if first { Diagnostics.mark("フレーム: 加工") }
         let processed = processor.process(image, settings: settings, hipY: hipY)
+        if first { Diagnostics.mark("フレーム: 表示へ渡す") }
         renderer.display(processed)
         handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }

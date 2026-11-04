@@ -11,6 +11,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private let lock = NSLock()
     private var pending: CIImage?
+    private var hasDrawnOnce = false
 
     override init() {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
@@ -52,10 +53,14 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         let output = image.transformed(by: transform)
             .composited(over: CIImage(color: .black).cropped(to: bounds))
 
+        let first = !hasDrawnOnce
+        hasDrawnOnce = true
+        if first { Diagnostics.mark("描画: 初回開始 \(Int(size.width))x\(Int(size.height))") }
         ciContext.render(output, to: drawable.texture, commandBuffer: commandBuffer,
                          bounds: bounds, colorSpace: colorSpace)
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        if first { Diagnostics.mark("描画: 初回完了") }
     }
 }
 

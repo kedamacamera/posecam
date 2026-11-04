@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showLibrary = false
     @State private var zoom: CGFloat = 1
     @State private var zoomAtGestureStart: CGFloat = 1
+    @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
     private var isMatched: Bool {
         (camera.matchScore ?? 0) >= CameraManager.matchThreshold
@@ -53,10 +54,24 @@ struct ContentView: View {
                 }
                 .transition(.opacity)
             }
+
+            if let report = crashReport {
+                CrashReportView(report: report) { disableEffects in
+                    if disableEffects {
+                        camera.settings.smoothing = 0
+                        camera.settings.brightening = 0
+                    }
+                    crashReport = nil
+                    camera.start()
+                }
+            }
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()
-        .onAppear { camera.start() }
+        .onAppear {
+            // 前回カメラ起動中に落ちていたら、記録を見せるまでカメラは起動しない
+            if crashReport == nil { camera.start() }
+        }
         .onChange(of: selectedPose) { updateTemplate() }
         .onChange(of: mirrorPose) { updateTemplate() }
         .onChange(of: scenePhase) {
