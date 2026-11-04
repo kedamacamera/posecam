@@ -18,7 +18,7 @@ jobs:
       # GPU 用の部品を入れるとディスクが足りなくなるので、CPU 版だけを入れる
       - name: Install converters
         run: |
-          pip install --no-cache-dir "torch==2.2.*" --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir "torch==2.2.*" "torchvision==0.17.*" --index-url https://download.pytorch.org/whl/cpu
           pip install --no-cache-dir "tensorflow-cpu==2.15.*" "tf2onnx==1.16.*" "onnx==1.15.*" \
             "coremltools==7.2" tflite-support pillow "numpy<2"
           # onnx2torch が torch を GPU 版に入れ替えないよう、依存は入れない
