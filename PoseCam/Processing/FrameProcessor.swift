@@ -101,11 +101,13 @@ final class FrameProcessor {
     private func removeDarkSpots(_ image: CIImage, strength: Double, radius: CGFloat,
                                  low: Double, high: Double, cap: Double) -> CIImage {
         guard let kernel = Self.darkSpotKernel else { return image }
-        let mean = image.clampedToExtent().applyingGaussianBlur(sigma: radius).cropped(to: image.extent)
+        let clamped = image.clampedToExtent()
+        let mean = clamped.applyingGaussianBlur(sigma: radius).cropped(to: image.extent)
+        let local = clamped.applyingGaussianBlur(sigma: max(1, radius * 0.2)).cropped(to: image.extent)
         let output = kernel.apply(
             extent: image.extent,
             roiCallback: { _, rect in rect },
-            arguments: [image, mean, Float(strength), Float(low), Float(high), Float(cap)])
+            arguments: [image, local, mean, Float(strength), Float(low), Float(high), Float(cap)])
         return output?.cropped(to: image.extent) ?? image
     }
 
