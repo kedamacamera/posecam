@@ -12,10 +12,12 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var recommendedZoom: Double?
     /// 写真の人物から取った輪郭（等方座標の閉じた多角形）。あれば骨格の代わりにこれを描く
     var outline: [CGPoint]?
+    /// 組み込みポーズの見本写真（アプリに同梱した JPEG の名前）。サムネイルに使う
+    var imageName: String?
 
     init(id: String = UUID().uuidString, name: String, category: String,
          joints: [Joint: CGPoint], isUserCreated: Bool, recommendedZoom: Double? = nil,
-         outline: [CGPoint]? = nil) {
+         outline: [CGPoint]? = nil, imageName: String? = nil) {
         self.id = id
         self.name = name
         self.category = category
@@ -23,6 +25,7 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         self.isUserCreated = isUserCreated
         self.recommendedZoom = recommendedZoom
         self.outline = outline
+        self.imageName = imageName
     }
 
     var joints: [Joint: CGPoint] {
@@ -38,7 +41,7 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         })
         return PoseTemplate(id: id + "#mirror", name: name, category: category,
                             joints: flipped, isUserCreated: isUserCreated, recommendedZoom: recommendedZoom,
-                            outline: outline?.map { CGPoint(x: -$0.x, y: $0.y) })
+                            outline: outline?.map { CGPoint(x: -$0.x, y: $0.y) }, imageName: imageName)
     }
 
     static func == (lhs: PoseTemplate, rhs: PoseTemplate) -> Bool { lhs.id == rhs.id }

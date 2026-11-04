@@ -250,12 +250,8 @@ struct ContentView: View {
 
             PanelChips(panel: $panel)
 
-            ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
-                camera.setMode($0)
-            }
-
             HStack {
-                ThumbnailButton(image: camera.lastThumbnail)
+                Color.clear.frame(width: 48, height: 48)
                 Spacer()
                 ShutterButton(mode: camera.mode,
                               isRecording: camera.isRecording,
@@ -276,6 +272,20 @@ struct ContentView: View {
                 .disabled(camera.isRecording || camera.isSequenceRunning)
             }
             .padding(.horizontal, 30)
+
+            // 一番下はアルバムと撮影モード。画面を閉じるときの上スワイプでシャッターに触れないよう、
+            // シャッターは一段上に置く
+            ZStack {
+                ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
+                    camera.setMode($0)
+                }
+                HStack {
+                    ThumbnailButton(image: camera.lastThumbnail)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+            }
+            .padding(.top, 4)
         }
         .padding(.top, 14)
         .background(

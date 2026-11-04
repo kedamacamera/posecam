@@ -1,12 +1,15 @@
 import CoreGraphics
 
-/// 組み込みのポーズ。座標を直接書く代わりに、手足の角度から骨格を組み立てる。
-/// 新しいポーズは specs に 1 行足すだけで増やせる。
+/// 組み込みのポーズ。
+/// 見本写真（Resources/Poses/pose_NN.jpg、specs と同じ順番）があれば、起動後にその写真から
+/// 骨格と輪郭を取り出して置き換える（PoseLibrary）。ここでの角度は写真が使えないときの代わり。
 enum BuiltInPoses {
     static let categories = ["立ち", "かわいい", "かっこいい", "アクション", "座り", "上半身"]
 
     static let all: [PoseTemplate] = specs.enumerated().map { index, spec in
-        spec.makeTemplate(id: "builtin_\(index)")
+        var template = spec.makeTemplate(id: "builtin_\(index)")
+        template.imageName = String(format: "pose_%02d", index)
+        return template
     }
 
     private static let specs: [PoseSpec] = [

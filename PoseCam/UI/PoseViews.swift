@@ -221,21 +221,34 @@ struct PoseThumbnail: View {
     let template: PoseTemplate
     let isSelected: Bool
 
+    static let size = CGSize(width: 58, height: 80)
+
     var body: some View {
         VStack(spacing: 4) {
-            Canvas { context, size in
-                let transform = PoseDrawing.fitTransform(template.outline ?? Array(template.joints.values),
-                                                         into: size, inset: template.outline == nil ? 10 : 4)
-                PoseDrawing.drawTemplate(template, in: context, transform: transform,
-                                         color: .white, lineWidth: 1.2, fillOpacity: 0.15)
+            Group {
+                // 組み込みポーズは見本写真、写真から登録したポーズは輪郭を表示する
+                if let name = template.imageName, let image = PoseImageCache.thumbnail(named: name) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Canvas { context, size in
+                        let points = template.outline ?? Array(template.joints.values)
+                        let transform = PoseDrawing.fitTransform(points, into: size,
+                                                                 inset: template.outline == nil ? 10 : 4)
+                        PoseDrawing.drawTemplate(template, in: context, transform: transform,
+                                                 color: .white, lineWidth: 1.2, fillOpacity: 0.15)
+                    }
+                }
             }
-            .frame(width: 56, height: 64)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
+            .frame(width: Self.size.width, height: Self.size.height)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSelected ? Color.yellow : .clear, lineWidth: 2))
             Text(template.name)
                 .font(.caption2)
                 .lineLimit(1)
-                .frame(width: 64)
+                .frame(width: 66)
         }
         .foregroundStyle(.white)
     }
@@ -250,13 +263,13 @@ struct TileLabel: View {
         VStack(spacing: 4) {
             Image(systemName: systemImage)
                 .font(.title3)
-                .frame(width: 56, height: 64)
+                .frame(width: PoseThumbnail.size.width, height: PoseThumbnail.size.height)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(highlighted ? Color.yellow : .clear, lineWidth: 2))
             Text(title)
                 .font(.caption2)
                 .lineLimit(1)
-                .frame(width: 64)
+                .frame(width: 66)
         }
         .foregroundStyle(.white)
     }

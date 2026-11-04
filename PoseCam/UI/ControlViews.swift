@@ -448,7 +448,7 @@ struct ModePicker: View {
     let onSelect: (CaptureMode) -> Void
 
     var body: some View {
-        HStack(spacing: 26) {
+        HStack(spacing: 20) {
             ForEach(CaptureMode.allCases) { item in
                 Button { onSelect(item) } label: {
                     Text(item.rawValue)
@@ -518,18 +518,23 @@ struct ThumbnailButton: View {
                 UIApplication.shared.open(url)
             }
         } label: {
-            Group {
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Color.white.opacity(0.15)
+            HStack(spacing: 6) {
+                Group {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Color.white.opacity(0.15)
+                    }
                 }
+                .frame(width: 34, height: 34)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
+                Text("アルバム")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
             }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.6), lineWidth: 1))
         }
     }
 }
