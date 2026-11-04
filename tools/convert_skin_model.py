@@ -122,7 +122,8 @@ def main() -> None:
         convert_to="neuralnetwork",
         inputs=[ct.ImageType(name="image", shape=(1, 3, SIZE, SIZE), color_layout=ct.colorlayout.RGB)],
         outputs=[ct.ImageType(name="skin", color_layout=ct.colorlayout.GRAYSCALE)],
-        minimum_deployment_target=ct.target.iOS15,
+        # .mlmodel（neuralnetwork 形式）は iOS 14 以下を指定する必要がある。アプリは iOS 17 以降なので問題ない
+        minimum_deployment_target=ct.target.iOS14,
     )
     mlmodel.author = "Google LLC (original MediaPipe model); converted for PoseCam"
     mlmodel.license = "Apache License 2.0"
