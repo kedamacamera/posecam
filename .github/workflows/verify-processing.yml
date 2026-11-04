@@ -23,8 +23,9 @@ jobs:
 
       - name: Run
         run: |
-          ./bin/verify PoseCam/Resources/Poses/pose_23.jpg PoseCam/Resources/Poses/pose_24.jpg \
-            PoseCam/Resources/Poses/pose_26.jpg PoseCam/Resources/Poses/pose_00.jpg
+          # 1 枚目は一致度の確認にも使うので全身の写真にする
+          ./bin/verify PoseCam/Resources/Poses/pose_00.jpg PoseCam/Resources/Poses/pose_23.jpg \
+            PoseCam/Resources/Poses/pose_24.jpg PoseCam/Resources/Poses/pose_25.jpg
 
       - uses: actions/upload-artifact@v4
         if: always()

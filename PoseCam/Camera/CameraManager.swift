@@ -30,6 +30,13 @@ struct LensOption: Identifiable, Equatable {
     var id: CGFloat { displayFactor }
 }
 
+/// 連続撮影の予定。1 枚目を撮る時刻と間隔から、次のシャッターまでの残りを計算できる。
+struct BurstTimeline: Equatable {
+    let firstShot: Date
+    let interval: Double
+    let total: Int
+}
+
 /// スナップ撮影で撮った短い動画。コマを選ぶ画面に渡す。
 struct SnapClip: Identifiable {
     let id = UUID()
@@ -71,6 +78,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     @Published private(set) var countdown: Int?
     @Published private(set) var burstProgress: String?
+    /// 連続撮影の予定（画面の「減っていく円」の表示に使う）
+    @Published private(set) var burstTimeline: BurstTimeline?
     @Published private(set) var isSequenceRunning = false
     @Published private(set) var canMuteShutter = false
     @Published var snapClip: SnapClip?
@@ -510,6 +519,10 @@ final class CameraManager: NSObject, ObservableObject {
         let options = ShotOptions(flash: flashOn, mute: muteShutter,
                                   silent: muteShutter && !canMuteShutter, fast: total > 1)
         showCountdown(delay)
+        // 撮影のタイマーと同じ基準の時刻から、円の残りを計算する
+        burstTimeline = total > 1
+            ? BurstTimeline(firstShot: Date().addingTimeInterval(Double(delay)), interval: burstInterval, total: total)
+            : nil
 
         var shot = 0
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: sessionQueue)
@@ -573,6 +586,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func cancelSequence() {
+        burstTimeline = nil
         shotTimer?.cancel()
         shotTimer = nil
         countdownTimer?.cancel()
@@ -583,6 +597,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func finishSequence() {
+        burstTimeline = nil
         shotTimer = nil
         isSequenceRunning = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {

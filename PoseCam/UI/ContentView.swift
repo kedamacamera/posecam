@@ -52,6 +52,11 @@ struct ContentView: View {
                             .offset(y: -40)
                     }
 
+                    if let timeline = camera.burstTimeline {
+                        BurstRing(timeline: timeline)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
                     if let countdown = camera.countdown {
                         Text("\(countdown)")
                             .font(.system(size: 120, weight: .bold, design: .rounded))

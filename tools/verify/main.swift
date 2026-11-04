@@ -73,7 +73,8 @@ for path in CommandLine.arguments.dropFirst() {
                          name, before, after, after - before, masks.features == nil ? "none" : "yes"))
 
     let width = image.extent.width
-    let maskView = skin.applyingFilter("CIColorMatrix", parameters: [
+    // 実際に美肌をかけた範囲（肌 × 顔のパーツの除外 × 線の保護）
+    let maskView = processor.beautyMask(image, masks: masks).applyingFilter("CIColorMatrix", parameters: [
         "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
     ]).cropped(to: image.extent)
     let sheet = output.transformed(by: CGAffineTransform(translationX: width, y: 0))
@@ -81,6 +82,19 @@ for path in CommandLine.arguments.dropFirst() {
         .composited(over: image)
     let scale = 1600 / (width * 3)
     savePNG(sheet.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), "beauty_\(name).png")
+
+    // 顔のまわりを拡大して、加工前（左）と加工後（右）を並べる
+    if let nose = analysis.pose?[.nose] {
+        let side = width * 0.4
+        let center = CGPoint(x: nose.x * width, y: (1 - nose.y) * image.extent.height)
+        let rect = CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
+        let toOrigin = CGAffineTransform(translationX: -rect.minX, y: -rect.minY)
+        let left = image.cropped(to: rect).transformed(by: toOrigin)
+        let right = output.cropped(to: rect).transformed(by: toOrigin.concatenating(CGAffineTransform(translationX: side, y: 0)))
+        let face = right.composited(over: left)
+        let faceScale = 1600 / (side * 2)
+        savePNG(face.transformed(by: CGAffineTransform(scaleX: faceScale, y: faceScale)), "face_\(name).png")
+    }
 }
 
 // MARK: - 一致度

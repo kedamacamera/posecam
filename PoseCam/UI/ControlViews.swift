@@ -559,6 +559,47 @@ struct Badge: View {
     }
 }
 
+// MARK: - 連続撮影
+
+/// 次のシャッターまでの残り時間を、減っていく円で表す。円がなくなった瞬間にシャッターが切れる。
+/// 真ん中は「何枚目を撮るところか / 全部で何枚か」。
+struct BurstRing: View {
+    let timeline: BurstTimeline
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let elapsed = context.date.timeIntervalSince(timeline.firstShot)
+            // タイマーのカウントダウン中（1 枚目より前）は数字の表示に任せる
+            if elapsed >= 0 {
+                let taken = min(Int(elapsed / timeline.interval) + 1, timeline.total)
+                let remaining = 1 - (elapsed - Double(taken - 1) * timeline.interval) / timeline.interval
+                ring(next: taken + 1, remaining: taken >= timeline.total ? 0 : max(0, remaining))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func ring(next: Int, remaining: Double) -> some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.25), lineWidth: 8)
+            Circle()
+                .trim(from: 0, to: remaining)
+                .stroke(Color.yellow, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 2) {
+                Text("\(min(next, timeline.total))")
+                    .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
+                Text("/ \(timeline.total)枚")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+        }
+        .frame(width: 120, height: 120)
+        .shadow(color: .black.opacity(0.5), radius: 4)
+    }
+}
+
 // MARK: - 特別な画面
 
 /// 前回の起動で落ちたときの記録。テキストをコピーして共有できる。
