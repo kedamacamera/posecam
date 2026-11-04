@@ -51,7 +51,7 @@ func savePNG(_ image: CIImage, _ name: String) {
 
 let detector = PoseDetector()
 let processor = FrameProcessor()
-report.append("skin model loaded: \(PoseDetector.hasSkinModel)")
+report.append("skin model loaded: \(PoseDetector.hasSkinModel), bilateral kernel loaded: \(FrameProcessor.bilateralKernel != nil)")
 
 for path in CommandLine.arguments.dropFirst() {
     let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent

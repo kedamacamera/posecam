@@ -18,7 +18,9 @@ jobs:
             PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift \
             PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
             PoseCam/Processing/ProcessingSettings.swift tools/verify/main.swift
-          # アプリと同じ肌のモデルを、実行ファイルの隣に置く（Bundle.main から読み込まれる）
+          # アプリと同じ美肌のカーネルと肌のモデルを、実行ファイルの隣に置く（Bundle.main から読み込まれる）
+          xcrun -sdk macosx metal -fcikernel -c PoseCam/Processing/BeautyKernels.ci.metal -o bin/kernels.air
+          xcrun -sdk macosx metallib -cikernel bin/kernels.air -o bin/default.metallib
           xcrun coremlcompiler compile PoseCam/Resources/Models/SkinSegmenter.mlmodel bin/
 
       - name: Run

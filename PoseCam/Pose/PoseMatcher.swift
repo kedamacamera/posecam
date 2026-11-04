@@ -36,6 +36,7 @@ enum PoseMatcher {
     /// 骨ごとの向きの差。45 度ずれた骨は 0 点。
     private static func angleScore(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint]) -> Double? {
         var total = 0.0
+        var worst = 1.0
         var count = 0
         for (a, b) in bones {
             guard let ta = template[a], let tb = template[b],
@@ -45,12 +46,15 @@ enum PoseMatcher {
             let tLength = hypot(tx, ty), dLength = hypot(dx, dy)
             guard tLength > 1e-4, dLength > 1e-4 else { continue }
             let cosine = max(-1, min(1, (tx * dx + ty * dy) / (tLength * dLength)))
-            total += max(0, 1 - acos(cosine) / angleTolerance)
+            let boneScore = max(0, 1 - acos(cosine) / angleTolerance)
+            total += boneScore
+            worst = min(worst, boneScore)
             count += 1
         }
         // 上半身だけ写っていても判定できるよう、5 本見えていれば採点する
         guard count >= 5 else { return nil }
-        return total / Double(count)
+        // 平均だけだと腕 1 本の違いが薄まるので、いちばんずれている骨の点数も半分反映する
+        return (total / Double(count)) * 0.5 + worst * 0.5
     }
 
     /// 関節の位置の差。型の体の高さの 18% ずれると 0 点。立ち位置や大きさが違えば下がる。
@@ -60,10 +64,13 @@ enum PoseMatcher {
         let ys = template.values.map(\.y)
         guard let minY = ys.min(), let maxY = ys.max() else { return nil }
         let bodyHeight = max(Double(maxY - minY), 0.2)
-        let meanDistance = common.reduce(0.0) { sum, joint in
+        let distances = common.map { joint -> Double in
             let t = template[joint]!, d = detected[joint]!
-            return sum + hypot(Double(t.x - d.x), Double(t.y - d.y))
-        } / Double(common.count)
-        return max(0, 1 - meanDistance / (bodyHeight * positionTolerance))
+            return hypot(Double(t.x - d.x), Double(t.y - d.y))
+        }
+        let meanDistance = distances.reduce(0, +) / Double(distances.count)
+        // 角度と同じく、いちばんずれている関節も半分反映する
+        let distance = meanDistance * 0.5 + (distances.max() ?? 0) * 0.5
+        return max(0, 1 - distance / (bodyHeight * positionTolerance))
     }
 }

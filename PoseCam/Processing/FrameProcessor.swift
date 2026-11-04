@@ -37,7 +37,7 @@ final class FrameProcessor {
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。
             // 完全には置き換えず、元の質感を少し残す
-            let smooth = edgePreservingSmooth(image, amount: settings.smoothing)
+            let smooth = bilateralSmooth(image, amount: settings.smoothing, longSide: longSide)
             result = blend(smooth, over: result, mask: mask, amount: 0.85 * settings.smoothing)
         }
         if settings.brightening > 0.01 {
@@ -66,7 +66,27 @@ final class FrameProcessor {
             ])
     }
 
-    /// 輪郭を保ったまま、平らな部分（肌）だけをなめらかにする。
+    /// 自作のバイラテラルフィルタ（BeautyKernels.ci.metal）。アプリに入っていなければ nil
+    static let bilateralKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "bilateral", fromMetalLibraryData: data)
+    }()
+
+    /// 色が近い画素どうしだけを平均して、肌をなめらかにする（境目は混ざらない・明るさは変わらない）。
+    private func bilateralSmooth(_ image: CIImage, amount: Double, longSide: CGFloat) -> CIImage {
+        guard let kernel = Self.bilateralKernel else { return edgePreservingSmooth(image, amount: amount) }
+        // 長辺 1920 なら 半径 8〜19 ピクセル
+        let radius = longSide * CGFloat(0.004 + 0.006 * amount)
+        let sigmaColor = 0.05 + 0.05 * amount
+        let output = kernel.apply(
+            extent: image.extent,
+            roiCallback: { _, rect in rect.insetBy(dx: -radius - 1, dy: -radius - 1) },
+            arguments: [image.clampedToExtent(), Float(radius), Float(sigmaColor)])
+        return output?.cropped(to: image.extent) ?? edgePreservingSmooth(image, amount: amount)
+    }
+
+    /// 輪郭を保ったまま、平らな部分（肌）だけをなめらかにする（カーネルが使えないときの代わり）。
     /// 縮小してぼかした画像を、元の画像の明るさの差を手がかりに拡大し直す（ガイド付きフィルタに近い）。
     /// 明るさの差が大きい所（目・眉・髪の境目）は元のまま残る。
     private func edgePreservingSmooth(_ image: CIImage, amount: Double) -> CIImage {
