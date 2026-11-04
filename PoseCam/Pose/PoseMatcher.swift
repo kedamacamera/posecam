@@ -3,6 +3,7 @@ import Foundation
 
 /// 型と検出した骨格の一致度（0〜100）。
 /// 「手足の向き」と「関節の位置（画面のどこに、どの大きさで立っているか）」の両方がそろって初めて高くなる。
+/// どちらかが大きくずれていれば 0 点。
 enum PoseMatcher {
     private static let bones: [(Joint, Joint)] = [
         (.leftShoulder, .leftElbow), (.leftElbow, .leftWrist),
@@ -28,7 +29,8 @@ enum PoseMatcher {
     private static func evaluate(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint]) -> Double? {
         guard let angle = angleScore(template, detected),
               let position = positionScore(template, detected) else { return nil }
-        return (angle * 0.5 + position * 0.5) * 100
+        // 掛け算にして、位置か向きのどちらかが大きくずれていれば 0 点になるようにする
+        return angle * position * 100
     }
 
     /// 骨ごとの向きの差。45 度ずれた骨は 0 点。
