@@ -412,12 +412,17 @@ struct BeautyPanel: View {
     @Binding var settings: ProcessingSettings
 
     var body: some View {
-        VStack(spacing: 2) {
-            SliderRow(title: "美肌", value: $settings.smoothing)
-            SliderRow(title: "美白", value: $settings.brightening)
-            SliderRow(title: "脚長", value: $settings.legLength)
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 2) {
+                SliderRow(title: "美肌", value: $settings.smoothing)
+                SliderRow(title: "美白", value: $settings.brightening)
+                SliderRow(title: "赤み", value: $settings.redness)
+                SliderRow(title: "シミ", value: $settings.blemish)
+                SliderRow(title: "シワ", value: $settings.wrinkle)
+                SliderRow(title: "脚長", value: $settings.legLength)
+            }
+            .padding(.horizontal)
         }
-        .padding(.horizontal)
     }
 }
 

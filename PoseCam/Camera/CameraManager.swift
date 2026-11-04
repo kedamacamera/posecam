@@ -679,7 +679,7 @@ final class CameraManager: NSObject, ObservableObject {
         let image = FrameGeometry(sourceSize: normalized.extent.size, aspect: aspect, maxLongSide: nil)
             .apply(normalized)
 
-        let wantsMasks = settings.smoothing > 0.01 || settings.brightening > 0.01
+        let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
         if wantsMasks || settings.legLength > 0.01 {
             analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks)
@@ -883,7 +883,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 録画中は途中で大きさが変わらないよう比率を固定する（UI 側でも比率ボタンを無効にしている）
         let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value, maxLongSide: 1920)
         let settings = settingsBox.value
-        let wantsMasks = settings.smoothing > 0.01 || settings.brightening > 0.01
+        let wantsMasks = settings.needsSkinMask
         analyzeIfIdle(pixelBuffer, geometry: geometry)
 
         let image = geometry.apply(source)

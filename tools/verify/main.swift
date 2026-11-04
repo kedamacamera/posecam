@@ -51,7 +51,7 @@ func savePNG(_ image: CIImage, _ name: String) {
 
 let detector = PoseDetector()
 let processor = FrameProcessor()
-report.append("skin model loaded: \(PoseDetector.hasSkinModel), bilateral kernel loaded: \(FrameProcessor.bilateralKernel != nil)")
+report.append("skin model loaded: \(PoseDetector.hasSkinModel), bilateral kernel loaded: \(FrameProcessor.bilateralKernel != nil), dark spot kernel loaded: \(FrameProcessor.darkSpotKernel != nil)")
 
 for path in CommandLine.arguments.dropFirst() {
     let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
@@ -64,6 +64,9 @@ for path in CommandLine.arguments.dropFirst() {
     var settings = ProcessingSettings()
     settings.smoothing = 0.8
     settings.brightening = 0.3
+    settings.redness = 0.8
+    settings.blemish = 0.8
+    settings.wrinkle = 0.8
     let output = processor.process(image, settings: settings, hipY: nil, masks: masks)
 
     let skin = masks.skin ?? masks.person!

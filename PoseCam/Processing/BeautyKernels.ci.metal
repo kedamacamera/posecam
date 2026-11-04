@@ -30,5 +30,18 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
     return sum / weightSum;
 }
 
+/// 周りより暗い部分（シミ・シワ）を、周りの平均の色で埋める。
+/// mean: 元の画像をぼかしたもの（周りの平均）。暗さの差が low〜high の間で効き始め、high 以上で最大になる。
+/// 明るい部分（ハイライト）や、周りと同じ明るさの所は変えない。
+float4 darkSpotRemoval(sampler src, sampler mean, float strength, float low, float high, destination dest) {
+    float2 coord = dest.coord();
+    float4 color = src.sample(src.transform(coord));
+    float4 average = mean.sample(mean.transform(coord));
+    float3 lumaWeights = float3(0.299, 0.587, 0.114);
+    float darker = dot(average.rgb, lumaWeights) - dot(color.rgb, lumaWeights);
+    float weight = smoothstep(low, high, darker) * strength;
+    return float4(mix(color.rgb, average.rgb, weight), color.a);
+}
+
 }
 }

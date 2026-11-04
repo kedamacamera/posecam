@@ -16,7 +16,7 @@ final class FrameProcessor {
     func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?, masks: BeautyMasks?) -> CIImage {
         let extent = input.extent
         var image = input
-        if settings.smoothing > 0.01 || settings.brightening > 0.01, let masks {
+        if settings.needsSkinMask, let masks {
             image = beautify(image, settings: settings, masks: masks)
         }
         image = settings.filter.apply(to: image)
@@ -34,11 +34,33 @@ final class FrameProcessor {
         let mask = beautyMask(image, masks: masks)
         var result = image
 
+        // シミ（暗い点）は広めの範囲、シワ（暗い細い線）は狭めの範囲の平均と比べて、暗い所だけ埋める
+        if settings.blemish > 0.01 {
+            let removed = removeDarkSpots(result, strength: settings.blemish, radius: longSide * 0.008,
+                                          low: 0.008, high: 0.05)
+            result = blend(removed, over: result, mask: mask, amount: 1)
+        }
+        if settings.wrinkle > 0.01 {
+            let removed = removeDarkSpots(result, strength: settings.wrinkle, radius: longSide * 0.004,
+                                          low: 0.005, high: 0.035)
+            result = blend(removed, over: result, mask: mask, amount: 1)
+        }
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。
             // 完全には置き換えず、元の質感を少し残す
-            let smooth = bilateralSmooth(image, amount: settings.smoothing, longSide: longSide)
+            let smooth = bilateralSmooth(result, amount: settings.smoothing, longSide: longSide)
             result = blend(smooth, over: result, mask: mask, amount: 0.85 * settings.smoothing)
+        }
+        if settings.redness > 0.01 {
+            // 赤を緑に少し寄せて、赤みの強い所ほど周りの肌色に近づける（全体の明るさはほぼ変えない）
+            let k = CGFloat(0.3 * settings.redness)
+            let calmed = result.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 1 - k, y: k, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: k * 0.3, z: 1 - k * 0.3, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+            result = blend(calmed, over: result, mask: mask, amount: 1)
         }
         if settings.brightening > 0.01 {
             let brightened = result
@@ -73,12 +95,30 @@ final class FrameProcessor {
         return try? CIKernel(functionName: "bilateral", fromMetalLibraryData: data)
     }()
 
+    static let darkSpotKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "darkSpotRemoval", fromMetalLibraryData: data)
+    }()
+
+    /// 周りの平均より暗い所（シミ・シワ）を、周りの平均の色で埋める。
+    private func removeDarkSpots(_ image: CIImage, strength: Double, radius: CGFloat,
+                                 low: Double, high: Double) -> CIImage {
+        guard let kernel = Self.darkSpotKernel else { return image }
+        let mean = image.clampedToExtent().applyingGaussianBlur(sigma: radius).cropped(to: image.extent)
+        let output = kernel.apply(
+            extent: image.extent,
+            roiCallback: { _, rect in rect },
+            arguments: [image, mean, Float(strength), Float(low), Float(high)])
+        return output?.cropped(to: image.extent) ?? image
+    }
+
     /// 色が近い画素どうしだけを平均して、肌をなめらかにする（境目は混ざらない・明るさは変わらない）。
     private func bilateralSmooth(_ image: CIImage, amount: Double, longSide: CGFloat) -> CIImage {
         guard let kernel = Self.bilateralKernel else { return edgePreservingSmooth(image, amount: amount) }
-        // 長辺 1920 なら 半径 8〜19 ピクセル
-        let radius = longSide * CGFloat(0.004 + 0.006 * amount)
-        let sigmaColor = 0.05 + 0.05 * amount
+        // 長辺 1920 なら 半径 5〜11 ピクセル。毛穴やむらの大きさに絞り、鼻などの陰影（もっと大きい明暗）は残す
+        let radius = longSide * CGFloat(0.0025 + 0.003 * amount)
+        let sigmaColor = 0.04 + 0.04 * amount
         let output = kernel.apply(
             extent: image.extent,
             roiCallback: { _, rect in rect.insetBy(dx: -radius - 1, dy: -radius - 1) },

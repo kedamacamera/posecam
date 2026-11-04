@@ -256,7 +256,8 @@ struct ContentView: View {
                         BeautyPanel(settings: $camera.settings)
                     }
                 }
-                .frame(height: 104)
+                // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）
+                .frame(height: panel == .beauty ? 160 : 104)
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
                 .padding(.horizontal, 8)
