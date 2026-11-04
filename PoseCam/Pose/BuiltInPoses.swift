@@ -4,7 +4,7 @@ import CoreGraphics
 /// 見本写真（Resources/Poses/pose_NN.jpg、specs と同じ順番）があれば、起動後にその写真から
 /// 骨格と輪郭を取り出して置き換える（PoseLibrary）。ここでの角度は写真が使えないときの代わり。
 enum BuiltInPoses {
-    static let categories = ["立ち", "かわいい", "かっこいい", "アクション", "座り", "上半身"]
+    static let categories = ["立ち", "寄りかかり", "歩き", "座り", "上半身", "アクション"]
 
     static let all: [PoseTemplate] = specs.enumerated().map { index, spec in
         var template = spec.makeTemplate(id: "builtin_\(index)")
@@ -12,66 +12,66 @@ enum BuiltInPoses {
         return template
     }
 
+    // 男性向けのスナップでよく使うポーズ。角度は見本写真が使えないときの大まかな代わり
     private static let specs: [PoseSpec] = [
         // 立ち
         PoseSpec(name: "ナチュラル", category: "立ち"),
-        PoseSpec(name: "腰に手", category: "立ち", lUpper: 45, lLower: -50, rUpper: -45, rLower: 50, lThigh: 8, rThigh: -8),
-        PoseSpec(name: "片手を腰に", category: "立ち", lUpper: 45, lLower: -50, lThigh: 10, lShin: 4, rThigh: -2),
+        PoseSpec(name: "両手ポケット", category: "立ち", lUpper: 22, lLower: -35, rUpper: -22, rLower: 35, lThigh: 8, rThigh: -2),
+        PoseSpec(name: "片手ポケット", category: "立ち", lUpper: 22, lLower: -35, lThigh: 6),
         PoseSpec(name: "腕組み", category: "立ち", lUpper: 20, lLower: -100, rUpper: -20, rLower: 100),
-        PoseSpec(name: "足をクロス", category: "立ち", lThigh: -10, lShin: -8, rThigh: 4, rShin: 6),
-        PoseSpec(name: "S字ライン", category: "立ち", torso: 6, head: -8, lUpper: 30, lLower: -40, rUpper: -8, rLower: -4,
-                 lThigh: -3, lShin: 2, rThigh: -14, rShin: -3),
-        PoseSpec(name: "後ろで手を組む", category: "立ち", lUpper: 8, lLower: -25, rUpper: -8, rLower: 25),
+        PoseSpec(name: "目線外し", category: "立ち", head: 20, lUpper: 22, lLower: -35),
+        PoseSpec(name: "足クロス", category: "立ち", lUpper: 22, lLower: -35, lThigh: -10, lShin: -8, rThigh: 4, rShin: 6),
+        PoseSpec(name: "襟を直す", category: "立ち", lUpper: 25, lLower: -160, rUpper: -25, rLower: 160),
+        PoseSpec(name: "時計を見る", category: "立ち", head: 10, lUpper: 30, lLower: -110),
+        PoseSpec(name: "ジャケットを肩に", category: "立ち", lUpper: 160, lLower: -170, rUpper: -22, rLower: 35),
+        PoseSpec(name: "髪をかき上げる", category: "立ち", lUpper: 150, lLower: -150, rUpper: -22, rLower: 35),
 
-        // かわいい
-        PoseSpec(name: "ピース", category: "かわいい", rUpper: -25, rLower: 160),
-        PoseSpec(name: "両手ピース", category: "かわいい", lUpper: 25, lLower: -160, rUpper: -25, rLower: 160),
-        PoseSpec(name: "ほっぺに手", category: "かわいい", lUpper: 15, lLower: -170, rUpper: -15, rLower: 170),
-        PoseSpec(name: "頭上でハート", category: "かわいい", lUpper: 160, lLower: -130, rUpper: -160, rLower: 130),
-        PoseSpec(name: "うちまた", category: "かわいい", lUpper: 5, lLower: -15, rUpper: -5, rLower: 15,
-                 lThigh: -6, lShin: 10, rThigh: 6, rShin: -10),
-        PoseSpec(name: "首かしげ", category: "かわいい", head: 15, lUpper: 10, lLower: 5, rUpper: -20, rLower: 165),
-        PoseSpec(name: "猫の手", category: "かわいい", lUpper: 20, lLower: -150, rUpper: -20, rLower: 150),
+        // 寄りかかり
+        PoseSpec(name: "壁に肩で寄りかかる", category: "寄りかかり", torso: -8, lUpper: 22, lLower: -35, rUpper: -22, rLower: 35,
+                 lThigh: -10, lShin: -8, rThigh: 4, rShin: 6),
+        PoseSpec(name: "壁に背中・片足上げ", category: "寄りかかり", lUpper: 22, lLower: -35, rUpper: -22, rLower: 35,
+                 lThigh: 30, lShin: -20),
+        PoseSpec(name: "カウンターに片手", category: "寄りかかり", torso: -6, head: 20, lUpper: 22, lLower: -35, rUpper: -40, rLower: -10,
+                 lThigh: -10, lShin: -8, rThigh: 4, rShin: 6),
+        PoseSpec(name: "腰掛けて寄りかかる", category: "寄りかかり", lUpper: 15, lLower: 5, rUpper: -15, rLower: -5,
+                 lThigh: -15, lShin: -10, rThigh: 15, rShin: 10),
 
-        // かっこいい
-        PoseSpec(name: "ガッツポーズ", category: "かっこいい", lUpper: 12, lLower: 5, rUpper: -95, rLower: 180),
-        PoseSpec(name: "両手を広げる", category: "かっこいい", lUpper: 100, lLower: 95, rUpper: -100, rLower: -95),
-        PoseSpec(name: "考えるポーズ", category: "かっこいい", lUpper: 20, lLower: -95, rUpper: -10, rLower: 175),
-        PoseSpec(name: "指さし", category: "かっこいい", lUpper: 95, lLower: 95),
-        PoseSpec(name: "仁王立ち", category: "かっこいい", lUpper: 20, lLower: 0, rUpper: -20, rLower: 0,
-                 lThigh: 15, lShin: 5, rThigh: -15, rShin: -5),
-        PoseSpec(name: "敬礼", category: "かっこいい", rUpper: -80, rLower: 140),
-
-        // アクション
-        PoseSpec(name: "バンザイ", category: "アクション", lUpper: 165, lLower: 170, rUpper: -165, rLower: -170),
-        PoseSpec(name: "ジャンプ", category: "アクション", lUpper: 150, lLower: 160, rUpper: -150, rLower: -160,
-                 lThigh: 35, lShin: -40, rThigh: -35, rShin: 40),
-        PoseSpec(name: "フラミンゴ", category: "アクション", lUpper: 95, lLower: 95, rUpper: -95, rLower: -95,
-                 lThigh: 50, lShin: -30),
-        PoseSpec(name: "ランジ", category: "アクション", lUpper: 150, lLower: 160, lThigh: 40, lShin: 0, rThigh: -30, rShin: -10),
-        PoseSpec(name: "ダンス", category: "アクション", lUpper: 130, lLower: 170, rUpper: -45, rLower: 30,
-                 lThigh: 20, lShin: -10, rThigh: -5),
-        PoseSpec(name: "手を振る", category: "アクション", lUpper: 60, lLower: 170),
+        // 歩き
+        PoseSpec(name: "正面に歩く", category: "歩き", lUpper: 5, lLower: -10, rUpper: -15, rLower: 10, lThigh: 10, lShin: -5, rThigh: -6),
+        PoseSpec(name: "横向きに歩く", category: "歩き", lUpper: 20, lLower: 30, rUpper: -20, rLower: -10, lThigh: 20, rThigh: -20),
+        PoseSpec(name: "振り返る", category: "歩き", head: -20, lUpper: 22, lLower: -35),
+        PoseSpec(name: "横向きで振り向く", category: "歩き", head: 15),
 
         // 座り
+        PoseSpec(name: "前かがみに座る", category: "座り", torso: 10, lUpper: 25, lLower: -50, rUpper: -25, rLower: 50,
+                 lThigh: 30, lShin: 0, rThigh: -30, rShin: 0, thighScale: 0.45),
+        PoseSpec(name: "足を組んで座る", category: "座り", lUpper: 10, lLower: -30, rUpper: -10, rLower: 30,
+                 lThigh: -30, lShin: 5, rThigh: -8, rShin: -2, thighScale: 0.45),
         PoseSpec(name: "しゃがむ", category: "座り", lUpper: 20, lLower: -40, rUpper: -20, rLower: 40,
                  lThigh: 60, lShin: -10, rThigh: -60, rShin: 10, thighScale: 0.6),
-        PoseSpec(name: "体育座り", category: "座り", lUpper: 15, lLower: -20, rUpper: -15, rLower: 20,
-                 lThigh: 160, lShin: 5, rThigh: -160, rShin: -5, thighScale: 0.5),
-        PoseSpec(name: "椅子に座る", category: "座り", lUpper: 10, lLower: -30, rUpper: -10, rLower: 30,
-                 lThigh: 8, lShin: 2, rThigh: -8, rShin: -2, thighScale: 0.45),
-        PoseSpec(name: "あぐら", category: "座り", lUpper: 25, lLower: -10, rUpper: -25, rLower: 10,
-                 lThigh: 75, lShin: -100, rThigh: -75, rShin: 100, thighScale: 0.8),
+        PoseSpec(name: "片膝を立てて座る", category: "座り", lUpper: 40, lLower: -60, lThigh: 150, lShin: 10,
+                 rThigh: -80, rShin: -10, thighScale: 0.5),
+        PoseSpec(name: "高いスツール", category: "座り", lUpper: 15, lLower: -30, rUpper: -15, rLower: 30,
+                 lThigh: 30, lShin: 0, rThigh: -10, rShin: -5, thighScale: 0.7),
 
         // 上半身
+        PoseSpec(name: "襟を持つ", category: "上半身", lUpper: 25, lLower: -160, upperBody: true),
         PoseSpec(name: "あご手", category: "上半身", lUpper: 20, lLower: -95, rUpper: -10, rLower: 175, upperBody: true),
-        PoseSpec(name: "両手ほおづえ", category: "上半身", lUpper: 10, lLower: -170, rUpper: -10, rLower: 170, upperBody: true),
-        PoseSpec(name: "髪をかき上げる", category: "上半身", lUpper: 150, lLower: -150, upperBody: true),
-        PoseSpec(name: "口元に手", category: "上半身", rUpper: -5, rLower: 170, upperBody: true),
-        PoseSpec(name: "小顔ピース", category: "上半身", head: -10, rUpper: -15, rLower: 172, upperBody: true),
+        PoseSpec(name: "メガネに手", category: "上半身", rUpper: -15, rLower: 172, upperBody: true),
+        PoseSpec(name: "横顔", category: "上半身", head: 25, upperBody: true),
+        PoseSpec(name: "髪をかき上げる（上半身）", category: "上半身", lUpper: 150, lLower: -150, upperBody: true),
+        PoseSpec(name: "腕組み（上半身）", category: "上半身", lUpper: 20, lLower: -100, rUpper: -20, rLower: 100, upperBody: true),
+
+        // アクション
+        PoseSpec(name: "ジャンプ", category: "アクション", lUpper: 40, lLower: 20, rUpper: -40, rLower: -20,
+                 lThigh: 35, lShin: -40, rThigh: -35, rShin: 40),
+        PoseSpec(name: "手を挙げる", category: "アクション", lUpper: 150, lLower: 170),
+        PoseSpec(name: "指さし", category: "アクション", lUpper: 60, lLower: 80),
+        PoseSpec(name: "伸びをする", category: "アクション", lUpper: 165, lLower: 170, rUpper: -165, rLower: -170),
+        PoseSpec(name: "ジャケットを羽織る", category: "アクション", lUpper: 60, lLower: 120, rUpper: -30, rLower: -60),
+        PoseSpec(name: "後ろ姿", category: "アクション", lUpper: 22, lLower: -35, rUpper: -22, rLower: 35),
     ]
 }
-
 /// 角度（度）で表したポーズ。0° が真下、正の値が画面右、180° が真上。
 /// left は写っている人の左（＝正面を向いたとき画面の右側）。
 struct PoseSpec {

@@ -279,11 +279,14 @@ struct TileLabel: View {
 struct PoseStrip: View {
     @ObservedObject var library: PoseLibrary
     @Binding var selection: PoseTemplate?
+    /// カメラの画面の縦横比。取り込んだ写真の構図をこの比率の枠で合わせる
+    let frameAspect: CGFloat
     let onShowAll: () -> Void
 
     @State private var pickerItem: PhotosPickerItem?
     @State private var isImporting = false
     @State private var importError: String?
+    @State private var draft: PoseImportDraft?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -316,6 +319,14 @@ struct PoseStrip: View {
         } message: {
             Text(importError ?? "")
         }
+        .sheet(item: $draft) { draft in
+            PoseImportEditor(draft: draft, aspect: frameAspect) { shape in
+                let template = PoseImporter.makeTemplate(name: "マイポーズ \(library.userPoses.count + 1)",
+                                                         shape: shape)
+                library.add(template)
+                selection = template
+            }
+        }
     }
 
     @MainActor
@@ -329,16 +340,15 @@ struct PoseStrip: View {
             importError = "写真を読み込めませんでした。"
             return
         }
-        let name = "マイポーズ \(library.userPoses.count + 1)"
-        let template = await Task.detached(priority: .userInitiated) {
-            PoseImporter.makeTemplate(from: data, name: name)
+        let made = await Task.detached(priority: .userInitiated) {
+            PoseImportDraft.make(from: data)
         }.value
-        guard let template else {
-            importError = "人物の全身または上半身がはっきり写っている写真を選んでください。"
+        guard let made else {
+            importError = "人物がはっきり写っている写真を選んでください。"
             return
         }
-        library.add(template)
-        selection = template
+        // 構図を合わせる画面を開く（登録はその画面で行う）
+        draft = made
     }
 }
 

@@ -83,6 +83,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var autoShutter = false
     @Published var timerSeconds = 0
     @Published var burstCount = 1
+    /// 連続撮影の間隔（秒）
+    @Published var burstInterval: Double = 1
     @Published var muteShutter = false {
         didSet { if mode == .photo { applyPreset(photoModePreset) } }
     }
@@ -143,7 +145,8 @@ final class CameraManager: NSObject, ObservableObject {
     // メインスレッド専用
     private var screenAspect: CGFloat = 9.0 / 19.5
     private var recordTimer: Timer?
-    private var sequenceTimer: Timer?
+    private var shotTimer: DispatchSourceTimer?
+    private var countdownTimer: DispatchSourceTimer?
     private var matchStartedAt: Date?
     private var lastAutoShotAt = Date.distantPast
     private var pendingPhotos = 0
@@ -298,6 +301,18 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
         updatePhotoDimensions()
+
+        // シャッターを押した瞬間のコマを使う（ゼロシャッターラグ）。押してから写るまでの遅れをなくし、
+        // セルフタイマーが 0 になった瞬間・連続撮影の各タイミングの姿がそのまま写るようにする
+        if photoOutput.isZeroShutterLagSupported {
+            photoOutput.isZeroShutterLagEnabled = true
+        }
+        if photoOutput.isResponsiveCaptureSupported {
+            photoOutput.isResponsiveCaptureEnabled = true
+            if photoOutput.isFastCapturePrioritizationSupported {
+                photoOutput.isFastCapturePrioritizationEnabled = true
+            }
+        }
 
         var canMute = false
         if #available(iOS 18.0, *) {
@@ -474,67 +489,101 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// タイマー → 1 秒間隔で burstCount 枚撮る。
+    /// 撮影 1 回ぶんの設定。シャッターを押した時点の値で固定する。
+    private struct ShotOptions {
+        let flash: Bool
+        let mute: Bool
+        /// iOS が消音を許可していない機種で、映像のコマを写真として保存する
+        let silent: Bool
+        /// 連続撮影では画質より撮影の速さを優先して、間隔を一定に保つ
+        let fast: Bool
+    }
+
+    /// タイマー → burstInterval 秒ごとに burstCount 枚撮る。
+    /// 撮影の時刻は開始時に「タイマー秒後、そこから間隔ごと」と決めておき、画面の処理とは別のキュー
+    /// （sessionQueue）の正確なタイマーで撮る。前の撮影の終わりを待たないので、間隔がずれない。
     private func startPhotoSequence() {
         guard !isSequenceRunning else { return }
         isSequenceRunning = true
         let total = burstCount
-        countdownThen(timerSeconds) { self.takeShots(remaining: total, total: total) }
+        let delay = timerSeconds
+        let options = ShotOptions(flash: flashOn, mute: muteShutter,
+                                  silent: muteShutter && !canMuteShutter, fast: total > 1)
+        showCountdown(delay)
+
+        var shot = 0
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: sessionQueue)
+        timer.schedule(deadline: .now() + .seconds(delay), repeating: burstInterval, leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self else { return }
+            shot += 1
+            self.performCapture(options)
+            if shot >= total { timer?.cancel() }
+            let current = shot
+            DispatchQueue.main.async {
+                self.pendingPhotos += 1
+                self.isCapturing = true
+                if total > 1 { self.burstProgress = "\(current)/\(total)" }
+                if current >= total { self.finishSequence() }
+            }
+        }
+        shotTimer = timer
+        timer.resume()
     }
 
+    /// 動画・スナップ用。タイマーが終わったら action を呼ぶ。
     private func countdownThen(_ seconds: Int, action: @escaping () -> Void) {
         guard seconds > 0 else {
             action()
             return
         }
         isSequenceRunning = true
+        showCountdown(seconds)
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(deadline: .now() + .seconds(seconds), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.isSequenceRunning = false
+            action()
+        }
+        shotTimer = timer
+        timer.resume()
+    }
+
+    /// 画面のカウントダウン表示と音。撮影そのものは別のタイマーで行う。
+    private func showCountdown(_ seconds: Int) {
+        guard seconds > 0 else { return }
         countdown = seconds
         AudioServicesPlaySystemSound(1103)
-        sequenceTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
-            }
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self else { return }
             let next = (self.countdown ?? 1) - 1
             if next <= 0 {
-                timer.invalidate()
                 self.countdown = nil
-                if self.mode != .photo { self.isSequenceRunning = false }
-                action()
+                timer?.cancel()
             } else {
                 self.countdown = next
                 AudioServicesPlaySystemSound(1103)
             }
         }
-    }
-
-    private func takeShots(remaining: Int, total: Int) {
-        guard isSequenceRunning, remaining > 0 else {
-            finishSequence()
-            return
-        }
-        if total > 1 { burstProgress = "\(total - remaining + 1)/\(total)" }
-        capturePhoto()
-        guard remaining > 1 else {
-            finishSequence()
-            return
-        }
-        sequenceTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
-            self?.takeShots(remaining: remaining - 1, total: total)
-        }
+        countdownTimer = timer
+        timer.resume()
     }
 
     private func cancelSequence() {
-        sequenceTimer?.invalidate()
-        sequenceTimer = nil
+        shotTimer?.cancel()
+        shotTimer = nil
+        countdownTimer?.cancel()
+        countdownTimer = nil
         countdown = nil
         burstProgress = nil
         isSequenceRunning = false
     }
 
     private func finishSequence() {
-        sequenceTimer?.invalidate()
-        sequenceTimer = nil
+        shotTimer = nil
         isSequenceRunning = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             if !self.isSequenceRunning { self.burstProgress = nil }
@@ -543,37 +592,31 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - 写真
 
-    private func capturePhoto() {
-        pendingPhotos += 1
-        isCapturing = true
-        let flash = flashOn
-        let mute = muteShutter
-
-        // iOS が消音を許可していない機種（日本向けなど）では、映像のコマを写真として保存する
-        if mute && !canMuteShutter {
+    /// sessionQueue から呼ぶ。
+    private func performCapture(_ options: ShotOptions) {
+        if options.silent {
             captureSilently()
             return
         }
-
-        sessionQueue.async {
-            guard self.photoOutput.connection(with: .video)?.isActive == true else {
-                DispatchQueue.main.async { self.photoFinished() }
-                return
-            }
-            let photoSettings = self.photoOutput.availablePhotoCodecTypes.contains(.hevc)
-                ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-                : AVCapturePhotoSettings()
-            if flash, self.photoOutput.supportedFlashModes.contains(.on) {
-                photoSettings.flashMode = .on
-            }
-            if mute, #available(iOS 18.0, *), self.photoOutput.isShutterSoundSuppressionSupported {
-                photoSettings.isShutterSoundSuppressionEnabled = true
-            }
-            photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
-            self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+        guard photoOutput.connection(with: .video)?.isActive == true else {
+            DispatchQueue.main.async { self.photoFinished() }
+            return
         }
+        let photoSettings = photoOutput.availablePhotoCodecTypes.contains(.hevc)
+            ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+            : AVCapturePhotoSettings()
+        if options.flash, photoOutput.supportedFlashModes.contains(.on) {
+            photoSettings.flashMode = .on
+        }
+        if options.mute, #available(iOS 18.0, *), photoOutput.isShutterSoundSuppressionSupported {
+            photoSettings.isShutterSoundSuppressionEnabled = true
+        }
+        if options.fast {
+            photoSettings.photoQualityPrioritization = .speed
+        }
+        photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        photoOutput.capturePhoto(with: photoSettings, delegate: self)
     }
-
     private func photoFinished() {
         pendingPhotos = max(0, pendingPhotos - 1)
         isCapturing = pendingPhotos > 0

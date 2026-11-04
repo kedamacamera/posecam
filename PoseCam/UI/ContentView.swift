@@ -183,6 +183,10 @@ struct ContentView: View {
                 if !camera.canMuteShutter {
                     Text("映像のコマを写真として保存します（約 600〜830 万画素）")
                 }
+                Picker("連続撮影の間隔", selection: $camera.burstInterval) {
+                    Text("1秒ごと").tag(1.0)
+                    Text("2秒ごと").tag(2.0)
+                }
                 Toggle("骨格を表示", isOn: $showSkeleton)
                 Button("ライセンス") { showLicenses = true }
             } label: {
@@ -239,7 +243,8 @@ struct ContentView: View {
                 Group {
                     switch panel {
                     case .pose:
-                        PoseStrip(library: library, selection: $selectedPose) { showLibrary = true }
+                        PoseStrip(library: library, selection: $selectedPose,
+                                  frameAspect: camera.frameAspect) { showLibrary = true }
                     case .filter:
                         FilterStrip(selection: $camera.settings.filter)
                     case .beauty:
