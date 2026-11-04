@@ -1,0 +1,5 @@
+*.xcodeproj
+PoseCam/Info.plist
+xcuserdata/
+DerivedData/
+.DS_Store
