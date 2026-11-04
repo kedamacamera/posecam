@@ -37,6 +37,14 @@ final class PoseDetector {
         return perform(handler, imageSize: size, maskQuality: wantsMasks ? .balanced : nil)
     }
 
+    /// プレビューの毎コマ用。美肌のマスクだけを、そのコマ自身から求める（骨格は求めない）。
+    /// 別のコマのマスクを当てると、カメラを動かしたときに加工の位置が顔から遅れてずれるため。
+    func beautyMasks(pixelBuffer: CVPixelBuffer) -> BeautyMasks? {
+        let size = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        return perform(handler, imageSize: size, maskQuality: .balanced, includePose: false).masks
+    }
+
     /// 写真用。マスクは精度優先で求める。
     func analyze(ciImage: CIImage, wantsMasks: Bool) -> Result {
         let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
@@ -65,9 +73,10 @@ final class PoseDetector {
     static var hasSkinModel: Bool { skinModel != nil }
 
     private func perform(_ handler: VNImageRequestHandler, imageSize: CGSize,
-                         maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?) -> Result {
+                         maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?,
+                         includePose: Bool = true) -> Result {
         let poseRequest = VNDetectHumanBodyPoseRequest()
-        var requests: [VNRequest] = [poseRequest]
+        var requests: [VNRequest] = includePose ? [poseRequest] : []
         var skinRequest: VNCoreMLRequest?
         var segmentation: VNGeneratePersonSegmentationRequest?
         var landmarks: VNDetectFaceLandmarksRequest?
@@ -96,7 +105,7 @@ final class PoseDetector {
         }
 
         var result = Result()
-        if let observations = poseRequest.results {
+        if includePose, let observations = poseRequest.results {
             // 複数人写っているときは、検出できた関節がいちばん多い人を使う
             let best = observations.map(points(from:)).max { $0.count < $1.count }
             if let best, best.count >= 4 { result.pose = best }
@@ -162,6 +171,15 @@ final class PoseDetector {
                 context.setLineWidth(faceWidth * 0.05)
                 context.drawPath(using: .fillStroke)
             }
+            // 鼻すじと小鼻は線だけを外す（鼻全体を外すと毛穴が残るので、立体感の出る輪郭だけ守る）
+            for region in [marks.noseCrest, marks.nose].compactMap({ $0 }) {
+                let points = region.pointsInImage(imageSize: size)
+                guard points.count > 1 else { continue }
+                context.beginPath()
+                context.addLines(between: points)
+                context.setLineWidth(faceWidth * 0.03)
+                context.strokePath()
+            }
         }
         guard let cgImage = context.makeImage() else { return nil }
         let mask = scaled(CIImage(cgImage: cgImage), to: imageSize)
@@ -173,17 +191,18 @@ final class PoseDetector {
 
     // MARK: - 写真の人物の輪郭
 
-    /// 写真に写っている人物の輪郭を、画像座標（左上原点・0...1）の閉じた多角形で返す。
-    static func personOutline(ciImage: CIImage) -> [CGPoint]? {
+    /// 写真に写っている人物の輪郭を、画像座標（左上原点・0...1）の閉じた多角形で、大きい順に返す。
+    /// 2 人写っていれば 2 つ返す（いちばん大きい人の 2 割に満たない小さな影などは除く）。
+    static func personOutlines(ciImage: CIImage) -> [[CGPoint]] {
         let segmentation = VNGeneratePersonSegmentationRequest()
         segmentation.qualityLevel = .accurate
         segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
         do {
             try VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([segmentation])
         } catch {
-            return nil
+            return []
         }
-        guard let mask = segmentation.results?.first?.pixelBuffer else { return nil }
+        guard let mask = segmentation.results?.first?.pixelBuffer else { return [] }
 
         let contours = VNDetectContoursRequest()
         contours.detectsDarkOnLight = false
@@ -192,20 +211,23 @@ final class PoseDetector {
         do {
             try VNImageRequestHandler(cvPixelBuffer: mask, orientation: .up, options: [:]).perform([contours])
         } catch {
-            return nil
+            return []
         }
-        guard let observation = contours.results?.first else { return nil }
+        guard let observation = contours.results?.first else { return [] }
 
-        // いちばん大きい輪郭（＝人物の外形）を選び、点を間引く
+        // 大きい輪郭（＝人物の外形）から順に、点を間引いて返す
         func area(_ contour: VNContour) -> Float {
             let points = contour.normalizedPoints
             guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
                   let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return 0 }
             return (maxX - minX) * (maxY - minY)
         }
-        guard let largest = observation.topLevelContours.max(by: { area($0) < area($1) }) else { return nil }
-        let simplified = (try? largest.polygonApproximation(epsilon: 0.002)) ?? largest
-        let points = simplified.normalizedPoints.map { CGPoint(x: CGFloat($0.x), y: 1 - CGFloat($0.y)) }
-        return points.count >= 8 ? points : nil
+        let sorted = observation.topLevelContours.sorted { area($0) > area($1) }
+        guard let largestArea = sorted.first.map(area) else { return [] }
+        return sorted.filter { area($0) >= largestArea * 0.2 }.compactMap { contour -> [CGPoint]? in
+            let simplified = (try? contour.polygonApproximation(epsilon: 0.002)) ?? contour
+            let points = simplified.normalizedPoints.map { CGPoint(x: CGFloat($0.x), y: 1 - CGFloat($0.y)) }
+            return points.count >= 8 ? points : nil
+        }
     }
 }

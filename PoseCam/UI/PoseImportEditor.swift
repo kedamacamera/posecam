@@ -80,16 +80,16 @@ struct PoseImportEditor: View {
                 .resizable()
                 .frame(width: photoSize.width * scale, height: photoSize.height * scale)
                 .offset(x: -crop.minX * scale, y: -crop.minY * scale)
-            if let outline = draft.analysis.outline {
-                Canvas { context, _ in
+            Canvas { context, _ in
+                for outline in draft.analysis.outlines {
                     let points = outline.map {
                         CGPoint(x: ($0.x * photoSize.width - crop.minX) * scale,
                                 y: ($0.y * photoSize.height - crop.minY) * scale)
                     }
                     PoseDrawing.drawContour(points, in: context, color: .white, lineWidth: 2.5, fillOpacity: 0.12)
                 }
-                .allowsHitTesting(false)
             }
+            .allowsHitTesting(false)
         }
         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
         .clipped()

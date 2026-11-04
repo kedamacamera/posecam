@@ -124,7 +124,7 @@ final class FrameProcessor {
             .applyingFilter("CIColorClamp")
         return strongEdges
             .clampedToExtent()
-            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: max(1, longSide * 0.002)])
+            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: max(1, longSide * 0.003)])
             .applyingGaussianBlur(sigma: longSide * 0.0015)
             .applyingFilter("CIColorInvert")
             .cropped(to: extent)
@@ -134,20 +134,17 @@ final class FrameProcessor {
     /// 肌を塗り分けるモデルがあればその結果を、なければ「人物の領域 × 肌の色」を使う。
     private func skinMask(_ image: CIImage, masks: BeautyMasks, blurRadius: CGFloat) -> CIImage {
         let black = CIImage(color: .black).cropped(to: image.extent)
-        var mask: CIImage
-        if let skin = masks.skin {
-            mask = skin
-        } else {
-            let skinColor = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
-                "inputCubeDimension": Self.cubeSize,
-                "inputCubeData": skinCube,
-                "inputColorSpace": sRGB,
-            ])
-            mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: black,
-                kCIInputMaskImageKey: masks.person ?? black,
-            ])
-        }
+        let skinColor = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
+            "inputCubeDimension": Self.cubeSize,
+            "inputCubeData": skinCube,
+            "inputColorSpace": sRGB,
+        ])
+        // 肌のモデル（なければ人物の領域）と肌の色の両方に当てはまる所だけにする。
+        // モデルはメガネのフチなども「顔」に含めるが、黒いフチ・眉・髪は肌の色ではないので外れる
+        var mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: black,
+            kCIInputMaskImageKey: masks.skin ?? masks.person ?? black,
+        ])
         mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
         if let features = masks.features {
             mask = mask.applyingFilter("CIBlendWithMask", parameters: [
@@ -187,7 +184,7 @@ final class FrameProcessor {
                     let cb: Float = 128 - 0.168736 * red - 0.331264 * green + 0.5 * blue
                     let cr: Float = 128 + 0.5 * red - 0.418688 * green - 0.081312 * blue
                     // 灰色（Cb・Cr ≒ 128）が肌と判定されないよう、範囲の外はすぐ 0 にする
-                    let v = soft(cb, 80, 125, 4) * soft(cr, 136, 170, 4) * soft(luma, 60, 250, 15)
+                    let v = soft(cb, 80, 125, 4) * soft(cr, 136, 170, 4) * soft(luma, 40, 250, 15)
                     values[index] = v
                     values[index + 1] = v
                     values[index + 2] = v

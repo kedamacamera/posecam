@@ -3,6 +3,9 @@ import Foundation
 
 /// 画面に重ねる「ポーズの型」。座標は PoseSpace の等方座標。
 struct PoseTemplate: Identifiable, Codable, Hashable {
+    /// 写真から登録したポーズのカテゴリ
+    static let userCategory = "マイポーズ"
+
     let id: String
     var name: String
     var category: String
@@ -12,6 +15,8 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var recommendedZoom: Double?
     /// 写真の人物から取った輪郭（等方座標の閉じた多角形）。あれば骨格の代わりにこれを描く
     var outline: [CGPoint]?
+    /// 2 人以上のポーズで、ほかの人の輪郭（等方座標）
+    var extraOutlines: [[CGPoint]]?
     /// 組み込みポーズの見本写真（アプリに同梱した JPEG の名前）。サムネイルに使う
     var imageName: String?
 
@@ -39,9 +44,17 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         let flipped = Dictionary(uniqueKeysWithValues: joints.map {
             ($0.key.mirrored, CGPoint(x: -$0.value.x, y: $0.value.y))
         })
-        return PoseTemplate(id: id + "#mirror", name: name, category: category,
+        let mirroredTemplate = PoseTemplate(id: id + "#mirror", name: name, category: category,
                             joints: flipped, isUserCreated: isUserCreated, recommendedZoom: recommendedZoom,
                             outline: outline?.map { CGPoint(x: -$0.x, y: $0.y) }, imageName: imageName)
+        var result = mirroredTemplate
+        result.extraOutlines = extraOutlines?.map { $0.map { CGPoint(x: -$0.x, y: $0.y) } }
+        return result
+    }
+
+    /// 描く輪郭すべて
+    var allOutlines: [[CGPoint]] {
+        (outline.map { [$0] } ?? []) + (extraOutlines ?? [])
     }
 
     static func == (lhs: PoseTemplate, rhs: PoseTemplate) -> Bool { lhs.id == rhs.id }

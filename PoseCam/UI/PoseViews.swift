@@ -103,9 +103,12 @@ enum PoseDrawing {
     static func drawTemplate(_ template: PoseTemplate, in context: GraphicsContext,
                              transform: (CGPoint) -> CGPoint,
                              color: Color, lineWidth: CGFloat, fillOpacity: Double) {
-        if let outline = template.outline {
-            drawContour(outline.map(transform), in: context, color: color,
-                        lineWidth: lineWidth, fillOpacity: fillOpacity)
+        let outlines = template.allOutlines
+        if !outlines.isEmpty {
+            for outline in outlines {
+                drawContour(outline.map(transform), in: context, color: color,
+                            lineWidth: lineWidth, fillOpacity: fillOpacity)
+            }
         } else {
             drawOutline(template.joints.mapValues(transform), in: context, color: color,
                         lineWidth: lineWidth, fillOpacity: fillOpacity)
@@ -233,9 +236,10 @@ struct PoseThumbnail: View {
                         .scaledToFill()
                 } else {
                     Canvas { context, size in
-                        let points = template.outline ?? Array(template.joints.values)
+                        let outlines = template.allOutlines
+                        let points = outlines.isEmpty ? Array(template.joints.values) : outlines.flatMap { $0 }
                         let transform = PoseDrawing.fitTransform(points, into: size,
-                                                                 inset: template.outline == nil ? 10 : 4)
+                                                                 inset: outlines.isEmpty ? 10 : 4)
                         PoseDrawing.drawTemplate(template, in: context, transform: transform,
                                                  color: .white, lineWidth: 1.2, fillOpacity: 0.15)
                     }

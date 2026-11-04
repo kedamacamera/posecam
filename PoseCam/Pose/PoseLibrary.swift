@@ -5,7 +5,7 @@ import UIKit
 
 /// 組み込みポーズと、ユーザーが写真から登録したポーズを管理する。
 final class PoseLibrary: ObservableObject {
-    static let userCategory = "マイポーズ"
+    static let userCategory = PoseTemplate.userCategory
 
     @Published private(set) var userPoses: [PoseTemplate] = []
     /// 起動直後は角度から作った形。見本写真の解析が終わると、写真の骨格と輪郭に置き換わる
@@ -85,6 +85,7 @@ final class PoseLibrary: ObservableObject {
                 if let shape = cache[key] {
                     updated[index].points = shape.points
                     updated[index].outline = shape.outline
+                    updated[index].extraOutlines = shape.extraOutlines
                 }
             }
 
@@ -96,84 +97,7 @@ final class PoseLibrary: ObservableObject {
     }
 }
 
-/// 写真から取り出した型の形（等方座標）。
-struct PoseShape: Codable {
-    var points: [String: CGPoint]
-    var outline: [CGPoint]?
-}
 
-/// 写真を解析した結果。座標は写真の画像座標（左上原点・0...1）。
-struct PhotoAnalysis {
-    /// 写真の大きさ（ピクセル）
-    let size: CGSize
-    let joints: [Joint: CGPoint]
-    let outline: [CGPoint]?
-
-    /// 人物全体の範囲（ピクセル）。輪郭があれば輪郭、なければ関節から求める
-    var personBounds: CGRect {
-        let points = (outline ?? Array(joints.values)).map {
-            CGPoint(x: $0.x * size.width, y: $0.y * size.height)
-        }
-        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
-              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else {
-            return CGRect(origin: .zero, size: size)
-        }
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-    }
-}
-
-/// 写真に写っている人の骨格と輪郭から型を作る。
-///
-/// 写真の中の「カメラの画面と同じ比率の枠」（crop、ピクセル）を決め、その枠の中の位置をそのまま型にする。
-/// こうすると、枠の中で人が占める大きさ・位置が、撮影画面でもそのまま再現される。
-enum PoseImporter {
-    static func analyze(_ source: CIImage) -> PhotoAnalysis? {
-        let image = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
-                                                             y: -source.extent.minY))
-        let joints = PoseDetector().detect(ciImage: image) ?? [:]
-        let outline = PoseDetector.personOutline(ciImage: image)
-        // 輪郭が取れれば、足などの関節が検出できなくても型にできる
-        guard outline != nil || joints.count >= 6 else { return nil }
-        return PhotoAnalysis(size: image.extent.size, joints: joints, outline: outline)
-    }
-
-    /// 人物全体が枠に収まる、最初の枠。
-    /// 写真の下端まで人が写っている（上半身の写真など）ときは、写真の下端を枠の下端にして元の構図を保つ。
-    static func defaultCrop(for analysis: PhotoAnalysis, aspect: CGFloat) -> CGRect {
-        let bounds = analysis.personBounds
-        let touchesBottom = bounds.maxY > analysis.size.height * 0.985
-        let top = bounds.minY - bounds.height * 0.08
-        let bottom = touchesBottom ? analysis.size.height : bounds.maxY + bounds.height * 0.06
-        var height = bottom - top
-        var width = height * aspect
-        if width < bounds.width * 1.12 {
-            width = bounds.width * 1.12
-            height = width / aspect
-        }
-        let originY = touchesBottom ? analysis.size.height - height : top - (height - (bottom - top)) / 2
-        return CGRect(x: bounds.midX - width / 2, y: originY, width: width, height: height)
-    }
-
-    /// 枠の中の位置を等方座標にした型の形。
-    static func shape(for analysis: PhotoAnalysis, crop: CGRect) -> PoseShape {
-        let aspect = crop.width / crop.height
-        func convert(_ point: CGPoint) -> CGPoint {
-            let x = (point.x * analysis.size.width - crop.minX) / crop.width
-            let y = (point.y * analysis.size.height - crop.minY) / crop.height
-            return CGPoint(x: (x - 0.5) * aspect, y: y)
-        }
-        return PoseShape(
-            points: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, convert($0.value)) }),
-            outline: analysis.outline?.map(convert))
-    }
-
-    static func makeTemplate(name: String, shape: PoseShape) -> PoseTemplate {
-        var template = PoseTemplate(name: name, category: PoseLibrary.userCategory, joints: [:],
-                                    isUserCreated: true, recommendedZoom: 1, outline: shape.outline)
-        template.points = shape.points
-        return template
-    }
-}
 /// 見本写真のサムネイル。毎回 JPEG を読み直さないよう、縮小したものを覚えておく。
 enum PoseImageCache {
     private static let cache = NSCache<NSString, UIImage>()

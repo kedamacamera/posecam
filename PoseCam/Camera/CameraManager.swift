@@ -127,7 +127,6 @@ final class CameraManager: NSObject, ObservableObject {
     private let settingsBox = Locked(ProcessingSettings())
     private let templateBox = Locked<PoseTemplate?>(nil)
     private let poseBox = Locked<[Joint: CGPoint]?>(nil)
-    private let maskBox = Locked<BeautyMasks?>(nil)
     private let aspectBox = Locked<CGFloat>(3.0 / 4.0)
     private let modeBox = Locked(CaptureMode.photo)
     private let isDetecting = Locked(false)
@@ -794,17 +793,17 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 検出・自動シャッター
 
     /// videoQueue から呼ぶ。前回の検出が終わっていて、前回から一定時間たっていれば検出する。
-    private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, geometry: FrameGeometry, wantsMasks: Bool) {
+    private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, geometry: FrameGeometry) {
         let now = CACurrentMediaTime()
         guard now - lastDetectionTime > 0.07, !isDetecting.value else { return }
         lastDetectionTime = now
         isDetecting.value = true
 
         detectionQueue.async {
-            let result = self.detector.analyze(pixelBuffer: pixelBuffer, wantsMasks: wantsMasks)
+            // 骨格（ポーズの一致度・脚長用）だけ。美肌のマスクは毎コマ映像の処理の中で求める
+            let result = self.detector.analyze(pixelBuffer: pixelBuffer, wantsMasks: false)
             let pose = result.pose?.mapValues { geometry.convert($0) }
             self.poseBox.value = pose
-            self.maskBox.value = result.masks
             var score: Double?
             if let pose, let template = self.templateBox.value {
                 let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: geometry.aspect) }
@@ -885,17 +884,16 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value, maxLongSide: 1920)
         let settings = settingsBox.value
         let wantsMasks = settings.smoothing > 0.01 || settings.brightening > 0.01
-        analyzeIfIdle(pixelBuffer, geometry: geometry, wantsMasks: wantsMasks)
+        analyzeIfIdle(pixelBuffer, geometry: geometry)
 
         let image = geometry.apply(source)
         publishFrameSizeIfNeeded(image.extent.size)
 
+        // 美肌のマスクは、このコマ自身から求める。前のコマのマスクを使うと、カメラや顔が動いたときに
+        // 加工の位置が遅れてずれる。間に合わないコマは捨てられる（alwaysDiscardsLateVideoFrames）
         var masks: BeautyMasks?
-        // 前後カメラの切り替え直後などで大きさの違う古いマスクは使わない
-        if wantsMasks, let stored = maskBox.value, let extent = stored.extent,
-           abs(extent.width - source.extent.width) < 1,
-           abs(extent.height - source.extent.height) < 1 {
-            masks = stored.map { geometry.apply($0) }
+        if wantsMasks {
+            masks = detector.beautyMasks(pixelBuffer: pixelBuffer)?.map { geometry.apply($0) }
         }
         let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
         let processed = processor.process(image, settings: settings, hipY: hipY, masks: masks)
