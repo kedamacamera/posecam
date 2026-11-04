@@ -90,7 +90,17 @@ struct PoseSpec {
 
     func makeTemplate(id: String) -> PoseTemplate {
         PoseTemplate(id: id, name: name, category: category,
-                     joints: PoseSpace.fit(joints(), upperBody: upperBody), isUserCreated: false)
+                     joints: PoseSpace.fit(joints(), upperBody: upperBody), isUserCreated: false,
+                     recommendedZoom: recommendedZoom)
+    }
+
+    /// 立ちポーズ・上半身は少し離れて 2 倍で撮ると、歪みが少なく脚も長く見える。
+    /// 動きの大きいポーズや座りは、収まりやすい 1 倍。
+    private var recommendedZoom: Double {
+        switch category {
+        case "アクション", "座り": return 1
+        default: return 2
+        }
     }
 
     private func joints() -> [Joint: CGPoint] {

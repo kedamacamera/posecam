@@ -1,73 +1,94 @@
 import SwiftUI
 
-enum ControlPanel: String, CaseIterable, Identifiable {
-    case pose = "ポーズ"
-    case filter = "フィルター"
-    case beauty = "美肌・スタイル"
-
-    var id: String { rawValue }
-}
-
 struct ContentView: View {
     @StateObject private var camera = CameraManager()
     @StateObject private var library = PoseLibrary()
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var panel: ControlPanel = .pose
+    @State private var panel: ControlPanel?
     @State private var selectedPose: PoseTemplate?
     @State private var mirrorPose = false
-    @State private var showSkeleton = true
+    @State private var poseOpacity = 0.85
+    @State private var showSkeleton = false
     @State private var showLibrary = false
-    @State private var zoom: CGFloat = 1
-    @State private var zoomAtGestureStart: CGFloat = 1
+    @State private var zoomAtGestureStart: CGFloat?
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
+
+    private let topBarHeight: CGFloat = 50
 
     private var isMatched: Bool {
         (camera.matchScore ?? 0) >= CameraManager.matchThreshold
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { geo in
+            let insets = geo.safeAreaInsets
+            let screen = CGSize(width: geo.size.width + insets.leading + insets.trailing,
+                                height: geo.size.height + insets.top + insets.bottom)
 
-            if camera.cameraAuthorized {
-                VStack(spacing: 0) {
-                    topBar
-                    preview
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    bottomControls
-                }
-            } else {
-                PermissionView()
-            }
+            ZStack(alignment: .top) {
+                Color.black
 
-            if let message = camera.statusMessage {
-                VStack {
-                    Spacer()
-                    Text(message)
-                        .font(.subheadline)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(Color.black.opacity(0.75)))
-                        .foregroundStyle(.white)
-                        .padding(.bottom, 260)
-                }
-                .transition(.opacity)
-            }
+                if camera.cameraAuthorized {
+                    preview(screen: screen, topInset: insets.top)
 
-            if let report = crashReport {
-                CrashReportView(report: report) { disableEffects in
-                    if disableEffects {
-                        camera.settings.smoothing = 0
-                        camera.settings.brightening = 0
+                    VStack(spacing: 0) {
+                        topBar
+                            .frame(height: topBarHeight)
+                            .padding(.top, insets.top)
+                        statusRow
+                            .padding(.horizontal, 12)
+                            .padding(.top, 6)
+                        Spacer(minLength: 0)
+                        bottomControls
+                            .padding(.bottom, max(insets.bottom, 12))
                     }
-                    crashReport = nil
-                    camera.start()
+
+                    if camera.template != nil {
+                        poseSideBar
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                            .padding(.trailing, 10)
+                            .offset(y: -40)
+                    }
+
+                    if let countdown = camera.countdown {
+                        Text("\(countdown)")
+                            .font(.system(size: 120, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.6), radius: 8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .allowsHitTesting(false)
+                    }
+                } else {
+                    PermissionView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+
+                if let message = camera.statusMessage {
+                    Badge(text: message, color: .black.opacity(0.8))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
+                }
+
+                if let report = crashReport {
+                    CrashReportView(report: report) { disableEffects in
+                        if disableEffects {
+                            camera.settings.smoothing = 0
+                            camera.settings.brightening = 0
+                        }
+                        crashReport = nil
+                        camera.start()
+                    }
                 }
             }
+            .frame(width: screen.width, height: screen.height)
+            .ignoresSafeArea()
+            .onAppear { camera.setScreenAspect(screen.width / screen.height) }
+            .onChange(of: screen) { camera.setScreenAspect(screen.width / screen.height) }
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
         .onAppear {
             // 前回カメラ起動中に落ちていたら、記録を見せるまでカメラは起動しない
             if crashReport == nil { camera.start() }
@@ -80,146 +101,188 @@ struct ContentView: View {
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
         }
-    }
-
-    // MARK: - 上部
-
-    private var topBar: some View {
-        HStack(spacing: 26) {
-            iconButton(camera.flashOn ? "bolt.fill" : "bolt.slash.fill", active: camera.flashOn) {
-                camera.flashOn.toggle()
-            }
-            iconButton("arrow.left.and.right", active: mirrorPose) {
-                mirrorPose.toggle()
-            }
-            .disabled(selectedPose == nil)
-            iconButton("point.3.connected.trianglepath.dotted", active: showSkeleton) {
-                showSkeleton.toggle()
-            }
-            Button {
-                camera.autoShutter.toggle()
-            } label: {
-                Text("AUTO")
-                    .font(.caption.weight(.bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .overlay(Capsule().stroke(camera.autoShutter ? Color.yellow : .white, lineWidth: 1.5))
-                    .foregroundStyle(camera.autoShutter ? Color.yellow : .white)
-            }
-            .disabled(selectedPose == nil || camera.mode != .photo)
-        }
-        .frame(height: 44)
-    }
-
-    private func iconButton(_ systemName: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.title3)
-                .foregroundStyle(active ? Color.yellow : .white)
-                .frame(width: 36, height: 36)
+        .sheet(item: $camera.snapClip) { clip in
+            SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
         }
     }
 
     // MARK: - プレビュー
 
-    private var preview: some View {
-        ZStack {
-            CameraPreview(renderer: camera.renderer)
-            PoseOverlayView(template: camera.template,
-                            detected: showSkeleton ? camera.detectedPose : nil,
-                            matched: isMatched)
-            VStack {
-                HStack {
-                    if camera.template != nil, let score = camera.matchScore {
-                        ScoreBadge(score: score, matched: isMatched)
-                    }
-                    Spacer()
-                    if camera.isRecording {
-                        RecordingBadge(seconds: camera.recordingSeconds)
-                    }
-                }
-                Spacer()
-                if zoom > 1.01 {
-                    Text(String(format: "%.1fx", zoom))
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.black.opacity(0.55)))
-                        .foregroundStyle(.white)
-                }
-            }
-            .padding(10)
+    /// 3:4・9:16 は上のバーのすぐ下から、フルは画面全体に表示する。
+    private func preview(screen: CGSize, topInset: CGFloat) -> some View {
+        let aspect: CGFloat
+        switch camera.aspect {
+        case .threeFour: aspect = 3.0 / 4.0
+        case .nineSixteen: aspect = 9.0 / 16.0
+        case .full: aspect = screen.width / screen.height
         }
-        .aspectRatio(camera.frameAspect, contentMode: .fit)
+        let height = min(screen.width / aspect, screen.height)
+        let top = camera.aspect == .full ? 0 : topInset + topBarHeight
+
+        return ZStack {
+            CameraPreview(renderer: camera.renderer)
+            if let template = camera.template {
+                PoseTemplateOverlay(template: template, matched: isMatched, opacity: poseOpacity)
+            }
+            if showSkeleton, let detected = camera.detectedPose {
+                SkeletonOverlay(detected: detected)
+            }
+        }
+        .frame(width: screen.width, height: height)
         .clipped()
         .contentShape(Rectangle())
         .gesture(
             MagnifyGesture()
                 .onChanged { value in
-                    zoom = min(max(zoomAtGestureStart * value.magnification, 1), 8)
-                    camera.setZoom(zoom)
+                    let start = zoomAtGestureStart ?? camera.displayZoom
+                    zoomAtGestureStart = start
+                    camera.setDisplayZoom(start * value.magnification)
                 }
-                .onEnded { _ in
-                    zoomAtGestureStart = zoom
-                }
+                .onEnded { _ in zoomAtGestureStart = nil }
         )
+        .offset(y: top)
+    }
+
+    // MARK: - 上部
+
+    private var topBar: some View {
+        HStack {
+            LabeledIconButton(systemImage: camera.flashOn ? "bolt.fill" : "bolt.slash",
+                              label: camera.mode == .photo ? "フラッシュ" : "ライト",
+                              active: camera.flashOn) {
+                camera.flashOn.toggle()
+            }
+            Spacer()
+            AspectButton(aspect: camera.aspect) { camera.aspect = camera.aspect.next }
+                .disabled(camera.isRecording)
+            Spacer()
+            LabeledIconButton(systemImage: "timer",
+                              label: camera.timerSeconds == 0 ? "タイマー" : "\(camera.timerSeconds)秒",
+                              active: camera.timerSeconds > 0) {
+                camera.timerSeconds = next(after: camera.timerSeconds, in: [0, 3, 6, 10])
+            }
+            Spacer()
+            LabeledIconButton(systemImage: "square.stack.3d.down.right",
+                              label: camera.burstCount == 1 ? "連続撮影" : "1秒×\(camera.burstCount)枚",
+                              active: camera.burstCount > 1) {
+                camera.burstCount = next(after: camera.burstCount, in: [1, 3, 10])
+            }
+            .disabled(camera.mode != .photo)
+            .opacity(camera.mode == .photo ? 1 : 0.4)
+            Spacer()
+            Menu {
+                Toggle("シャッター音を消す", isOn: $camera.muteShutter)
+                    .disabled(!camera.canMuteShutter)
+                if !camera.canMuteShutter {
+                    Text("この iPhone ではシャッター音を消せません（日本向けの機種は iOS が許可していません）")
+                }
+                Toggle("骨格を表示", isOn: $showSkeleton)
+            } label: {
+                LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    /// 一致度・録画時間・連続撮影の進み具合。
+    private var statusRow: some View {
+        HStack {
+            if camera.template != nil, let score = camera.matchScore {
+                Badge(text: "一致度 \(Int(score))%", color: isMatched ? .green : .black.opacity(0.55))
+            }
+            Spacer()
+            if let progress = camera.burstProgress {
+                Badge(text: progress)
+            }
+            if camera.isRecording {
+                let seconds = camera.recordingSeconds
+                Badge(text: camera.mode == .snap
+                      ? "スナップ \(seconds)/\(CameraManager.snapMaxSeconds)秒"
+                      : String(format: "%02d:%02d", seconds / 60, seconds % 60),
+                      dot: .red)
+            }
+        }
+        .frame(height: 32)
+    }
+
+    private var poseSideBar: some View {
+        PoseSideBar(opacity: $poseOpacity,
+                    mirrored: $mirrorPose,
+                    autoShutter: $camera.autoShutter,
+                    recommendedZoom: camera.template?.recommendedZoom,
+                    canAutoShutter: camera.mode == .photo,
+                    onClear: { selectedPose = nil },
+                    onApplyZoom: { camera.setDisplayZoom(CGFloat($0), animated: true) })
     }
 
     // MARK: - 下部
 
     private var bottomControls: some View {
         VStack(spacing: 10) {
-            Picker("パネル", selection: $panel) {
-                ForEach(ControlPanel.allCases) { item in
-                    Text(item.rawValue).tag(item)
-                }
+            if camera.lensOptions.count > 1 {
+                LensBar(options: camera.lensOptions, zoom: camera.displayZoom,
+                        minZoom: camera.minDisplayZoom, maxZoom: camera.maxDisplayZoom,
+                        onSelect: { camera.setDisplayZoom($0, animated: true) },
+                        onZoom: { camera.setDisplayZoom($0) })
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
 
-            Group {
-                switch panel {
-                case .pose:
-                    PoseStrip(library: library, selection: $selectedPose) { showLibrary = true }
-                case .filter:
-                    FilterStrip(selection: $camera.settings.filter)
-                case .beauty:
-                    BeautyPanel(settings: $camera.settings)
+            if let panel {
+                Group {
+                    switch panel {
+                    case .pose:
+                        PoseStrip(library: library, selection: $selectedPose) { showLibrary = true }
+                    case .filter:
+                        FilterStrip(selection: $camera.settings.filter)
+                    case .beauty:
+                        BeautyPanel(settings: $camera.settings)
+                    }
                 }
+                .frame(height: 104)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
+                .padding(.horizontal, 8)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .frame(height: 104)
 
-            ModePicker(mode: camera.mode, isLocked: camera.isRecording) { camera.setMode($0) }
+            PanelChips(panel: $panel)
+
+            ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
+                camera.setMode($0)
+            }
 
             HStack {
                 ThumbnailButton(image: camera.lastThumbnail)
                 Spacer()
-                ShutterButton(mode: camera.mode, isRecording: camera.isRecording, isBusy: camera.isCapturing) {
-                    if camera.mode == .photo {
-                        camera.capturePhoto()
-                    } else {
-                        camera.toggleRecording()
-                    }
+                ShutterButton(mode: camera.mode,
+                              isRecording: camera.isRecording,
+                              isBusy: camera.isCapturing || camera.isSequenceRunning,
+                              progress: Double(camera.recordingSeconds) / Double(CameraManager.snapMaxSeconds)) {
+                    camera.shutterPressed()
                 }
                 Spacer()
                 Button {
                     camera.flipCamera()
-                    zoom = 1
-                    zoomAtGestureStart = 1
                 } label: {
                     Image(systemName: "arrow.triangle.2.circlepath.camera")
                         .font(.title2)
                         .foregroundStyle(.white)
                         .frame(width: 48, height: 48)
-                        .background(Circle().fill(Color.white.opacity(0.15)))
+                        .background(Circle().fill(Color.white.opacity(0.18)))
                 }
-                .disabled(camera.isRecording)
+                .disabled(camera.isRecording || camera.isSequenceRunning)
             }
             .padding(.horizontal, 30)
         }
-        .padding(.top, 10)
-        .padding(.bottom, 6)
-        .background(Color.black)
+        .padding(.top, 14)
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+        )
+    }
+
+    private func next(after value: Int, in values: [Int]) -> Int {
+        guard let index = values.firstIndex(of: value) else { return values[0] }
+        return values[(index + 1) % values.count]
     }
 
     private func updateTemplate() {

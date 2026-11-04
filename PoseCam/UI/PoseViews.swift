@@ -1,31 +1,111 @@
 import PhotosUI
 import SwiftUI
 
-/// 骨格の描画。型（太い半透明のシルエット）と検出結果（細い線）で共用する。
+/// 骨格の描画。型は人の形の輪郭線、検出結果は細い骨格線。
 enum PoseDrawing {
-    static func drawFigure(_ points: [Joint: CGPoint], in context: GraphicsContext,
-                           lineWidth: CGFloat, color: Color) {
-        let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-        if let ls = points[.leftShoulder], let rs = points[.rightShoulder],
-           let rh = points[.rightHip], let lh = points[.leftHip] {
-            var torso = Path()
-            torso.addLines([ls, rs, rh, lh])
-            torso.closeSubpath()
-            context.fill(torso, with: .color(color))
-            context.stroke(torso, with: .color(color), style: style)
-        }
-        for (a, b) in Joint.bones {
-            guard let pa = points[a], let pb = points[b] else { continue }
+    /// 骨格から人の形（頭・首・胴・手足を 1 つにつなげた図形）を作る。太さは肩幅を基準にする。
+    static func bodyShape(_ p: [Joint: CGPoint]) -> Path? {
+        guard let ls = p[.leftShoulder], let rs = p[.rightShoulder] else { return nil }
+        let s = max(distance(ls, rs), 1)
+        var parts: [CGPath] = []
+
+        func limb(_ a: CGPoint, _ b: CGPoint, _ width: CGFloat) {
             var path = Path()
-            path.move(to: pa)
-            path.addLine(to: pb)
-            context.stroke(path, with: .color(color), style: style)
+            path.move(to: a)
+            path.addLine(to: b)
+            parts.append(path.strokedPath(StrokeStyle(lineWidth: width * s, lineCap: .round)).cgPath)
         }
-        if let nose = points[.nose] {
-            let r = lineWidth * 1.3
-            context.fill(Path(ellipseIn: CGRect(x: nose.x - r, y: nose.y - r, width: r * 2, height: r * 2)),
-                         with: .color(color))
+        func limb(_ a: Joint, _ b: Joint, _ width: CGFloat) {
+            guard let pa = p[a], let pb = p[b] else { return }
+            limb(pa, pb, width)
         }
+        func ellipse(center: CGPoint, rx: CGFloat, ry: CGFloat, angle: CGFloat) {
+            let transform = CGAffineTransform(rotationAngle: angle)
+                .concatenating(CGAffineTransform(translationX: center.x, y: center.y))
+            parts.append(Path(ellipseIn: CGRect(x: -rx, y: -ry, width: rx * 2, height: ry * 2))
+                .applying(transform).cgPath)
+        }
+
+        // 胴: 肩を少し外へ、ウエストを少し内へ、腰を外へ張り出させる
+        let shoulderMid = mid(ls, rs)
+        if let lh = p[.leftHip], let rh = p[.rightHip] {
+            let hipMid = mid(lh, rh)
+            let waistMid = lerp(shoulderMid, hipMid, 0.62)
+            var torso = Path()
+            torso.addLines([
+                push(ls, from: shoulderMid, by: 0.1),
+                push(rs, from: shoulderMid, by: 0.1),
+                push(lerp(rs, rh, 0.62), from: waistMid, by: -0.08),
+                push(rh, from: hipMid, by: 0.45),
+                push(lh, from: hipMid, by: 0.45),
+                push(lerp(ls, lh, 0.62), from: waistMid, by: -0.08),
+            ])
+            torso.closeSubpath()
+            parts.append(torso.cgPath)
+            parts.append(torso.strokedPath(StrokeStyle(lineWidth: 0.16 * s, lineJoin: .round)).cgPath)
+        } else {
+            limb(ls, rs, 0.3)
+        }
+
+        // 首と頭（頭は鼻の少し上を中心にした楕円を、首→鼻の向きに傾ける）
+        let neck = p[.neck] ?? shoulderMid
+        if let nose = p[.nose] {
+            let length = max(distance(neck, nose), 0.001)
+            let dir = CGPoint(x: (nose.x - neck.x) / length, y: (nose.y - neck.y) / length)
+            let center = CGPoint(x: nose.x + dir.x * 0.06 * s, y: nose.y + dir.y * 0.06 * s)
+            limb(neck, lerp(neck, center, 0.6), 0.2)
+            ellipse(center: center, rx: 0.21 * s, ry: 0.27 * s, angle: atan2(dir.y, dir.x) + .pi / 2)
+        }
+
+        // 腕・脚
+        limb(.leftShoulder, .leftElbow, 0.27)
+        limb(.leftElbow, .leftWrist, 0.21)
+        limb(.rightShoulder, .rightElbow, 0.27)
+        limb(.rightElbow, .rightWrist, 0.21)
+        limb(.leftHip, .leftKnee, 0.42)
+        limb(.leftKnee, .leftAnkle, 0.28)
+        limb(.rightHip, .rightKnee, 0.42)
+        limb(.rightKnee, .rightAnkle, 0.28)
+
+        // 手と足先
+        for (elbow, wrist) in [(Joint.leftElbow, Joint.leftWrist), (.rightElbow, .rightWrist)] {
+            guard let e = p[elbow], let w = p[wrist] else { continue }
+            let hand = extend(e, w, by: 0.12 * s)
+            ellipse(center: hand, rx: 0.1 * s, ry: 0.14 * s, angle: atan2(w.y - e.y, w.x - e.x) - .pi / 2)
+        }
+        for ankle in [Joint.leftAnkle, .rightAnkle] {
+            guard let a = p[ankle] else { continue }
+            ellipse(center: CGPoint(x: a.x, y: a.y + 0.06 * s), rx: 0.16 * s, ry: 0.09 * s, angle: 0)
+        }
+
+        guard var shape = parts.first else { return nil }
+        for part in parts.dropFirst() {
+            shape = shape.union(part)
+        }
+        return Path(shape)
+    }
+
+    /// 人の形を輪郭線と薄い塗りで描く。
+    static func drawOutline(_ points: [Joint: CGPoint], in context: GraphicsContext,
+                            color: Color, lineWidth: CGFloat, fillOpacity: Double) {
+        guard let shape = bodyShape(points) else { return }
+        context.fill(shape, with: .color(color.opacity(fillOpacity)))
+        context.stroke(shape, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round))
+    }
+
+    private static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+    private static func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { lerp(a, b, 0.5) }
+    private static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+    }
+    /// 中心から見て point を外側（負なら内側）へずらす。
+    private static func push(_ point: CGPoint, from center: CGPoint, by factor: CGFloat) -> CGPoint {
+        CGPoint(x: point.x + (point.x - center.x) * factor, y: point.y + (point.y - center.y) * factor)
+    }
+    /// a→b の向きに、b からさらに length だけ先の点。
+    private static func extend(_ a: CGPoint, _ b: CGPoint, by length: CGFloat) -> CGPoint {
+        let d = max(distance(a, b), 0.001)
+        return CGPoint(x: b.x + (b.x - a.x) / d * length, y: b.y + (b.y - a.y) / d * length)
     }
 
     static func drawSkeleton(_ points: [Joint: CGPoint], in context: GraphicsContext, color: Color) {
@@ -40,12 +120,6 @@ enum PoseDrawing {
         for p in points.values {
             context.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(color))
         }
-    }
-
-    /// 肩幅に合わせて線の太さを決める（上半身ポーズは大きく、全身ポーズは細く）。
-    static func lineWidth(for points: [Joint: CGPoint], fallback: CGFloat) -> CGFloat {
-        guard let ls = points[.leftShoulder], let rs = points[.rightShoulder] else { return fallback }
-        return max(hypot(ls.x - rs.x, ls.y - rs.y) * 0.35, 1.5)
     }
 
     /// サムネイル用に、骨格全体を枠に収める。
@@ -64,28 +138,36 @@ enum PoseDrawing {
     }
 }
 
-/// プレビューに重ねる型と検出した骨格。
-struct PoseOverlayView: View {
-    let template: PoseTemplate?
-    let detected: [Joint: CGPoint]?
+/// プレビューに重ねる型（人の形の輪郭）。検出結果とは別のビューにして、骨格が動くたびに描き直さないようにする。
+struct PoseTemplateOverlay: View {
+    let template: PoseTemplate
     let matched: Bool
+    /// 0...1
+    let opacity: Double
 
     var body: some View {
         Canvas { context, size in
-            if let template {
-                let points = template.joints.mapValues { PoseSpace.toView($0, size: size) }
-                let width = PoseDrawing.lineWidth(for: points, fallback: size.height * 0.04)
-                // レイヤーごと半透明にして、線の重なりが濃くならないようにする
-                var layer = context
-                layer.opacity = 0.45
-                layer.drawLayer { inner in
-                    PoseDrawing.drawFigure(points, in: inner, lineWidth: width, color: matched ? .green : .white)
-                }
+            let points = template.joints.mapValues { PoseSpace.toView($0, size: size) }
+            var layer = context
+            layer.opacity = opacity
+            layer.drawLayer { inner in
+                PoseDrawing.drawOutline(points, in: inner, color: matched ? .green : .white,
+                                        lineWidth: 3, fillOpacity: 0.12)
             }
-            if let detected {
-                let points = detected.mapValues { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
-                PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
-            }
+        }
+        .shadow(color: .black.opacity(0.35), radius: 2)
+        .allowsHitTesting(false)
+    }
+}
+
+/// 検出した骨格（細い線）。
+struct SkeletonOverlay: View {
+    let detected: [Joint: CGPoint]
+
+    var body: some View {
+        Canvas { context, size in
+            let points = detected.mapValues { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+            PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
         }
         .allowsHitTesting(false)
     }
@@ -98,9 +180,8 @@ struct PoseThumbnail: View {
     var body: some View {
         VStack(spacing: 4) {
             Canvas { context, size in
-                let points = PoseDrawing.fit(template.joints, into: size, inset: 9)
-                PoseDrawing.drawFigure(points, in: context,
-                                       lineWidth: PoseDrawing.lineWidth(for: points, fallback: 4), color: .white)
+                let points = PoseDrawing.fit(template.joints, into: size, inset: 10)
+                PoseDrawing.drawOutline(points, in: context, color: .white, lineWidth: 1.2, fillOpacity: 0.15)
             }
             .frame(width: 56, height: 64)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))

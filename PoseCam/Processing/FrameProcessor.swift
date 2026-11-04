@@ -11,12 +11,13 @@ final class FrameProcessor {
         skinCube = Self.makeSkinCube(size: Self.cubeSize)
     }
 
-    /// hipY: 腰の高さ（画像座標・上が 0）。人物が見つからないときは nil。
-    func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?) -> CIImage {
+    /// hipY: 腰の高さ（画像座標・上が 0）。personMask: 人物の領域（白）。
+    /// どちらも人物が見つからないときは nil で、そのときは美肌・脚長をかけない。
+    func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?, personMask: CIImage?) -> CIImage {
         let extent = input.extent
         var image = input
-        if settings.smoothing > 0.01 || settings.brightening > 0.01 {
-            image = beautify(image, settings: settings)
+        if settings.smoothing > 0.01 || settings.brightening > 0.01, let personMask {
+            image = beautify(image, settings: settings, personMask: personMask)
         }
         image = settings.filter.apply(to: image)
         if settings.legLength > 0.01, let hipY {
@@ -27,16 +28,17 @@ final class FrameProcessor {
 
     // MARK: - 美肌・美白
 
-    private func beautify(_ image: CIImage, settings: ProcessingSettings) -> CIImage {
+    private func beautify(_ image: CIImage, settings: ProcessingSettings, personMask: CIImage) -> CIImage {
         let extent = image.extent
         let longSide = max(extent.width, extent.height)
-        let mask = skinMask(image, blurRadius: longSide * 0.004)
+        let mask = skinMask(image, personMask: personMask, blurRadius: longSide * 0.003)
         var result = image
 
         if settings.smoothing > 0.01 {
-            let sigma = longSide * 0.0035 * (0.5 + settings.smoothing)
+            let sigma = longSide * 0.003 * (0.5 + settings.smoothing)
             let blurred = image.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
-            result = blend(blurred, over: result, mask: mask, amount: 0.85 * settings.smoothing)
+            // 完全にぼかすとのっぺりするので、元の質感を少し残す
+            result = blend(blurred, over: result, mask: mask, amount: 0.8 * settings.smoothing)
         }
         if settings.brightening > 0.01 {
             let brightened = result
@@ -51,16 +53,22 @@ final class FrameProcessor {
         return result
     }
 
-    /// 肌色の部分が白、それ以外が黒になるマスク。
-    private func skinMask(_ image: CIImage, blurRadius: CGFloat) -> CIImage {
-        image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
+    /// 人物の領域の中で、肌色の部分だけが白になるマスク。
+    private func skinMask(_ image: CIImage, personMask: CIImage, blurRadius: CGFloat) -> CIImage {
+        let skin = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
             "inputCubeDimension": Self.cubeSize,
             "inputCubeData": skinCube,
             "inputColorSpace": sRGB,
         ])
-        .clampedToExtent()
-        .applyingGaussianBlur(sigma: blurRadius)
-        .cropped(to: image.extent)
+        let black = CIImage(color: .black).cropped(to: image.extent)
+        return skin
+            .applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: black,
+                kCIInputMaskImageKey: personMask,
+            ])
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: blurRadius)
+            .cropped(to: image.extent)
     }
 
     private func blend(_ foreground: CIImage, over background: CIImage, mask: CIImage, amount: Double) -> CIImage {
@@ -91,7 +99,8 @@ final class FrameProcessor {
                     let luma: Float = 0.299 * red + 0.587 * green + 0.114 * blue
                     let cb: Float = 128 - 0.168736 * red - 0.331264 * green + 0.5 * blue
                     let cr: Float = 128 + 0.5 * red - 0.418688 * green - 0.081312 * blue
-                    let v = soft(cb, 77, 127, 10) * soft(cr, 133, 173, 10) * soft(luma, 50, 255, 20)
+                    // 灰色（Cb・Cr ≒ 128）が肌と判定されないよう、範囲の外はすぐ 0 にする
+                    let v = soft(cb, 80, 125, 4) * soft(cr, 136, 170, 4) * soft(luma, 60, 250, 15)
                     values[index] = v
                     values[index + 1] = v
                     values[index + 2] = v

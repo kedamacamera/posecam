@@ -1,5 +1,301 @@
 import SwiftUI
 
+// MARK: - 上部のバー
+
+/// アイコンの下に短い説明を付けたボタン（意味が分かるように必ず文字を添える）。
+struct LabeledIconButton: View {
+    let systemImage: String
+    let label: String
+    var active = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            LabeledIcon(systemImage: systemImage, label: label, active: active)
+        }
+    }
+}
+
+struct LabeledIcon: View {
+    let systemImage: String
+    let label: String
+    var active = false
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Image(systemName: systemImage)
+                .font(.system(size: 19))
+                .frame(height: 24)
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+        }
+        .frame(minWidth: 48)
+        .foregroundStyle(active ? Color.yellow : .white)
+        .shadow(color: .black.opacity(0.5), radius: 2)
+    }
+}
+
+/// 比率ボタン。アイコンの代わりに「3:4」などの文字を枠で囲んで表示する。
+struct AspectButton: View {
+    let aspect: AspectOption
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Text(aspect.rawValue)
+                    .font(.system(size: 11, weight: .bold))
+                    .padding(.horizontal, 4)
+                    .frame(height: 22)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white, lineWidth: 1.5))
+                    .frame(height: 24)
+                Text("比率")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .frame(minWidth: 48)
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.5), radius: 2)
+        }
+    }
+}
+
+// MARK: - ポーズの操作（右側の縦並び）
+
+struct PoseSideBar: View {
+    @Binding var opacity: Double
+    @Binding var mirrored: Bool
+    @Binding var autoShutter: Bool
+    let recommendedZoom: Double?
+    let canAutoShutter: Bool
+    let onClear: () -> Void
+    let onApplyZoom: (Double) -> Void
+
+    @State private var showOpacity = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if showOpacity {
+                VerticalSlider(value: $opacity, range: 0.15...1)
+                    .frame(width: 36, height: 180)
+                    .background(Capsule().fill(Color.black.opacity(0.45)))
+                    .transition(.opacity)
+            }
+            VStack(spacing: 12) {
+                sideButton("xmark", "解除", active: false, action: onClear)
+                sideButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "左右反転",
+                           active: mirrored) { mirrored.toggle() }
+                sideButton("circle.lefthalf.filled", "濃さ", active: showOpacity) {
+                    withAnimation(.easeOut(duration: 0.15)) { showOpacity.toggle() }
+                }
+                if let zoom = recommendedZoom {
+                    Button { onApplyZoom(zoom) } label: {
+                        VStack(spacing: 2) {
+                            Text(ZoomFormat.short(CGFloat(zoom)) + "×")
+                                .font(.system(size: 13, weight: .bold))
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(Color.black.opacity(0.5)))
+                            Text("推奨倍率")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                    }
+                }
+                sideButton("camera.viewfinder", "自動撮影", active: autoShutter) {
+                    autoShutter.toggle()
+                }
+                .disabled(!canAutoShutter)
+                .opacity(canAutoShutter ? 1 : 0.4)
+            }
+        }
+    }
+
+    private func sideButton(_ systemImage: String, _ label: String, active: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18))
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(Color.black.opacity(0.5)))
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(active ? Color.yellow : .white)
+            .shadow(color: .black.opacity(0.5), radius: 2)
+        }
+    }
+}
+
+/// 縦向きのスライダー（上が 1）。
+struct VerticalSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+
+    var body: some View {
+        GeometryReader { geo in
+            let height = geo.size.height - 24
+            let ratio = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+            ZStack(alignment: .bottom) {
+                Capsule().fill(Color.white.opacity(0.3)).frame(width: 4)
+                Capsule().fill(Color.yellow).frame(width: 4, height: height * ratio)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.vertical, 12)
+            .overlay(alignment: .top) {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 18, height: 18)
+                    .offset(y: 12 + height * (1 - ratio) - 9)
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                let t = 1 - min(max((drag.location.y - 12) / height, 0), 1)
+                value = range.lowerBound + t * (range.upperBound - range.lowerBound)
+            })
+        }
+    }
+}
+
+// MARK: - レンズ・ズーム
+
+enum ZoomFormat {
+    /// 0.5 → ".5"、1 → "1"、2.3 → "2.3"（標準カメラと同じ書き方）
+    static func short(_ value: CGFloat) -> String {
+        let rounded = (value * 10).rounded() / 10
+        if rounded < 1 { return String(format: ".%d", Int((rounded * 10).rounded())) }
+        if rounded == rounded.rounded() { return String(Int(rounded)) }
+        return String(format: "%.1f", rounded)
+    }
+}
+
+/// 倍率ボタン（0.5 / 1 / 2 / 5 など）。長押しで細かく調整するスライダーを出す。
+struct LensBar: View {
+    let options: [LensOption]
+    let zoom: CGFloat
+    let minZoom: CGFloat
+    let maxZoom: CGFloat
+    let onSelect: (CGFloat) -> Void
+    let onZoom: (CGFloat) -> Void
+
+    @State private var showDial = false
+    @State private var hideTask: Task<Void, Never>?
+
+    /// いま使っているボタン（現在の倍率以下でいちばん大きいもの）
+    private var activeFactor: CGFloat? {
+        options.map(\.displayFactor).filter { $0 <= zoom + 0.01 }.max()
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if showDial {
+                ZoomDial(zoom: zoom, minZoom: minZoom, maxZoom: maxZoom) { value in
+                    onZoom(value)
+                    scheduleHide()
+                }
+                .transition(.opacity)
+            }
+            HStack(spacing: 6) {
+                ForEach(options) { option in
+                    let active = option.displayFactor == activeFactor
+                    Text(active ? ZoomFormat.short(zoom) + "×" : ZoomFormat.short(option.displayFactor))
+                        .font(.system(size: active ? 12 : 11, weight: .bold))
+                        .foregroundStyle(active ? Color.yellow : .white)
+                        .frame(width: active ? 40 : 32, height: active ? 40 : 32)
+                        .background(Circle().fill(Color.black.opacity(0.45)))
+                        .onTapGesture { onSelect(option.displayFactor) }
+                        .onLongPressGesture(minimumDuration: 0.35) {
+                            withAnimation(.easeOut(duration: 0.15)) { showDial = true }
+                            scheduleHide()
+                        }
+                }
+            }
+            .padding(4)
+            .background(Capsule().fill(Color.black.opacity(0.25)))
+        }
+    }
+
+    private func scheduleHide() {
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) { showDial = false }
+        }
+    }
+}
+
+/// 長押しで出る細かいズーム調整。倍率は対数で並べて、低倍率でも操作しやすくする。
+struct ZoomDial: View {
+    let zoom: CGFloat
+    let minZoom: CGFloat
+    let maxZoom: CGFloat
+    let onChange: (CGFloat) -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(ZoomFormat.short(zoom) + "×")
+                .font(.system(size: 13, weight: .bold).monospacedDigit())
+                .foregroundStyle(.yellow)
+            Slider(
+                value: Binding(get: { Double(log(zoom)) }, set: { onChange(CGFloat(exp($0))) }),
+                in: Double(log(minZoom))...Double(log(max(maxZoom, minZoom + 0.1)))
+            )
+            .tint(.yellow)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.55)))
+        .padding(.horizontal, 40)
+    }
+}
+
+// MARK: - パネル（ポーズ・フィルター・美肌）
+
+enum ControlPanel: String, CaseIterable, Identifiable {
+    case pose = "ポーズ"
+    case filter = "フィルター"
+    case beauty = "美肌・スタイル"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .pose: return "figure.stand"
+        case .filter: return "camera.filters"
+        case .beauty: return "sparkles"
+        }
+    }
+}
+
+/// パネルの開閉ボタン。押したパネルだけ開き、もう一度押すと閉じる。
+struct PanelChips: View {
+    @Binding var panel: ControlPanel?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(ControlPanel.allCases) { item in
+                let active = panel == item
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { panel = active ? nil : item }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: item.systemImage)
+                        Text(item.rawValue)
+                        Image(systemName: active ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(active ? Color.white : Color.black.opacity(0.45)))
+                    .foregroundStyle(active ? Color.black : .white)
+                }
+            }
+        }
+    }
+}
+
 struct FilterStrip: View {
     @Binding var selection: PhotoFilter
 
@@ -78,18 +374,21 @@ struct SliderRow: View {
     }
 }
 
+// MARK: - 下部
+
 struct ModePicker: View {
     let mode: CaptureMode
     let isLocked: Bool
     let onSelect: (CaptureMode) -> Void
 
     var body: some View {
-        HStack(spacing: 28) {
+        HStack(spacing: 26) {
             ForEach(CaptureMode.allCases) { item in
                 Button { onSelect(item) } label: {
                     Text(item.rawValue)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(item == mode ? Color.yellow : .white.opacity(0.7))
+                        .foregroundStyle(item == mode ? Color.yellow : .white.opacity(0.75))
+                        .shadow(color: .black.opacity(0.5), radius: 2)
                 }
                 .disabled(isLocked)
             }
@@ -101,6 +400,8 @@ struct ShutterButton: View {
     let mode: CaptureMode
     let isRecording: Bool
     let isBusy: Bool
+    /// スナップ撮影の進み具合（0...1）
+    let progress: Double
     let action: () -> Void
 
     var body: some View {
@@ -109,18 +410,34 @@ struct ShutterButton: View {
                 Circle()
                     .stroke(Color.white, lineWidth: 4)
                     .frame(width: 74, height: 74)
-                if mode == .photo {
+                if mode == .snap && isRecording {
                     Circle()
-                        .fill(Color.white.opacity(isBusy ? 0.5 : 1))
+                        .trim(from: 0, to: progress)
+                        .stroke(Color.yellow, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 74, height: 74)
+                }
+                switch mode {
+                case .photo:
+                    Circle()
+                        .fill(Color.white.opacity(isBusy ? 0.6 : 1))
                         .frame(width: 60, height: 60)
-                } else {
+                case .video:
                     RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
                         .fill(Color.red)
                         .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+                case .snap:
+                    RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
+                        .fill(Color.yellow)
+                        .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+                        .overlay {
+                            if !isRecording {
+                                Image(systemName: "sparkles").foregroundStyle(.black)
+                            }
+                        }
                 }
             }
         }
-        .disabled(mode == .photo && isBusy)
         .animation(.easeInOut(duration: 0.2), value: isRecording)
     }
 }
@@ -146,39 +463,32 @@ struct ThumbnailButton: View {
             }
             .frame(width: 48, height: 48)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.6), lineWidth: 1))
         }
     }
 }
 
-struct ScoreBadge: View {
-    let score: Double
-    let matched: Bool
-
-    var body: some View {
-        Text("一致度 \(Int(score))%")
-            .font(.subheadline.weight(.bold).monospacedDigit())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(matched ? Color.green : Color.black.opacity(0.55)))
-            .foregroundStyle(.white)
-    }
-}
-
-struct RecordingBadge: View {
-    let seconds: Int
+struct Badge: View {
+    let text: String
+    var color: Color = .black.opacity(0.55)
+    var dot: Color?
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(Color.red).frame(width: 8, height: 8)
-            Text(String(format: "%02d:%02d", seconds / 60, seconds % 60))
-                .font(.subheadline.monospacedDigit())
+            if let dot {
+                Circle().fill(dot).frame(width: 8, height: 8)
+            }
+            Text(text)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Capsule().fill(Color.black.opacity(0.55)))
+        .background(Capsule().fill(color))
         .foregroundStyle(.white)
     }
 }
+
+// MARK: - 特別な画面
 
 /// 前回の起動で落ちたときの記録。テキストをコピーして共有できる。
 struct CrashReportView: View {

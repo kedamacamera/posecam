@@ -8,14 +8,17 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var category: String
     var points: [String: CGPoint]
     var isUserCreated: Bool
+    /// このポーズを撮るときにおすすめの倍率（0.5 / 1 / 2 など）。nil なら表示しない
+    var recommendedZoom: Double?
 
     init(id: String = UUID().uuidString, name: String, category: String,
-         joints: [Joint: CGPoint], isUserCreated: Bool) {
+         joints: [Joint: CGPoint], isUserCreated: Bool, recommendedZoom: Double? = nil) {
         self.id = id
         self.name = name
         self.category = category
         self.points = Dictionary(uniqueKeysWithValues: joints.map { ($0.key.rawValue, $0.value) })
         self.isUserCreated = isUserCreated
+        self.recommendedZoom = recommendedZoom
     }
 
     var joints: [Joint: CGPoint] {
@@ -30,7 +33,7 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
             ($0.key.mirrored, CGPoint(x: -$0.value.x, y: $0.value.y))
         })
         return PoseTemplate(id: id + "#mirror", name: name, category: category,
-                            joints: flipped, isUserCreated: isUserCreated)
+                            joints: flipped, isUserCreated: isUserCreated, recommendedZoom: recommendedZoom)
     }
 
     static func == (lhs: PoseTemplate, rhs: PoseTemplate) -> Bool { lhs.id == rhs.id }

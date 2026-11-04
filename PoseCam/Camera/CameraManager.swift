@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Combine
 import CoreImage
@@ -7,20 +8,47 @@ import UIKit
 enum CaptureMode: String, CaseIterable, Identifiable {
     case photo = "写真"
     case video = "動画"
+    case snap = "スナップ"
 
     var id: String { rawValue }
 }
 
-/// カメラセッション、フレームごとの加工・骨格検出、写真撮影、録画をまとめて扱う。
+enum AspectOption: String, CaseIterable {
+    case threeFour = "3:4"
+    case nineSixteen = "9:16"
+    case full = "フル"
+
+    var next: AspectOption {
+        let all = Self.allCases
+        return all[(all.firstIndex(of: self)! + 1) % all.count]
+    }
+}
+
+/// レンズ切り替えボタン 1 つぶん。displayFactor は標準カメラと同じ表示倍率（0.5 / 1 / 2 / 5 など）。
+struct LensOption: Identifiable, Equatable {
+    let displayFactor: CGFloat
+    var id: CGFloat { displayFactor }
+}
+
+/// スナップ撮影で撮った短い動画。コマを選ぶ画面に渡す。
+struct SnapClip: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// カメラセッション、フレームごとの加工・検出、写真撮影、録画をまとめて扱う。
 ///
 /// キューの役割:
 /// - sessionQueue: セッション構成・デバイス操作
 /// - videoQueue: フレーム処理と録画（音声も同じキューで受ける）
-/// - detectionQueue: 骨格検出（重いので映像キューを止めないよう分ける）
+/// - detectionQueue: 骨格と人物領域の検出（重いので映像キューを止めないよう分ける）
 /// - photoQueue: 撮影した写真の加工と保存
 /// @Published なプロパティはメインスレッドでのみ更新する。
 final class CameraManager: NSObject, ObservableObject {
     static let matchThreshold: Double = 80
+    static let snapMaxSeconds = 10
+
+    // MARK: 状態（表示用）
 
     @Published private(set) var mode: CaptureMode = .photo
     @Published private(set) var position: AVCaptureDevice.Position = .back
@@ -34,10 +62,29 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var cameraAuthorized = true
     @Published private(set) var statusMessage: String?
 
+    @Published private(set) var lensOptions: [LensOption] = [LensOption(displayFactor: 1)]
+    @Published private(set) var displayZoom: CGFloat = 1
+    @Published private(set) var minDisplayZoom: CGFloat = 1
+    @Published private(set) var maxDisplayZoom: CGFloat = 10
+
+    @Published private(set) var countdown: Int?
+    @Published private(set) var burstProgress: String?
+    @Published private(set) var isSequenceRunning = false
+    @Published private(set) var canMuteShutter = false
+    @Published var snapClip: SnapClip?
+
+    // MARK: 設定（UI から変える）
+
     @Published var flashOn = false {
         didSet { applyTorch() }
     }
     @Published var autoShutter = false
+    @Published var timerSeconds = 0
+    @Published var burstCount = 1
+    @Published var muteShutter = false
+    @Published var aspect: AspectOption = .threeFour {
+        didSet { updateTargetAspect() }
+    }
     @Published var settings = ProcessingSettings() {
         didSet { settingsBox.value = settings }
     }
@@ -65,12 +112,17 @@ final class CameraManager: NSObject, ObservableObject {
     private let settingsBox = Locked(ProcessingSettings())
     private let templateBox = Locked<PoseTemplate?>(nil)
     private let poseBox = Locked<[Joint: CGPoint]?>(nil)
+    private let maskBox = Locked<CIImage?>(nil)
+    private let aspectBox = Locked<CGFloat>(3.0 / 4.0)
+    private let modeBox = Locked(CaptureMode.photo)
     private let isDetecting = Locked(false)
 
     // sessionQueue 専用
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var isConfigured = false
+    /// 表示倍率 1x に当たるデバイスの videoZoomFactor（超広角を含むカメラでは 2.0 など）
+    private var zoomBase: CGFloat = 1
 
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
@@ -81,13 +133,13 @@ final class CameraManager: NSObject, ObservableObject {
     private var lastRecordedFrame: CIImage?
     private var frameCount = 0
 
-    // detectionQueue 専用
-    private var hasDetectedOnce = false
-
     // メインスレッド専用
+    private var screenAspect: CGFloat = 9.0 / 19.5
     private var recordTimer: Timer?
+    private var sequenceTimer: Timer?
     private var matchStartedAt: Date?
     private var lastAutoShotAt = Date.distantPast
+    private var pendingPhotos = 0
 
     // MARK: - セッション
 
@@ -114,35 +166,36 @@ final class CameraManager: NSObject, ObservableObject {
 
         Diagnostics.mark("構成: 開始")
         session.beginConfiguration()
+        // 録画中の効果音をスピーカーから鳴らすため、音声の設定は自分で行う
+        session.automaticallyConfiguresApplicationAudioSession = false
         session.sessionPreset = .photo
-        Diagnostics.mark("構成: 入力を追加")
         if let device = Self.camera(at: .back),
            let input = try? AVCaptureDeviceInput(device: device),
            session.canAddInput(input) {
             session.addInput(input)
             videoInput = input
         }
-        Diagnostics.mark("構成: 映像出力の設定")
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
-        Diagnostics.mark("構成: 出力を追加")
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
         audioOutput.setSampleBufferDelegate(self, queue: videoQueue)
-        Diagnostics.mark("構成: commit")
         session.commitConfiguration()
 
         updateConnections(position: .back)
+        refreshLenses(keepingDisplayZoom: nil)
         Diagnostics.mark("構成: 完了")
     }
 
-    /// 写真は 4:3 の高画質、動画は 9:16 の 1080p。動画モードのときだけマイクをつなぐ。
+    /// 写真は 4:3 の高画質、動画とスナップは 1080p。動画のときだけマイクをつなぐ。
     func setMode(_ newMode: CaptureMode) {
-        guard newMode != mode, !isRecording else { return }
+        guard newMode != mode, !isRecording, !isSequenceRunning else { return }
         mode = newMode
+        modeBox.value = newMode
         let position = self.position
-        let torch = flashOn && newMode == .video
+        let torch = flashOn && newMode != .photo
+        let zoom = displayZoom
 
         let reconfigure = {
             self.sessionQueue.async {
@@ -155,6 +208,7 @@ final class CameraManager: NSObject, ObservableObject {
                 }
                 self.session.commitConfiguration()
                 self.updateConnections(position: position)
+                self.refreshLenses(keepingDisplayZoom: zoom)
                 self.setTorch(torch)
             }
         }
@@ -167,10 +221,10 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func flipCamera() {
-        guard !isRecording else { return }
+        guard !isRecording, !isSequenceRunning else { return }
         let newPosition: AVCaptureDevice.Position = position == .back ? .front : .back
         position = newPosition
-        let torch = flashOn && mode == .video
+        let torch = flashOn && mode != .photo
 
         sessionQueue.async {
             guard let device = Self.camera(at: newPosition),
@@ -185,32 +239,28 @@ final class CameraManager: NSObject, ObservableObject {
             }
             self.session.commitConfiguration()
             self.updateConnections(position: newPosition)
+            self.refreshLenses(keepingDisplayZoom: nil)
             self.setTorch(torch)
         }
         videoQueue.async { self.smoothedHipY = nil }
     }
 
-    func setZoom(_ factor: CGFloat) {
-        sessionQueue.async {
-            guard let device = self.videoInput?.device else { return }
-            let upper = min(device.maxAvailableVideoZoomFactor, 8)
-            let clamped = min(max(factor, device.minAvailableVideoZoomFactor), upper)
-            do {
-                try device.lockForConfiguration()
-                device.videoZoomFactor = clamped
-                device.unlockForConfiguration()
-            } catch {}
-        }
-    }
-
+    /// 背面は超広角・望遠をまとめた仮想カメラを使い、倍率に応じて iOS がレンズを切り替える。
     private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+        let types: [AVCaptureDevice.DeviceType] = position == .back
+            ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera]
+            : [.builtInWideAngleCamera]
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video,
+                                                       position: position).devices
+        for type in types {
+            if let device = devices.first(where: { $0.deviceType == type }) { return device }
+        }
+        return nil
     }
 
     /// フレームを縦向きにし、インカメラは鏡像にする（プレビュー・写真・動画で揃える）。
     private func updateConnections(position: AVCaptureDevice.Position) {
         let connections = [videoOutput.connection(with: .video), photoOutput.connection(with: .video)]
-        Diagnostics.mark("接続: 向きと鏡像の設定（\(connections.compactMap { $0 }.count) 本）")
         for connection in connections.compactMap({ $0 }) {
             if connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
@@ -220,8 +270,13 @@ final class CameraManager: NSObject, ObservableObject {
                 connection.isVideoMirrored = position == .front
             }
         }
-        Diagnostics.mark("接続: 写真サイズの設定")
         updatePhotoDimensions()
+
+        var canMute = false
+        if #available(iOS 18.0, *) {
+            canMute = photoOutput.isShutterSoundSuppressionSupported
+        }
+        DispatchQueue.main.async { self.canMuteShutter = canMute }
     }
 
     /// 48MP などの巨大サイズは加工が重いので、12MP 程度までで最大のサイズを選ぶ。
@@ -231,7 +286,6 @@ final class CameraManager: NSObject, ObservableObject {
         let candidates = device.activeFormat.supportedMaxPhotoDimensions
         let best = candidates.filter { pixels($0) <= 12_600_000 }.max { pixels($0) < pixels($1) } ?? candidates.first
         if let best {
-            Diagnostics.mark("写真サイズ: \(best.width)x\(best.height)（候補 \(candidates.count) 個）")
             photoOutput.maxPhotoDimensions = best
         }
     }
@@ -242,6 +296,10 @@ final class CameraManager: NSObject, ObservableObject {
               let mic = AVCaptureDevice.default(for: .audio),
               let input = try? AVCaptureDeviceInput(device: mic),
               session.canAddInput(input) else { return }
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.playAndRecord, mode: .videoRecording,
+                                      options: [.defaultToSpeaker, .allowBluetoothA2DP])
+        try? audioSession.setActive(true)
         session.addInput(input)
         audioInput = input
         if session.canAddOutput(audioOutput) {
@@ -260,7 +318,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func applyTorch() {
-        let on = flashOn && mode == .video
+        let on = flashOn && mode != .photo
         sessionQueue.async { self.setTorch(on) }
     }
 
@@ -273,16 +331,178 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {}
     }
 
+    // MARK: - 比率
+
+    func setScreenAspect(_ value: CGFloat) {
+        guard value > 0 else { return }
+        screenAspect = value
+        updateTargetAspect()
+    }
+
+    private func updateTargetAspect() {
+        switch aspect {
+        case .threeFour: aspectBox.value = 3.0 / 4.0
+        case .nineSixteen: aspectBox.value = 9.0 / 16.0
+        case .full: aspectBox.value = screenAspect
+        }
+    }
+
+    // MARK: - レンズ・ズーム
+
+    /// 搭載レンズから倍率ボタン（0.5 / 1 / 2 / 望遠）を作る。sessionQueue から呼ぶ。
+    private func refreshLenses(keepingDisplayZoom keep: CGFloat?) {
+        guard let device = videoInput?.device else { return }
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat($0.doubleValue) }
+        let hasUltraWide = device.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
+        let base: CGFloat = hasUltraWide ? (switchOvers.first ?? 1) : 1
+        zoomBase = base
+
+        let minDisplay = device.minAvailableVideoZoomFactor / base
+        let maxDisplay = min(device.maxAvailableVideoZoomFactor / base, 15)
+        let telephotos = switchOvers.dropFirst(hasUltraWide ? 1 : 0).map { $0 / base }
+
+        var factors: [CGFloat] = [1]
+        if hasUltraWide { factors.append(1 / base) }
+        if maxDisplay >= 2 { factors.append(2) }
+        factors += telephotos
+        var unique: [CGFloat] = []
+        for factor in factors.sorted() where !unique.contains(where: { abs($0 - factor) < 0.05 }) {
+            unique.append(factor)
+        }
+
+        let target = min(max(keep ?? 1, minDisplay), maxDisplay)
+        setDeviceZoom(target * base, device: device, animated: false)
+
+        DispatchQueue.main.async {
+            self.lensOptions = unique.map { LensOption(displayFactor: $0) }
+            self.minDisplayZoom = minDisplay
+            self.maxDisplayZoom = maxDisplay
+            self.displayZoom = target
+        }
+    }
+
+    /// 表示倍率でズームする。レンズボタンは animated で滑らかに切り替える。
+    func setDisplayZoom(_ value: CGFloat, animated: Bool = false) {
+        let clamped = min(max(value, minDisplayZoom), maxDisplayZoom)
+        displayZoom = clamped
+        sessionQueue.async {
+            guard let device = self.videoInput?.device else { return }
+            self.setDeviceZoom(clamped * self.zoomBase, device: device, animated: animated)
+        }
+    }
+
+    private func setDeviceZoom(_ factor: CGFloat, device: AVCaptureDevice, animated: Bool) {
+        let clamped = min(max(factor, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+        do {
+            try device.lockForConfiguration()
+            if animated {
+                device.ramp(toVideoZoomFactor: clamped, withRate: 12)
+            } else {
+                device.videoZoomFactor = clamped
+            }
+            device.unlockForConfiguration()
+        } catch {}
+    }
+
+    // MARK: - シャッター
+
+    func shutterPressed() {
+        switch mode {
+        case .photo:
+            if isSequenceRunning {
+                cancelSequence()
+            } else {
+                startPhotoSequence()
+            }
+        case .video, .snap:
+            if countdown != nil {
+                cancelSequence()
+            } else if isRecording {
+                stopRecording()
+            } else {
+                countdownThen(timerSeconds) { self.startRecording() }
+            }
+        }
+    }
+
+    /// タイマー → 1 秒間隔で burstCount 枚撮る。
+    private func startPhotoSequence() {
+        guard !isSequenceRunning else { return }
+        isSequenceRunning = true
+        let total = burstCount
+        countdownThen(timerSeconds) { self.takeShots(remaining: total, total: total) }
+    }
+
+    private func countdownThen(_ seconds: Int, action: @escaping () -> Void) {
+        guard seconds > 0 else {
+            action()
+            return
+        }
+        isSequenceRunning = true
+        countdown = seconds
+        AudioServicesPlaySystemSound(1103)
+        sequenceTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let next = (self.countdown ?? 1) - 1
+            if next <= 0 {
+                timer.invalidate()
+                self.countdown = nil
+                if self.mode != .photo { self.isSequenceRunning = false }
+                action()
+            } else {
+                self.countdown = next
+                AudioServicesPlaySystemSound(1103)
+            }
+        }
+    }
+
+    private func takeShots(remaining: Int, total: Int) {
+        guard isSequenceRunning, remaining > 0 else {
+            finishSequence()
+            return
+        }
+        if total > 1 { burstProgress = "\(total - remaining + 1)/\(total)" }
+        capturePhoto()
+        guard remaining > 1 else {
+            finishSequence()
+            return
+        }
+        sequenceTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
+            self?.takeShots(remaining: remaining - 1, total: total)
+        }
+    }
+
+    private func cancelSequence() {
+        sequenceTimer?.invalidate()
+        sequenceTimer = nil
+        countdown = nil
+        burstProgress = nil
+        isSequenceRunning = false
+    }
+
+    private func finishSequence() {
+        sequenceTimer?.invalidate()
+        sequenceTimer = nil
+        isSequenceRunning = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            if !self.isSequenceRunning { self.burstProgress = nil }
+        }
+    }
+
     // MARK: - 写真
 
-    func capturePhoto() {
-        guard mode == .photo, !isCapturing else { return }
+    private func capturePhoto() {
+        pendingPhotos += 1
         isCapturing = true
         let flash = flashOn
+        let mute = muteShutter
 
         sessionQueue.async {
             guard self.photoOutput.connection(with: .video)?.isActive == true else {
-                DispatchQueue.main.async { self.isCapturing = false }
+                DispatchQueue.main.async { self.photoFinished() }
                 return
             }
             let photoSettings = self.photoOutput.availablePhotoCodecTypes.contains(.hevc)
@@ -291,20 +511,34 @@ final class CameraManager: NSObject, ObservableObject {
             if flash, self.photoOutput.supportedFlashModes.contains(.on) {
                 photoSettings.flashMode = .on
             }
+            if mute, #available(iOS 18.0, *), self.photoOutput.isShutterSoundSuppressionSupported {
+                photoSettings.isShutterSoundSuppressionEnabled = true
+            }
             photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
             self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
         }
     }
 
-    private func processPhoto(_ data: Data, settings: ProcessingSettings) -> (jpeg: Data, thumbnail: UIImage?)? {
+    private func photoFinished() {
+        pendingPhotos = max(0, pendingPhotos - 1)
+        isCapturing = pendingPhotos > 0
+    }
+
+    private func processPhoto(_ data: Data, settings: ProcessingSettings,
+                              aspect: CGFloat) -> (jpeg: Data, thumbnail: UIImage?)? {
         guard let source = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
-        let image = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
-                                                             y: -source.extent.minY))
-        var hipY: CGFloat?
-        if settings.legLength > 0.01, let pose = detector.detect(ciImage: image) {
-            hipY = PoseDetector.hipY(of: pose)
+        let normalized = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
+                                                                  y: -source.extent.minY))
+        let image = FrameGeometry(sourceSize: normalized.extent.size, aspect: aspect, maxLongSide: nil)
+            .apply(normalized)
+
+        let wantsMask = settings.smoothing > 0.01 || settings.brightening > 0.01
+        var analysis = PoseDetector.Result()
+        if wantsMask || settings.legLength > 0.01 {
+            analysis = detector.analyze(ciImage: image, wantsMask: wantsMask)
         }
-        let output = processor.process(image, settings: settings, hipY: hipY)
+        let hipY = analysis.pose.flatMap(PoseDetector.hipY(of:))
+        let output = processor.process(image, settings: settings, hipY: hipY, personMask: analysis.mask)
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let jpeg = renderer.ciContext.jpegRepresentation(
                   of: output, colorSpace: colorSpace,
@@ -313,35 +547,41 @@ final class CameraManager: NSObject, ObservableObject {
         return (jpeg, makeThumbnail(output))
     }
 
-    private func makeThumbnail(_ image: CIImage) -> UIImage? {
+    func makeThumbnail(_ image: CIImage) -> UIImage? {
         let scale = 240 / max(image.extent.width, image.extent.height)
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let cgImage = renderer.ciContext.createCGImage(small, from: small.extent) else { return nil }
         return UIImage(cgImage: cgImage)
     }
 
-    // MARK: - 動画
-
-    func toggleRecording() {
-        if isRecording {
-            stopRecording()
-        } else {
-            startRecording()
-        }
+    func setThumbnail(_ image: UIImage?) {
+        lastThumbnail = image
     }
+
+    // MARK: - 動画・スナップ
 
     func stopRecordingIfNeeded() {
         if isRecording { stopRecording() }
+        if isSequenceRunning { cancelSequence() }
     }
 
     private func startRecording() {
-        guard mode == .video, !isRecording else { return }
+        guard mode != .photo, !isRecording else { return }
         isRecording = true
         recordingSeconds = 0
+        AudioServicesPlaySystemSound(1117)
         recordTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.recordingSeconds += 1
+            guard let self else { return }
+            self.recordingSeconds += 1
+            if self.mode == .snap && self.recordingSeconds >= Self.snapMaxSeconds {
+                self.stopRecording()
+            }
         }
-        videoQueue.async { self.wantsRecording = true }
+        // 開始音が録音に入らないよう、少し待ってから書き込みを始める
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard self.isRecording else { return }
+            self.videoQueue.async { self.wantsRecording = true }
+        }
     }
 
     private func stopRecording() {
@@ -349,6 +589,7 @@ final class CameraManager: NSObject, ObservableObject {
         isRecording = false
         recordTimer?.invalidate()
         recordTimer = nil
+        let isSnap = mode == .snap
 
         videoQueue.async {
             self.wantsRecording = false
@@ -358,8 +599,13 @@ final class CameraManager: NSObject, ObservableObject {
             self.lastRecordedFrame = nil
 
             recorder.finish { url in
+                DispatchQueue.main.async { AudioServicesPlaySystemSound(1118) }
                 guard let url else {
                     self.report("動画の書き出しに失敗しました")
+                    return
+                }
+                if isSnap {
+                    DispatchQueue.main.async { self.snapClip = SnapClip(url: url) }
                     return
                 }
                 MediaSaver.saveVideo(at: url) { ok in
@@ -380,7 +626,9 @@ final class CameraManager: NSObject, ObservableObject {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
-            let audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+            let audioSettings = modeBox.value == .video
+                ? audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+                : nil
             do {
                 recorder = try VideoRecorder(url: url, size: image.extent.size,
                                              audioSettings: audioSettings, context: renderer.ciContext)
@@ -395,26 +643,23 @@ final class CameraManager: NSObject, ObservableObject {
         lastRecordedFrame = image
     }
 
-    // MARK: - 骨格検出・自動シャッター
+    // MARK: - 検出・自動シャッター
 
     /// videoQueue から呼ぶ。前回の検出が終わっていて、前回から一定時間たっていれば検出する。
-    private func detectPoseIfIdle(_ pixelBuffer: CVPixelBuffer) {
+    private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, geometry: FrameGeometry, wantsMask: Bool) {
         let now = CACurrentMediaTime()
         guard now - lastDetectionTime > 0.07, !isDetecting.value else { return }
         lastDetectionTime = now
         isDetecting.value = true
-        let aspect = CGFloat(CVPixelBufferGetWidth(pixelBuffer)) / CGFloat(CVPixelBufferGetHeight(pixelBuffer))
 
         detectionQueue.async {
-            let first = !self.hasDetectedOnce
-            self.hasDetectedOnce = true
-            if first { Diagnostics.mark("骨格検出: 初回開始") }
-            let pose = self.detector.detect(pixelBuffer: pixelBuffer)
-            if first { Diagnostics.mark("骨格検出: 初回完了（関節 \(pose?.count ?? 0) 個）") }
+            let result = self.detector.analyze(pixelBuffer: pixelBuffer, wantsMask: wantsMask)
+            let pose = result.pose?.mapValues { geometry.convert($0) }
             self.poseBox.value = pose
+            self.maskBox.value = result.mask
             var score: Double?
             if let pose, let template = self.templateBox.value {
-                let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
+                let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: geometry.aspect) }
                 score = PoseMatcher.score(template: template.joints, detected: isotropic)
             }
             self.isDetecting.value = false
@@ -429,7 +674,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 一致度がしきい値を 0.8 秒保ったら自動で撮影する。連写しないよう 3 秒あける。
     private func evaluateAutoShutter() {
-        guard autoShutter, mode == .photo, !isCapturing,
+        guard autoShutter, mode == .photo, !isSequenceRunning,
               let score = matchScore, score >= Self.matchThreshold else {
             matchStartedAt = nil
             return
@@ -440,7 +685,7 @@ final class CameraManager: NSObject, ObservableObject {
         if now.timeIntervalSince(startedAt) >= 0.8, now.timeIntervalSince(lastAutoShotAt) > 3 {
             lastAutoShotAt = now
             matchStartedAt = nil
-            capturePhoto()
+            startPhotoSequence()
         }
     }
 
@@ -452,23 +697,13 @@ final class CameraManager: NSObject, ObservableObject {
         return smoothed
     }
 
-    /// 写真モードではカメラが大きなフレームを渡してくることがあるので、加工が重くならないよう
-    /// 長辺 1920 までに縮める（動画モードの 1080p はそのまま通る）。
-    private static func limitedForPreview(_ image: CIImage) -> CIImage {
-        let longSide = max(image.extent.width, image.extent.height)
-        guard longSide > 1920 else { return image }
-        let scale = 1920 / longSide
-        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        return scaled.transformed(by: CGAffineTransform(translationX: -scaled.extent.minX, y: -scaled.extent.minY))
-    }
-
     private func publishFrameSizeIfNeeded(_ size: CGSize) {
         guard size != lastFrameSize, size.height > 0 else { return }
         lastFrameSize = size
         DispatchQueue.main.async { self.frameAspect = size.width / size.height }
     }
 
-    private func report(_ message: String) {
+    func report(_ message: String) {
         DispatchQueue.main.async {
             self.statusMessage = message
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
@@ -489,23 +724,31 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // 最初の 1 コマだけ各段階を記録し、3 秒ほど動いたら正常とみなす
+        // 最初の 1 コマだけ記録し、3 秒ほど動いたら正常とみなす
         frameCount += 1
-        let first = frameCount == 1
-        if first {
+        if frameCount == 1 {
             Diagnostics.mark("フレーム: 初回受信 \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))")
         }
         if frameCount == 90 { Diagnostics.markHealthy() }
 
-        detectPoseIfIdle(pixelBuffer)
-        let image = Self.limitedForPreview(CIImage(cvPixelBuffer: pixelBuffer))
+        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        // 録画中は途中で大きさが変わらないよう比率を固定する（UI 側でも比率ボタンを無効にしている）
+        let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value, maxLongSide: 1920)
+        let settings = settingsBox.value
+        let wantsMask = settings.smoothing > 0.01 || settings.brightening > 0.01
+        analyzeIfIdle(pixelBuffer, geometry: geometry, wantsMask: wantsMask)
+
+        let image = geometry.apply(source)
         publishFrameSizeIfNeeded(image.extent.size)
 
-        let settings = settingsBox.value
+        var personMask: CIImage?
+        // 前後カメラの切り替え直後などで大きさの違う古いマスクは使わない
+        if wantsMask, let mask = maskBox.value,
+           abs(mask.extent.width - source.extent.width) < 1, abs(mask.extent.height - source.extent.height) < 1 {
+            personMask = geometry.apply(mask)
+        }
         let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
-        if first { Diagnostics.mark("フレーム: 加工") }
-        let processed = processor.process(image, settings: settings, hipY: hipY)
-        if first { Diagnostics.mark("フレーム: 表示へ渡す") }
+        let processed = processor.process(image, settings: settings, hipY: hipY, personMask: personMask)
         renderer.display(processed)
         handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
@@ -517,11 +760,13 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         let settings = settingsBox.value
+        let aspect = aspectBox.value
         let data = photo.fileDataRepresentation()
 
         photoQueue.async {
-            defer { DispatchQueue.main.async { self.isCapturing = false } }
-            guard error == nil, let data, let result = self.processPhoto(data, settings: settings) else {
+            defer { DispatchQueue.main.async { self.photoFinished() } }
+            guard error == nil, let data,
+                  let result = self.processPhoto(data, settings: settings, aspect: aspect) else {
                 self.report("写真の処理に失敗しました")
                 return
             }
