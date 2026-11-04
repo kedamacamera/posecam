@@ -1,12 +1,22 @@
 import CoreImage
+import CoreML
 import Vision
 
-/// 美肌に使うマスク。どちらも元の画像と同じ大きさ。
+/// 美肌に使うマスク。どれも元の画像と同じ大きさ。
 struct BeautyMasks {
-    /// 人物の領域（白）
-    var person: CIImage
+    /// 肌の領域（白）。肌を塗り分ける AI モデル（SkinSegmenter）があるときに使う
+    var skin: CIImage?
+    /// 人物の領域（白）。モデルがないときは、これと肌の色の判定を組み合わせる
+    var person: CIImage?
     /// 目・眉・唇を黒、それ以外を白にしたマスク。顔が見つからなければ nil
     var features: CIImage?
+
+    /// 大きさの確認に使う
+    var extent: CGRect? { (skin ?? person)?.extent }
+
+    func map(_ transform: (CIImage) -> CIImage) -> BeautyMasks {
+        BeautyMasks(skin: skin.map(transform), person: person.map(transform), features: features.map(transform))
+    }
 }
 
 /// Vision で人物の骨格・領域・顔のパーツを求める。
@@ -43,19 +53,41 @@ final class PoseDetector {
         return ys.reduce(0, +) / CGFloat(ys.count)
     }
 
+    /// 肌を塗り分けるモデル（Google の MediaPipe のモデルを変換したもの）。アプリに入っていなければ nil
+    private static let skinModel: VNCoreMLModel? = {
+        guard let url = Bundle.main.url(forResource: "SkinSegmenter", withExtension: "mlmodelc") else { return nil }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .all
+        guard let model = try? MLModel(contentsOf: url, configuration: configuration) else { return nil }
+        return try? VNCoreMLModel(for: model)
+    }()
+
+    static var hasSkinModel: Bool { skinModel != nil }
+
     private func perform(_ handler: VNImageRequestHandler, imageSize: CGSize,
                          maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?) -> Result {
         let poseRequest = VNDetectHumanBodyPoseRequest()
         var requests: [VNRequest] = [poseRequest]
+        var skinRequest: VNCoreMLRequest?
         var segmentation: VNGeneratePersonSegmentationRequest?
         var landmarks: VNDetectFaceLandmarksRequest?
         if let maskQuality {
-            let request = VNGeneratePersonSegmentationRequest()
-            request.qualityLevel = maskQuality
-            request.outputPixelFormat = kCVPixelFormatType_OneComponent8
-            segmentation = request
-            landmarks = VNDetectFaceLandmarksRequest()
-            requests += [request, landmarks!]
+            if let model = Self.skinModel {
+                let request = VNCoreMLRequest(model: model)
+                // モデルは縦横比に関係なく 256x256 に引き伸ばした画像を受け取る作り
+                request.imageCropAndScaleOption = .scaleFill
+                skinRequest = request
+                requests.append(request)
+            } else {
+                let request = VNGeneratePersonSegmentationRequest()
+                request.qualityLevel = maskQuality
+                request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+                segmentation = request
+                requests.append(request)
+            }
+            let faces = VNDetectFaceLandmarksRequest()
+            landmarks = faces
+            requests.append(faces)
         }
         do {
             try handler.perform(requests)
@@ -69,10 +101,15 @@ final class PoseDetector {
             let best = observations.map(points(from:)).max { $0.count < $1.count }
             if let best, best.count >= 4 { result.pose = best }
         }
-        if let buffer = segmentation?.results?.first?.pixelBuffer {
-            let person = Self.scaled(CIImage(cvPixelBuffer: buffer), to: imageSize)
+
+        let skinBuffer = (skinRequest?.results?.first as? VNPixelBufferObservation)?.pixelBuffer
+        let personBuffer = segmentation?.results?.first?.pixelBuffer
+        if skinBuffer != nil || personBuffer != nil {
             let faces = landmarks?.results ?? []
-            result.masks = BeautyMasks(person: person, features: Self.featureMask(faces, imageSize: imageSize))
+            result.masks = BeautyMasks(
+                skin: skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
+                person: personBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
+                features: Self.featureMask(faces, imageSize: imageSize))
         }
         return result
     }

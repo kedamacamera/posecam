@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var poseOpacity = 0.85
     @State private var showSkeleton = false
     @State private var showLibrary = false
+    @State private var showLicenses = false
     @State private var zoomAtGestureStart: CGFloat?
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
@@ -105,6 +106,9 @@ struct ContentView: View {
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
         }
+        .sheet(isPresented: $showLicenses) {
+            LicensesView()
+        }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
         }
@@ -180,6 +184,7 @@ struct ContentView: View {
                     Text("映像のコマを写真として保存します（約 600〜830 万画素）")
                 }
                 Toggle("骨格を表示", isOn: $showSkeleton)
+                Button("ライセンス") { showLicenses = true }
             } label: {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
             }

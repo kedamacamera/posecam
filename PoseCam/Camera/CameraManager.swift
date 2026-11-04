@@ -400,16 +400,10 @@ final class CameraManager: NSObject, ObservableObject {
         let target = min(max(keep ?? 1, minDisplay), maxDisplay)
         setDeviceZoom(target * base, device: device, animated: false)
 
-        // 標準の設定（auto）は条件によってレンズの切り替えを控えるので、倍率に応じて自由に切り替えさせる。
-        // ただし被写体が近すぎる・暗いときは、iOS が望遠の代わりに広角を拡大して使う（標準カメラと同じ）。
+        // レンズは倍率に応じて iOS が自動で切り替える（標準の .auto）。被写体が近すぎる・暗いときは
+        // 望遠の代わりに広角を拡大して使うので、いま実際に使っているレンズを表示する。
         lensObservation = nil
         if device.isVirtualDevice {
-            do {
-                try device.lockForConfiguration()
-                device.setPrimaryConstituentDeviceSwitchingBehavior(.unrestricted,
-                                                                    restrictedSwitchingBehaviorConditions: [])
-                device.unlockForConfiguration()
-            } catch {}
             lensObservation = device.observe(\.activePrimaryConstituent, options: [.initial, .new]) { device, _ in
                 let name = Self.lensName(device.activePrimaryConstituent?.deviceType)
                 DispatchQueue.main.async { self.activeLensName = name }
@@ -840,11 +834,10 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 
         var masks: BeautyMasks?
         // 前後カメラの切り替え直後などで大きさの違う古いマスクは使わない
-        if wantsMasks, let stored = maskBox.value,
-           abs(stored.person.extent.width - source.extent.width) < 1,
-           abs(stored.person.extent.height - source.extent.height) < 1 {
-            masks = BeautyMasks(person: geometry.apply(stored.person),
-                                features: stored.features.map { geometry.apply($0) })
+        if wantsMasks, let stored = maskBox.value, let extent = stored.extent,
+           abs(extent.width - source.extent.width) < 1,
+           abs(extent.height - source.extent.height) < 1 {
+            masks = stored.map { geometry.apply($0) }
         }
         let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
         let processed = processor.process(image, settings: settings, hipY: hipY, masks: masks)

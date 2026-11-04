@@ -106,18 +106,24 @@ final class FrameProcessor {
         .cropped(to: extent)
     }
 
-    /// 人物の領域の中の肌色の部分だけが白で、目・眉・唇は黒になるマスク。
+    /// 肌の部分だけが白で、目・眉・唇は黒になるマスク。
+    /// 肌を塗り分けるモデルがあればその結果を、なければ「人物の領域 × 肌の色」を使う。
     private func skinMask(_ image: CIImage, masks: BeautyMasks, blurRadius: CGFloat) -> CIImage {
-        let skin = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
-            "inputCubeDimension": Self.cubeSize,
-            "inputCubeData": skinCube,
-            "inputColorSpace": sRGB,
-        ])
         let black = CIImage(color: .black).cropped(to: image.extent)
-        var mask = skin.applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: black,
-            kCIInputMaskImageKey: masks.person,
-        ])
+        var mask: CIImage
+        if let skin = masks.skin {
+            mask = skin
+        } else {
+            let skinColor = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
+                "inputCubeDimension": Self.cubeSize,
+                "inputCubeData": skinCube,
+                "inputColorSpace": sRGB,
+            ])
+            mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: black,
+                kCIInputMaskImageKey: masks.person ?? black,
+            ])
+        }
         mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
         if let features = masks.features {
             mask = mask.applyingFilter("CIBlendWithMask", parameters: [
