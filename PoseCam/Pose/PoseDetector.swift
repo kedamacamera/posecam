@@ -159,7 +159,7 @@ final class PoseDetector {
                 context.beginPath()
                 context.addLines(between: points)
                 context.closePath()
-                context.setLineWidth(faceWidth * 0.08)
+                context.setLineWidth(faceWidth * 0.05)
                 context.drawPath(using: .fillStroke)
             }
         }
@@ -167,7 +167,7 @@ final class PoseDetector {
         let mask = scaled(CIImage(cgImage: cgImage), to: imageSize)
         // 境目がくっきりしすぎないようにぼかす
         return mask.clampedToExtent()
-            .applyingGaussianBlur(sigma: imageSize.width * 0.004)
+            .applyingGaussianBlur(sigma: imageSize.width * 0.006)
             .cropped(to: CGRect(origin: .zero, size: imageSize))
     }
 

@@ -1,0 +1,33 @@
+# アプリの加工・判定のコードを Mac で実行し、結果の画像と数値を残す（手動で実行する）。
+name: Verify processing
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build verifier
+        run: |
+          mkdir -p bin
+          swiftc -O -o bin/verify \
+            PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift \
+            PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
+            PoseCam/Processing/ProcessingSettings.swift tools/verify/main.swift
+          # アプリと同じ肌のモデルを、実行ファイルの隣に置く（Bundle.main から読み込まれる）
+          xcrun coremlcompiler compile PoseCam/Resources/Models/SkinSegmenter.mlmodel bin/
+
+      - name: Run
+        run: |
+          ./bin/verify PoseCam/Resources/Poses/pose_23.jpg PoseCam/Resources/Poses/pose_24.jpg \
+            PoseCam/Resources/Poses/pose_26.jpg PoseCam/Resources/Poses/pose_00.jpg
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-output
+          path: out/
