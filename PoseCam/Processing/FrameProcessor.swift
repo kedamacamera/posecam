@@ -11,13 +11,13 @@ final class FrameProcessor {
         skinCube = Self.makeSkinCube(size: Self.cubeSize)
     }
 
-    /// hipY: 腰の高さ（画像座標・上が 0）。personMask: 人物の領域（白）。
+    /// hipY: 腰の高さ（画像座標・上が 0）。masks: 人物の領域と顔のパーツ。
     /// どちらも人物が見つからないときは nil で、そのときは美肌・脚長をかけない。
-    func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?, personMask: CIImage?) -> CIImage {
+    func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?, masks: BeautyMasks?) -> CIImage {
         let extent = input.extent
         var image = input
-        if settings.smoothing > 0.01 || settings.brightening > 0.01, let personMask {
-            image = beautify(image, settings: settings, personMask: personMask)
+        if settings.smoothing > 0.01 || settings.brightening > 0.01, let masks {
+            image = beautify(image, settings: settings, masks: masks)
         }
         image = settings.filter.apply(to: image)
         if settings.legLength > 0.01, let hipY {
@@ -28,17 +28,16 @@ final class FrameProcessor {
 
     // MARK: - 美肌・美白
 
-    private func beautify(_ image: CIImage, settings: ProcessingSettings, personMask: CIImage) -> CIImage {
+    private func beautify(_ image: CIImage, settings: ProcessingSettings, masks: BeautyMasks) -> CIImage {
         let extent = image.extent
         let longSide = max(extent.width, extent.height)
-        let mask = skinMask(image, personMask: personMask, blurRadius: longSide * 0.003)
+        let mask = skinMask(image, masks: masks, blurRadius: longSide * 0.003)
         var result = image
 
         if settings.smoothing > 0.01 {
-            let sigma = longSide * 0.003 * (0.5 + settings.smoothing)
-            let blurred = image.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
-            // 完全にぼかすとのっぺりするので、元の質感を少し残す
-            result = blend(blurred, over: result, mask: mask, amount: 0.8 * settings.smoothing)
+            let smooth = edgePreservingSmooth(image, amount: settings.smoothing)
+            // 完全に置き換えるとのっぺりするので、元の質感を少し残す
+            result = blend(smooth, over: result, mask: mask, amount: 0.9 * settings.smoothing)
         }
         if settings.brightening > 0.01 {
             let brightened = result
@@ -53,22 +52,45 @@ final class FrameProcessor {
         return result
     }
 
-    /// 人物の領域の中で、肌色の部分だけが白になるマスク。
-    private func skinMask(_ image: CIImage, personMask: CIImage, blurRadius: CGFloat) -> CIImage {
+    /// 輪郭を保ったまま、平らな部分（肌）だけをなめらかにする。
+    /// 縮小してぼかした画像を、元の画像の明るさの差を手がかりに拡大し直す（ガイド付きフィルタに近い）。
+    /// 明るさの差が大きい所（目・眉・髪の境目）は元のまま残る。
+    private func edgePreservingSmooth(_ image: CIImage, amount: Double) -> CIImage {
+        let extent = image.extent
+        let factor: CGFloat = 1.0 / 6.0
+        let small = image
+            .transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: 1 + 1.5 * amount)
+            .cropped(to: CGRect(x: 0, y: 0, width: extent.width * factor, height: extent.height * factor))
+        return image.applyingFilter("CIEdgePreserveUpsampleFilter", parameters: [
+            "inputSmallImage": small,
+            "inputSpatialSigma": 3.0,
+            "inputLumaSigma": 0.06 + 0.1 * amount,
+        ])
+        .cropped(to: extent)
+    }
+
+    /// 人物の領域の中の肌色の部分だけが白で、目・眉・唇は黒になるマスク。
+    private func skinMask(_ image: CIImage, masks: BeautyMasks, blurRadius: CGFloat) -> CIImage {
         let skin = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
             "inputCubeDimension": Self.cubeSize,
             "inputCubeData": skinCube,
             "inputColorSpace": sRGB,
         ])
         let black = CIImage(color: .black).cropped(to: image.extent)
-        return skin
-            .applyingFilter("CIBlendWithMask", parameters: [
+        var mask = skin.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: black,
+            kCIInputMaskImageKey: masks.person,
+        ])
+        mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
+        if let features = masks.features {
+            mask = mask.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: black,
-                kCIInputMaskImageKey: personMask,
+                kCIInputMaskImageKey: features,
             ])
-            .clampedToExtent()
-            .applyingGaussianBlur(sigma: blurRadius)
-            .cropped(to: image.extent)
+        }
+        return mask
     }
 
     private func blend(_ foreground: CIImage, over background: CIImage, mask: CIImage, amount: Double) -> CIImage {

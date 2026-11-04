@@ -60,7 +60,13 @@ enum PoseImporter {
         let aspect = image.extent.width / image.extent.height
         let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
         let hasLegs = pose[.leftKnee] != nil || pose[.rightKnee] != nil
+        // 骨格と輪郭に同じ変換をかけて、画面上で重なるようにする
+        let transform = PoseSpace.fitTransform(isotropic, upperBody: !hasLegs)
+        let outline = PoseDetector.personOutline(ciImage: image)?.map {
+            transform(PoseSpace.toIsotropic($0, aspect: aspect))
+        }
         return PoseTemplate(name: name, category: PoseLibrary.userCategory,
-                            joints: PoseSpace.fit(isotropic, upperBody: !hasLegs), isUserCreated: true)
+                            joints: isotropic.mapValues(transform), isUserCreated: true,
+                            recommendedZoom: 1, outline: outline)
     }
 }

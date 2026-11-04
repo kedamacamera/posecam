@@ -83,10 +83,16 @@ enum PoseSpace {
     /// 等方座標の骨格を、画面内に収まる大きさ・位置に整える。
     /// upperBody のときは上半身だけを基準に大きく配置する（脚は画面外にはみ出してよい）。
     static func fit(_ points: [Joint: CGPoint], upperBody: Bool) -> [Joint: CGPoint] {
+        let transform = fitTransform(points, upperBody: upperBody)
+        return points.mapValues(transform)
+    }
+
+    /// fit と同じ変換を返す。骨格と輪郭に同じ変換をかけるときに使う。
+    static func fitTransform(_ points: [Joint: CGPoint], upperBody: Bool) -> (CGPoint) -> CGPoint {
         let considered = points.filter { !upperBody || upperJoints.contains($0.key) }.map(\.value)
         guard let minX = considered.map(\.x).min(), let maxX = considered.map(\.x).max(),
               let minY = considered.map(\.y).min(), let maxY = considered.map(\.y).max() else {
-            return points
+            return { $0 }
         }
         // 鼻より上にある頭頂部のぶん余白を足す
         let top = minY - (maxY - minY) * (upperBody ? 0.2 : 0.1)
@@ -97,8 +103,6 @@ enum PoseSpace {
         let centerX = (minX + maxX) / 2
         let centerY = (top + maxY) / 2
         let targetCenterY: CGFloat = upperBody ? 0.58 : 0.52
-        return points.mapValues {
-            CGPoint(x: ($0.x - centerX) * scale, y: ($0.y - centerY) * scale + targetCenterY)
-        }
+        return { CGPoint(x: ($0.x - centerX) * scale, y: ($0.y - centerY) * scale + targetCenterY) }
     }
 }

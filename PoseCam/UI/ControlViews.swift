@@ -169,17 +169,24 @@ enum ZoomFormat {
     }
 }
 
-/// 倍率ボタン（0.5 / 1 / 2 / 5 など）。長押しで細かく調整するスライダーを出す。
+/// 倍率ボタン（0.5 / 1 / 2 / 5 など）。
+/// 標準カメラと同じく、タップでその倍率に切り替え、長押ししたまま左右に動かすと細かくズームする。
+/// 指を離した後もしばらく目盛りが残り、目盛りを左右に動かして続けて調整できる。
 struct LensBar: View {
     let options: [LensOption]
     let zoom: CGFloat
     let minZoom: CGFloat
     let maxZoom: CGFloat
+    let activeLens: String?
     let onSelect: (CGFloat) -> Void
     let onZoom: (CGFloat) -> Void
 
-    @State private var showDial = false
+    @State private var showRuler = false
+    @State private var dragStartZoom: CGFloat?
     @State private var hideTask: Task<Void, Never>?
+
+    /// 指を何ポイント動かすと倍率が e 倍になるか
+    static let pointsPerE: CGFloat = 140
 
     /// いま使っているボタン（現在の倍率以下でいちばん大きいもの）
     private var activeFactor: CGFloat? {
@@ -187,13 +194,19 @@ struct LensBar: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if showDial {
-                ZoomDial(zoom: zoom, minZoom: minZoom, maxZoom: maxZoom) { value in
-                    onZoom(value)
-                    scheduleHide()
-                }
-                .transition(.opacity)
+        VStack(spacing: 6) {
+            if showRuler {
+                ZoomRuler(zoom: zoom, minZoom: minZoom, maxZoom: maxZoom,
+                          lensFactors: options.map(\.displayFactor))
+                    .frame(height: 64)
+                    .contentShape(Rectangle())
+                    .gesture(dragGesture)
+                    .transition(.opacity)
+            } else if let activeLens {
+                Text(activeLens)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .shadow(color: .black.opacity(0.6), radius: 2)
             }
             HStack(spacing: 6) {
                 ForEach(options) { option in
@@ -204,10 +217,14 @@ struct LensBar: View {
                         .frame(width: active ? 40 : 32, height: active ? 40 : 32)
                         .background(Circle().fill(Color.black.opacity(0.45)))
                         .onTapGesture { onSelect(option.displayFactor) }
-                        .onLongPressGesture(minimumDuration: 0.35) {
-                            withAnimation(.easeOut(duration: 0.15)) { showDial = true }
-                            scheduleHide()
-                        }
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.3)
+                                .onEnded { _ in
+                                    withAnimation(.easeOut(duration: 0.15)) { showRuler = true }
+                                    hideTask?.cancel()
+                                }
+                                .sequenced(before: dragGesture)
+                        )
                 }
             }
             .padding(4)
@@ -215,41 +232,90 @@ struct LensBar: View {
         }
     }
 
+    /// 左へ動かすと拡大、右へ動かすと縮小（標準カメラと同じ向き）。
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                withAnimation(.easeOut(duration: 0.15)) { showRuler = true }
+                hideTask?.cancel()
+                let start = dragStartZoom ?? zoom
+                dragStartZoom = start
+                let next = start * exp(-value.translation.width / Self.pointsPerE)
+                onZoom(min(max(next, minZoom), maxZoom))
+            }
+            .onEnded { _ in
+                dragStartZoom = nil
+                scheduleHide()
+            }
+    }
+
     private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.2)) { showDial = false }
+            withAnimation(.easeOut(duration: 0.2)) { showRuler = false }
         }
     }
 }
 
-/// 長押しで出る細かいズーム調整。倍率は対数で並べて、低倍率でも操作しやすくする。
-struct ZoomDial: View {
+/// 標準カメラのような目盛り。中央の黄色い線が現在の倍率で、目盛りは対数で並ぶ。
+struct ZoomRuler: View {
     let zoom: CGFloat
     let minZoom: CGFloat
     let maxZoom: CGFloat
-    let onChange: (CGFloat) -> Void
+    let lensFactors: [CGFloat]
 
     var body: some View {
-        VStack(spacing: 4) {
-            Text(ZoomFormat.short(zoom) + "×")
-                .font(.system(size: 13, weight: .bold).monospacedDigit())
-                .foregroundStyle(.yellow)
-            Slider(
-                value: Binding(get: { Double(log(zoom)) }, set: { onChange(CGFloat(exp($0))) }),
-                in: Double(log(minZoom))...Double(log(max(maxZoom, minZoom + 0.1)))
-            )
-            .tint(.yellow)
+        Canvas { context, size in
+            let center = size.width / 2
+            let baseline = size.height - 8
+            func x(_ value: CGFloat) -> CGFloat {
+                center + (log(value) - log(zoom)) * LensBar.pointsPerE
+            }
+
+            // 細かい目盛り
+            var value = minZoom
+            while value <= maxZoom + 0.001 {
+                let px = x(value)
+                if px > -10 && px < size.width + 10 {
+                    var tick = Path()
+                    tick.move(to: CGPoint(x: px, y: baseline - 8))
+                    tick.addLine(to: CGPoint(x: px, y: baseline))
+                    context.stroke(tick, with: .color(.white.opacity(0.6)), lineWidth: 1)
+                }
+                value *= 1.04
+            }
+
+            // レンズの倍率と大きな倍率には数字を付ける
+            let labels = Array(Set(lensFactors + [10, 15].filter { $0 <= maxZoom }))
+            for factor in labels {
+                let px = x(factor)
+                guard px > -20 && px < size.width + 20 else { continue }
+                var tick = Path()
+                tick.move(to: CGPoint(x: px, y: baseline - 14))
+                tick.addLine(to: CGPoint(x: px, y: baseline))
+                context.stroke(tick, with: .color(.white), lineWidth: 2)
+                context.draw(Text(ZoomFormat.short(factor)).font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white),
+                             at: CGPoint(x: px, y: baseline - 24))
+            }
+
+            // 現在の倍率
+            var needle = Path()
+            needle.move(to: CGPoint(x: center, y: baseline - 20))
+            needle.addLine(to: CGPoint(x: center, y: baseline + 4))
+            context.stroke(needle, with: .color(.yellow), lineWidth: 2)
+            context.draw(Text(ZoomFormat.short(zoom) + "×").font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.yellow),
+                         at: CGPoint(x: center, y: 8))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.55)))
-        .padding(.horizontal, 40)
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.5), .black.opacity(0.5), .clear],
+                           startPoint: .leading, endPoint: .trailing)
+        )
     }
 }
-
 // MARK: - パネル（ポーズ・フィルター・美肌）
 
 enum ControlPanel: String, CaseIterable, Identifiable {

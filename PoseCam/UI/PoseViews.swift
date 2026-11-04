@@ -89,8 +89,52 @@ enum PoseDrawing {
     static func drawOutline(_ points: [Joint: CGPoint], in context: GraphicsContext,
                             color: Color, lineWidth: CGFloat, fillOpacity: Double) {
         guard let shape = bodyShape(points) else { return }
+        draw(shape, in: context, color: color, lineWidth: lineWidth, fillOpacity: fillOpacity)
+    }
+
+    /// 写真から取った輪郭（閉じた多角形）を、なめらかな曲線にして描く。
+    static func drawContour(_ points: [CGPoint], in context: GraphicsContext,
+                            color: Color, lineWidth: CGFloat, fillOpacity: Double) {
+        draw(smoothClosedPath(points), in: context, color: color, lineWidth: lineWidth, fillOpacity: fillOpacity)
+    }
+
+    /// 型を描く。写真から取った輪郭があればそれを、なければ骨格から作った形を使う。
+    /// transform は等方座標から描画先の座標への変換。
+    static func drawTemplate(_ template: PoseTemplate, in context: GraphicsContext,
+                             transform: (CGPoint) -> CGPoint,
+                             color: Color, lineWidth: CGFloat, fillOpacity: Double) {
+        if let outline = template.outline {
+            drawContour(outline.map(transform), in: context, color: color,
+                        lineWidth: lineWidth, fillOpacity: fillOpacity)
+        } else {
+            drawOutline(template.joints.mapValues(transform), in: context, color: color,
+                        lineWidth: lineWidth, fillOpacity: fillOpacity)
+        }
+    }
+
+    private static func draw(_ shape: Path, in context: GraphicsContext,
+                             color: Color, lineWidth: CGFloat, fillOpacity: Double) {
         context.fill(shape, with: .color(color.opacity(fillOpacity)))
         context.stroke(shape, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round))
+    }
+
+    /// 点を通るなめらかな閉曲線（Catmull-Rom をベジェ曲線に直したもの）。
+    static func smoothClosedPath(_ points: [CGPoint]) -> Path {
+        var path = Path()
+        let n = points.count
+        guard n > 2 else { return path }
+        path.move(to: points[0])
+        for i in 0..<n {
+            let p0 = points[(i - 1 + n) % n]
+            let p1 = points[i]
+            let p2 = points[(i + 1) % n]
+            let p3 = points[(i + 2) % n]
+            path.addCurve(to: p2,
+                          control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6),
+                          control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
+        }
+        path.closeSubpath()
+        return path
     }
 
     private static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
@@ -122,19 +166,19 @@ enum PoseDrawing {
         }
     }
 
-    /// サムネイル用に、骨格全体を枠に収める。
-    static func fit(_ points: [Joint: CGPoint], into size: CGSize, inset: CGFloat) -> [Joint: CGPoint] {
-        let xs = points.values.map(\.x)
-        let ys = points.values.map(\.y)
-        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return [:] }
+    /// サムネイル用に、点の集まり全体を枠に収める変換を返す。
+    static func fitTransform(_ points: [CGPoint], into size: CGSize, inset: CGFloat) -> (CGPoint) -> CGPoint {
+        let xs = points.map(\.x)
+        let ys = points.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else {
+            return { $0 }
+        }
         let width = max(maxX - minX, 0.001)
         let height = max(maxY - minY, 0.001)
         let scale = min((size.width - inset * 2) / width, (size.height - inset * 2) / height)
         let offsetX = (size.width - width * scale) / 2
         let offsetY = (size.height - height * scale) / 2
-        return points.mapValues {
-            CGPoint(x: offsetX + ($0.x - minX) * scale, y: offsetY + ($0.y - minY) * scale)
-        }
+        return { CGPoint(x: offsetX + ($0.x - minX) * scale, y: offsetY + ($0.y - minY) * scale) }
     }
 }
 
@@ -147,12 +191,12 @@ struct PoseTemplateOverlay: View {
 
     var body: some View {
         Canvas { context, size in
-            let points = template.joints.mapValues { PoseSpace.toView($0, size: size) }
             var layer = context
             layer.opacity = opacity
             layer.drawLayer { inner in
-                PoseDrawing.drawOutline(points, in: inner, color: matched ? .green : .white,
-                                        lineWidth: 3, fillOpacity: 0.12)
+                PoseDrawing.drawTemplate(template, in: inner,
+                                         transform: { PoseSpace.toView($0, size: size) },
+                                         color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0.12)
             }
         }
         .shadow(color: .black.opacity(0.35), radius: 2)
@@ -180,8 +224,10 @@ struct PoseThumbnail: View {
     var body: some View {
         VStack(spacing: 4) {
             Canvas { context, size in
-                let points = PoseDrawing.fit(template.joints, into: size, inset: 10)
-                PoseDrawing.drawOutline(points, in: context, color: .white, lineWidth: 1.2, fillOpacity: 0.15)
+                let transform = PoseDrawing.fitTransform(template.outline ?? Array(template.joints.values),
+                                                         into: size, inset: template.outline == nil ? 10 : 4)
+                PoseDrawing.drawTemplate(template, in: context, transform: transform,
+                                         color: .white, lineWidth: 1.2, fillOpacity: 0.15)
             }
             .frame(width: 56, height: 64)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.12)))

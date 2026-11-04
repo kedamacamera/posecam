@@ -96,7 +96,11 @@ struct ContentView: View {
         .onChange(of: selectedPose) { updateTemplate() }
         .onChange(of: mirrorPose) { updateTemplate() }
         .onChange(of: scenePhase) {
-            if scenePhase != .active { camera.stopRecordingIfNeeded() }
+            if scenePhase != .active {
+                camera.stopRecordingIfNeeded()
+                // 起動直後に閉じられただけのときに「落ちた」と判定しないようにする
+                Diagnostics.markHealthy()
+            }
         }
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
@@ -163,7 +167,7 @@ struct ContentView: View {
             }
             Spacer()
             LabeledIconButton(systemImage: "square.stack.3d.down.right",
-                              label: camera.burstCount == 1 ? "連続撮影" : "1秒×\(camera.burstCount)枚",
+                              label: camera.burstCount == 1 ? "連続撮影" : "\(camera.burstCount)枚",
                               active: camera.burstCount > 1) {
                 camera.burstCount = next(after: camera.burstCount, in: [1, 3, 10])
             }
@@ -171,10 +175,9 @@ struct ContentView: View {
             .opacity(camera.mode == .photo ? 1 : 0.4)
             Spacer()
             Menu {
-                Toggle("シャッター音を消す", isOn: $camera.muteShutter)
-                    .disabled(!camera.canMuteShutter)
+                Toggle("無音で撮影", isOn: $camera.muteShutter)
                 if !camera.canMuteShutter {
-                    Text("この iPhone ではシャッター音を消せません（日本向けの機種は iOS が許可していません）")
+                    Text("映像のコマを写真として保存します（約 600〜830 万画素）")
                 }
                 Toggle("骨格を表示", isOn: $showSkeleton)
             } label: {
@@ -222,6 +225,7 @@ struct ContentView: View {
             if camera.lensOptions.count > 1 {
                 LensBar(options: camera.lensOptions, zoom: camera.displayZoom,
                         minZoom: camera.minDisplayZoom, maxZoom: camera.maxDisplayZoom,
+                        activeLens: camera.activeLensName,
                         onSelect: { camera.setDisplayZoom($0, animated: true) },
                         onZoom: { camera.setDisplayZoom($0) })
             }
