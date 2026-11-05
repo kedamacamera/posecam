@@ -200,27 +200,27 @@ enum PoseMatcher {
 
     // MARK: - 顔
 
-    /// 顔の位置・大きさ・傾きの一致度（0〜100）。どちらも等方座標。
-    /// - 位置: 両目の真ん中のずれ。顔の幅の 15% までは満点、80% ずれると 0 点
+    /// 顔の位置・大きさ・向き・傾きの一致度（0〜100）。どちらも等方座標。
+    /// 横顔でも使えるよう、目の位置ではなく顔の枠で比べる。
+    /// - 位置: 顔の枠の中心のずれ。顔の幅の 15% までは満点、80% ずれると 0 点
     ///   （全身の写真で顔が小さいときは、画面の高さの 8% を顔の幅とみなして厳しくなりすぎないようにする）
-    /// - 大きさ: 両目の間の長さの比。1.1 倍までは満点、1.65 倍（または 0.6 倍）で 0 点
-    /// - 傾き: 両目を結ぶ線の角度の差。5 度までは満点、30 度で 0 点
+    /// - 大きさ: 顔の枠の高さの比。1.1 倍までは満点、1.65 倍（または 0.6 倍）で 0 点
+    /// - 向き（正面・斜め・横顔）: 左右の向きの差。15 度までは満点、45 度で 0 点
+    /// - 傾き: 5 度までは満点、30 度で 0 点
     static func faceScore(template t: FaceShape, detected d: FaceShape) -> Double {
-        func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
         func ramp(_ value: Double, _ slack: Double, _ zero: Double) -> Double {
             max(0, min(1, 1 - (value - slack) / (zero - slack)))
         }
-        let tEyes = hypot(Double(t.rightEye.x - t.leftEye.x), Double(t.rightEye.y - t.leftEye.y))
-        let dEyes = hypot(Double(d.rightEye.x - d.leftEye.x), Double(d.rightEye.y - d.leftEye.y))
-        guard tEyes > 1e-4, dEyes > 1e-4 else { return 0 }
-        let tMid = mid(t.leftEye, t.rightEye), dMid = mid(d.leftEye, d.rightEye)
+        guard t.height > 1e-4, d.height > 1e-4 else { return 0 }
         let faceWidth = max(Double(t.width), 0.08)
-        let position = ramp(hypot(Double(tMid.x - dMid.x), Double(tMid.y - dMid.y)) / faceWidth, 0.15, 0.8)
-        let size = ramp(abs(log(dEyes / tEyes)), log(1.1), log(1.65))
-        let tAngle = atan2(Double(t.rightEye.y - t.leftEye.y), Double(t.rightEye.x - t.leftEye.x))
-        let dAngle = atan2(Double(d.rightEye.y - d.leftEye.y), Double(d.rightEye.x - d.leftEye.x))
-        let angle = ramp(abs(tAngle - dAngle) * 180 / .pi, 5, 30)
-        return position * size * angle * 100
+        let position = ramp(hypot(Double(t.center.x - d.center.x), Double(t.center.y - d.center.y)) / faceWidth,
+                            0.15, 0.8)
+        let size = ramp(abs(log(Double(d.height / t.height))), log(1.1), log(1.65))
+        let yaw = ramp(abs(t.yaw - d.yaw), 15, 45)
+        var rollDifference = abs(t.roll - d.roll).truncatingRemainder(dividingBy: 360)
+        if rollDifference > 180 { rollDifference = 360 - rollDifference }
+        let roll = ramp(rollDifference, 5, 30)
+        return position * size * yaw * roll * 100
     }
 
     /// 関節・人の形・顔の点数をまとめる。あるものだけで平均する。

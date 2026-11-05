@@ -78,6 +78,8 @@ final class PoseDetector {
         segmentation.qualityLevel = .fast
         segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
         let faceRequest = VNDetectFaceLandmarksRequest()
+        // 向き（yaw・roll・pitch）を連続した値で返す版（iOS 15 以降）
+        faceRequest.revision = VNDetectFaceLandmarksRequestRevision3
         var requests: [VNRequest] = [poseRequest]
         if silhouetteWidth != nil { requests.append(segmentation) }
         if wantsFace { requests.append(faceRequest) }
@@ -102,29 +104,40 @@ final class PoseDetector {
     /// 写真のいちばん大きい顔のパーツ（画像座標）。型を作るときに使う。
     static func faceShape(ciImage: CIImage) -> FaceShape? {
         let request = VNDetectFaceLandmarksRequest()
+        request.revision = VNDetectFaceLandmarksRequestRevision3
         try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request])
         return faceShape(from: request.results ?? [])
     }
 
-    /// いちばん大きい顔のパーツを、画像座標（左上原点・0...1）で返す。
+    /// いちばん大きい顔を、画像座標（左上原点・0...1）で返す。
+    /// 横顔などでパーツが取れなくても、枠と向き（iOS 15 以降の顔検出は向きを連続した値で返す）があれば返す。
     static func faceShape(from faces: [VNFaceObservation]) -> FaceShape? {
-        guard let face = faces.max(by: { $0.boundingBox.width < $1.boundingBox.width }),
-              let marks = face.landmarks,
-              let contour = marks.faceContour, let leftEye = marks.leftEye, let rightEye = marks.rightEye,
-              let nose = marks.nose, let lips = marks.outerLips else { return nil }
-        // imageSize を 1x1 にすると、画像全体に対する 0...1 の座標（左下原点）になる
+        guard let face = faces.max(by: { $0.boundingBox.height < $1.boundingBox.height }) else { return nil }
+        let box = face.boundingBox  // 左下原点
+        // Vision の yaw は本人から見た向き。画像の右を向くと負になるので、画像基準（右が正）に直す
+        let yaw = -(face.yaw?.doubleValue ?? 0) * 180 / .pi
+        let roll = (face.roll?.doubleValue ?? 0) * 180 / .pi
+        var shape = FaceShape(center: CGPoint(x: box.midX, y: 1 - box.midY), height: box.height, yaw: yaw, roll: roll)
+        guard let marks = face.landmarks else { return shape }
         let unit = CGSize(width: 1, height: 1)
-        func points(_ region: VNFaceLandmarkRegion2D) -> [CGPoint] {
-            region.pointsInImage(imageSize: unit).map { CGPoint(x: $0.x, y: 1 - $0.y) }
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [CGPoint] {
+            // imageSize を 1x1 にすると、画像全体に対する 0...1 の座標（左下原点）になる
+            region?.pointsInImage(imageSize: unit).map { CGPoint(x: $0.x, y: 1 - $0.y) } ?? []
         }
-        func center(_ region: VNFaceLandmarkRegion2D) -> CGPoint {
+        func center(_ region: VNFaceLandmarkRegion2D?) -> CGPoint? {
             let p = points(region)
-            return CGPoint(x: p.map(\.x).reduce(0, +) / CGFloat(max(p.count, 1)),
-                           y: p.map(\.y).reduce(0, +) / CGFloat(max(p.count, 1)))
+            guard !p.isEmpty else { return nil }
+            return CGPoint(x: p.map(\.x).reduce(0, +) / CGFloat(p.count), y: p.map(\.y).reduce(0, +) / CGFloat(p.count))
         }
-        let a = center(leftEye), b = center(rightEye)
-        return FaceShape(contour: points(contour), leftEye: a.x <= b.x ? a : b, rightEye: a.x <= b.x ? b : a,
-                         nose: center(nose), mouth: points(lips))
+        shape.contour = points(marks.faceContour)
+        shape.mouth = points(marks.outerLips)
+        shape.nose = center(marks.nose)
+        // 横を向くと奥の目は見えないので、正面に近いとき（左右 35 度以内）だけ両目を使う
+        if abs(yaw) < 35, let a = center(marks.leftEye), let b = center(marks.rightEye) {
+            shape.leftEye = a.x <= b.x ? a : b
+            shape.rightEye = a.x <= b.x ? b : a
+        }
+        return shape
     }
 
     /// 人の領域のマスクを、width × height のマス目に縮める（各マスの中心の値で判定）。

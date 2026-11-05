@@ -156,27 +156,53 @@ enum PoseDrawing {
     }
 
     /// 顔のボーン（あごのライン・両目・鼻・口）。transform は顔の座標から描画先の座標への変換。
+    /// 横顔などでパーツが取れていないときは、顔の枠（楕円）と、顔の向いている方向の線を描く。
     static func drawFace(_ face: FaceShape, in context: GraphicsContext, transform: (CGPoint) -> CGPoint,
                          color: Color, lineWidth: CGFloat) {
         let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-        var jaw = Path()
-        jaw.addLines(face.contour.map(transform))
-        context.stroke(jaw, with: .color(color), style: style)
-        var mouth = Path()
-        mouth.addLines(face.mouth.map(transform))
-        mouth.closeSubpath()
-        context.stroke(mouth, with: .color(color), style: style)
-        // 両目を結ぶ線と、目の間から鼻への線（顔の向き・傾きが分かるように）
-        let left = transform(face.leftEye), right = transform(face.rightEye), nose = transform(face.nose)
-        var axis = Path()
-        axis.move(to: left)
-        axis.addLine(to: right)
-        axis.move(to: CGPoint(x: (left.x + right.x) / 2, y: (left.y + right.y) / 2))
-        axis.addLine(to: nose)
-        context.stroke(axis, with: .color(color.opacity(0.7)), style: StrokeStyle(lineWidth: lineWidth * 0.7, lineCap: .round))
+        let center = transform(face.center)
+        let top = transform(CGPoint(x: face.center.x, y: face.center.y - face.height / 2))
+        let bottom = transform(CGPoint(x: face.center.x, y: face.center.y + face.height / 2))
+        let h = abs(bottom.y - top.y)
+        if face.contour.count > 2 {
+            var jaw = Path()
+            jaw.addLines(face.contour.map(transform))
+            context.stroke(jaw, with: .color(color), style: style)
+        } else {
+            // 顔の枠（横顔では少し細い楕円）
+            let w = h * (abs(face.yaw) > 45 ? 0.6 : 0.78)
+            let rect = CGRect(x: center.x - w / 2, y: center.y - h / 2, width: w, height: h)
+            context.stroke(Path(ellipseIn: rect), with: .color(color), style: style)
+        }
+        if face.mouth.count > 2 {
+            var mouth = Path()
+            mouth.addLines(face.mouth.map(transform))
+            mouth.closeSubpath()
+            context.stroke(mouth, with: .color(color), style: style)
+        }
         let r = lineWidth * 1.6
-        for p in [left, right] {
-            context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
+        if let leftEye = face.leftEye, let rightEye = face.rightEye {
+            let left = transform(leftEye), right = transform(rightEye)
+            var axis = Path()
+            axis.move(to: left)
+            axis.addLine(to: right)
+            if let nose = face.nose {
+                axis.move(to: CGPoint(x: (left.x + right.x) / 2, y: (left.y + right.y) / 2))
+                axis.addLine(to: transform(nose))
+            }
+            context.stroke(axis, with: .color(color.opacity(0.7)), style: StrokeStyle(lineWidth: lineWidth * 0.7, lineCap: .round))
+            for p in [left, right] {
+                context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
+            }
+        } else {
+            // 顔の向き: 中心から、向いている方向へ線を伸ばす（横顔ほど長い）
+            let angle = face.yaw * .pi / 180
+            let tip = CGPoint(x: center.x + CGFloat(sin(angle)) * h * 0.55, y: center.y)
+            var direction = Path()
+            direction.move(to: center)
+            direction.addLine(to: tip)
+            context.stroke(direction, with: .color(color), style: style)
+            context.fill(Path(ellipseIn: CGRect(x: tip.x - r, y: tip.y - r, width: r * 2, height: r * 2)), with: .color(color))
         }
     }
 

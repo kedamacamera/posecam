@@ -4,34 +4,54 @@ import Foundation
 
 // iPhone 専用の部品（UIKit）を使わないので、Mac の確認・事前計算ツール（tools/）からも使える。
 
-/// 顔のパーツ（顔の輪郭・両目・鼻・口）。座標系は使う所に合わせる（画像座標か等方座標）。
-/// 目は「画像の左側の目」「右側の目」で持つ（本人の左右ではない）。左右反転・インカメラの鏡像でも扱いやすい。
+/// 顔の位置・大きさ・向きと、取れたときは顔のパーツ（あご・両目・鼻・口）。
+/// 座標系は使う所に合わせる（画像座標か等方座標）。
+///
+/// 横顔では片目しか見えず、目・口の位置は取れないことがある（iPhone の顔検出は向きだけは横顔でも返す）。
+/// そのため、位置と大きさは「顔の枠」（中心と高さ）で、向きは yaw（左右）と roll（傾き）で比べ、
+/// パーツは表示と補助にだけ使う。
+/// 目は「画像の左側の目」「右側の目」で持つ（本人の左右ではない）。
 struct FaceShape: Codable, Equatable {
-    /// あごのライン（片方の耳の辺りから、あごを通って反対側まで）
-    var contour: [CGPoint]
-    var leftEye: CGPoint
-    var rightEye: CGPoint
-    var nose: CGPoint
-    /// 唇の外側の輪郭
-    var mouth: [CGPoint]
+    /// 顔の枠の中心
+    var center: CGPoint
+    /// 顔の枠の高さ（y の単位。画像座標でも等方座標でも画面の高さに対する割合）
+    var height: CGFloat
+    /// 左右の向き（度）。正面が 0。画像の右を向くと正
+    var yaw: Double
+    /// 傾き（度）。正面で頭がまっすぐなら 0
+    var roll: Double
+    /// あごのライン（取れたときだけ）
+    var contour: [CGPoint] = []
+    var leftEye: CGPoint?
+    var rightEye: CGPoint?
+    var nose: CGPoint?
+    /// 唇の外側の輪郭（取れたときだけ）
+    var mouth: [CGPoint] = []
 
     func map(_ transform: (CGPoint) -> CGPoint) -> FaceShape {
-        FaceShape(contour: contour.map(transform), leftEye: transform(leftEye), rightEye: transform(rightEye),
-                  nose: transform(nose), mouth: mouth.map(transform))
+        var result = self
+        result.center = transform(center)
+        result.contour = contour.map(transform)
+        result.leftEye = leftEye.map(transform)
+        result.rightEye = rightEye.map(transform)
+        result.nose = nose.map(transform)
+        result.mouth = mouth.map(transform)
+        return result
     }
 
-    /// 等方座標で左右反転したもの（左右の目も入れ替える）
+    /// 等方座標で左右反転したもの（左右の目を入れ替え、向きと傾きの符号も逆にする）
     func mirrored() -> FaceShape {
         let flip = { (p: CGPoint) in CGPoint(x: -p.x, y: p.y) }
-        return FaceShape(contour: contour.map(flip), leftEye: flip(rightEye), rightEye: flip(leftEye),
-                         nose: flip(nose), mouth: mouth.map(flip))
+        var result = map(flip)
+        result.leftEye = rightEye.map(flip)
+        result.rightEye = leftEye.map(flip)
+        result.yaw = -yaw
+        result.roll = -roll
+        return result
     }
 
-    /// 顔の幅（輪郭の左右の端の間）
-    var width: CGFloat {
-        let xs = contour.map(\.x)
-        return (xs.max() ?? 0) - (xs.min() ?? 0)
-    }
+    /// 顔の幅のめやす（顔の枠はほぼ縦長なので高さの 0.8 倍）
+    var width: CGFloat { height * 0.8 }
 }
 
 /// 写真から取り出した型の形（等方座標）。

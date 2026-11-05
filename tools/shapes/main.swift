@@ -109,10 +109,18 @@ for sheetIndex in stride(from: 0, to: previews.count, by: perSheet) {
             canvas.addLines(between: face.mouth.map(point))
             canvas.closePath()
             canvas.strokePath()
-            for eye in [face.leftEye, face.rightEye] {
+            for eye in [face.leftEye, face.rightEye].compactMap({ $0 }) {
                 let c = point(eye)
                 canvas.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
             }
+            // 顔の枠と向き（yaw）
+            let c = point(face.center)
+            let h = face.height * photoRect.height
+            canvas.stroke(CGRect(x: c.x - h * 0.4, y: c.y - h / 2, width: h * 0.8, height: h))
+            canvas.beginPath()
+            canvas.move(to: c)
+            canvas.addLine(to: CGPoint(x: c.x + CGFloat(sin(face.yaw * .pi / 180)) * h * 0.6, y: c.y))
+            canvas.strokePath()
         }
         // 撮影画面に重なる枠（3:4）
         let size = item.analysis.size
