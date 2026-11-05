@@ -423,6 +423,15 @@ final class PoseDetector {
                 context.addLines(between: points)
                 context.closePath()
                 context.fillPath()
+                // 顔の輪郭の点は実際のあごの縁より少し内側にあり、あごの縁・あごの下の剃り跡が範囲から外れて
+                // 一部しか消えなかった。輪郭の線を太くなぞって、縁の外側まで広げる
+                context.setStrokeColor(gray: 1, alpha: 1)
+                context.setLineWidth(faceWidth * 0.14)
+                context.setLineJoin(.round)
+                context.setLineCap(.round)
+                context.beginPath()
+                context.addLines(between: points)
+                context.strokePath()
                 context.restoreGState()
                 if let lips = marks.outerLips?.pointsInImage(imageSize: size), lips.count > 2 {
                     context.setFillColor(gray: 0, alpha: 1)
