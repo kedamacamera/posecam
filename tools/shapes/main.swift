@@ -56,6 +56,7 @@ let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
 try encoder.encode(shapes).write(to: outDir.appendingPathComponent("builtin_shapes.json"))
 print("shapes: \(shapes.count), failed: \(failed.count) \(failed)")
+print("table edges: " + shapes.filter { $0.value.lines != nil }.map { "\($0.key)=\($0.value.lines!.count)" }.sorted().joined(separator: " "))
 
 // MARK: - 確認用の一覧画像
 
@@ -89,6 +90,13 @@ for sheetIndex in stride(from: 0, to: previews.count, by: perSheet) {
             canvas.beginPath()
             canvas.addLines(between: outline.map(point))
             canvas.closePath()
+            canvas.strokePath()
+        }
+        // テーブルの縁（料理・ドリンク）は赤
+        canvas.setStrokeColor(CGColor(red: 1, green: 0.2, blue: 0.2, alpha: 1))
+        for line in item.analysis.lines where line.count > 1 {
+            canvas.beginPath()
+            canvas.addLines(between: line.map(point))
             canvas.strokePath()
         }
         canvas.setStrokeColor(CGColor(red: 0, green: 0.8, blue: 1, alpha: 1))

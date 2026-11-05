@@ -63,6 +63,8 @@ struct PoseShape: Codable {
     var extraOutlines: [[CGPoint]]?
     /// いちばん大きく写っている顔のパーツ
     var face: FaceShape?
+    /// 料理・ドリンクの写真のテーブルの縁（開いた線）
+    var lines: [[CGPoint]]?
 }
 
 /// 写真を解析した結果。座標は写真の画像座標（左上原点・0...1）。
@@ -74,6 +76,8 @@ struct PhotoAnalysis {
     let outlines: [[CGPoint]]
     /// いちばん大きく写っている顔のパーツ（画像座標）
     var face: FaceShape?
+    /// テーブルの縁（画像座標の [始点, 終点]）
+    var lines: [[CGPoint]] = []
 
     /// 写っている人物全員の範囲（ピクセル）。輪郭があれば輪郭、なければ関節から求める
     var personBounds: CGRect {
@@ -109,7 +113,10 @@ enum PoseImporter {
                                                              y: -source.extent.minY))
         let outlines = PoseDetector.objectOutlines(ciImage: image)
         guard !outlines.isEmpty else { return nil }
-        return PhotoAnalysis(size: image.extent.size, joints: [:], outlines: outlines)
+        var analysis = PhotoAnalysis(size: image.extent.size, joints: [:], outlines: outlines)
+        // テーブルの縁も型に描く（器の位置だけでなく、テーブルの傾き・高さも合わせられる）
+        analysis.lines = TableEdges.find(in: image, excluding: outlines)
+        return analysis
     }
 
     /// 料理・ドリンクは写真の構図そのものが手本なので、写真の中央を画面の比率でできるだけ大きく切り抜く。
@@ -153,7 +160,8 @@ enum PoseImporter {
             points: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, convert($0.value)) }),
             outline: outlines.first,
             extraOutlines: outlines.count > 1 ? Array(outlines.dropFirst()) : nil,
-            face: analysis.face?.map(convert))
+            face: analysis.face?.map(convert),
+            lines: analysis.lines.isEmpty ? nil : analysis.lines.map { $0.map(convert) })
     }
 
     static func makeTemplate(name: String, shape: PoseShape) -> PoseTemplate {
@@ -162,6 +170,7 @@ enum PoseImporter {
         template.points = shape.points
         template.extraOutlines = shape.extraOutlines
         template.face = shape.face
+        template.lines = shape.lines
         return template
     }
 }

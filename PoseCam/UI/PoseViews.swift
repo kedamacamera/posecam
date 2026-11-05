@@ -113,6 +113,12 @@ enum PoseDrawing {
             drawOutline(template.joints.mapValues(transform), in: context, color: color,
                         lineWidth: lineWidth, fillOpacity: fillOpacity)
         }
+        // テーブルの縁（料理・ドリンクの型）
+        for line in template.lines ?? [] where line.count > 1 {
+            var path = Path()
+            path.addLines(line.map(transform))
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+        }
     }
 
     private static func draw(_ shape: Path, in context: GraphicsContext,
