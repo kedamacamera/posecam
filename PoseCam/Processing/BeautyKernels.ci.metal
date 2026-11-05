@@ -137,8 +137,9 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 青い（Cb が高い・Cr が低い）ほど、暗いほど強く効かせる
     float bluish = (nearCb - averageCb) + 0.5 * (averageCr - nearCr);
     float darker = averageY - nearY;
-    float amount = smoothstep(0.0, 0.04, bluish + 0.4 * max(darker, 0.0));
-    float darkGuard = 1.0 - smoothstep(0.18, 0.3, darker);
+    // Core Image の作業色空間はリニアで、肌の色の差は画面の値より小さく出るので、小さい差から効かせる
+    float amount = smoothstep(0.0, 0.012, bluish + 0.5 * max(darker, 0.0));
+    float darkGuard = 1.0 - smoothstep(0.25, 0.4, darker);
     float w = amount * darkGuard * strength;
     if (debug > 0.5) {
         return float4(w, weightSum * 10.0, clamp(bluish * 10.0, 0.0, 1.0), 1.0);
@@ -150,7 +151,7 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 色み（青み）は周りの肌の色へ、明るさは暗い分の 7 割を戻す
     float newCb = cb + (averageCb - nearCb) * w;
     float newCr = cr + (averageCr - nearCr) * w;
-    float newY = y + max(0.0, darker) * 0.7 * w;
+    float newY = y + max(0.0, darker) * 0.9 * w;
     float r = newY + newCr;
     float b = newY + newCb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
