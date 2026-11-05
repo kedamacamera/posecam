@@ -55,7 +55,7 @@ final class FrameProcessor {
         if settings.beard > 0.01, let beard = masks.beard {
             // 青ひげ: ひげの所だけ、周りの肌（頬）の色との差のうち青み・暗さを打ち消す
             // 剃り跡の青黒い所は「肌の色」の判定から外れることがあるので、肌の色ではなく肌の領域（モデル）で絞る
-            let skinRegion = (masks.skin ?? masks.person ?? base)
+            let skinRegion = Self.gray(masks.skin ?? masks.person ?? base)
                 .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
             let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: skinRegion])
             let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, strength: settings.beard,
@@ -81,13 +81,24 @@ final class FrameProcessor {
         }
         if settings.contour > 0.01, let shade = masks.jawShade {
             // 輪郭: あごのすぐ外側（首との境目）に影を入れる。肌（人物）の所だけにかけ、背景は暗くしない
-            let region = (masks.skin ?? masks.person ?? base)
+            let region = Self.gray(masks.skin ?? masks.person ?? base)
                 .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.01).cropped(to: extent)
             let shadeMask = shade.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: region])
             let shaded = result.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.9 * settings.contour])
             result = blend(shaded, over: result, mask: shadeMask, amount: 1)
         }
         return result
+    }
+
+    /// 1 チャンネルのマスク（肌のモデル・人物の判定の結果は赤にしか値がない）を、R・G・B すべて同じ値の灰色にする。
+    /// 掛け合わせ（CIMultiplyCompositing）に使うと、緑・青が 0 のままで、混ぜる強さが 3 割ほどに落ちてしまうため。
+    static func gray(_ mask: CIImage) -> CIImage {
+        mask.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+        ])
     }
 
     static let beardKernel: CIKernel? = {
@@ -126,7 +137,7 @@ final class FrameProcessor {
         let longSide = max(extent.width, extent.height)
         let base = skinBase(image, masks: masks, longSide: longSide)
         let mask = applyFeatures(base, masks.features)
-        let skinRegion = (masks.skin ?? masks.person ?? base)
+        let skinRegion = Self.gray(masks.skin ?? masks.person ?? base)
             .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
         let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: skinRegion])
         return concealBeard(image, beardMask: beardMask, skinMask: mask, strength: 1, longSide: longSide, debug: true)
