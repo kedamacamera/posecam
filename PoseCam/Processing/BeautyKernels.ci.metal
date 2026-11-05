@@ -139,7 +139,9 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float darker = averageY - nearY;
     // Core Image の作業色空間はリニアで、肌の色の差は画面の値より小さく出るので、小さい差から効かせる
     float amount = smoothstep(0.0, 0.012, bluish + 0.5 * max(darker, 0.0));
-    float darkGuard = 1.0 - smoothstep(0.25, 0.4, darker);
+    // 伸びたひげ・鼻の穴・濃い影は、目標の肌の半分以下の明るさなので変えない。
+    // 頬・額より口元が少し暗いのは自然な陰影なので、比で判定する（差で判定すると口元全体が外れていた）
+    float darkGuard = smoothstep(0.35, 0.5, nearY / max(averageY, 0.001));
     float w = amount * darkGuard * strength;
     if (debug > 0.5) {
         return float4(w, weightSum * 10.0, clamp(bluish * 10.0, 0.0, 1.0), 1.0);
@@ -151,7 +153,8 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 色み（青み）は周りの肌の色へ、明るさは暗い分の 7 割を戻す
     float newCb = cb + (averageCb - nearCb) * w;
     float newCr = cr + (averageCr - nearCr) * w;
-    float newY = y + max(0.0, darker) * 0.9 * w;
+    // 明るさは暗い分の 6 割だけ戻す（全部戻すと、頬・額と同じ明るさになって顔の陰影が平らになる）
+    float newY = y + max(0.0, darker) * 0.6 * w;
     float r = newY + newCr;
     float b = newY + newCb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
