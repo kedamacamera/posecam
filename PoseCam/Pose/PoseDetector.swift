@@ -78,11 +78,12 @@ final class PoseDetector {
         segmentation.qualityLevel = .fast
         segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
         let faceRequest = VNDetectFaceLandmarksRequest()
-        // 向き（yaw・roll・pitch）を連続した値で返す版（iOS 15 以降）
-        faceRequest.revision = VNDetectFaceLandmarksRequestRevision3
+        // 顔の向き（yaw・roll）は、顔の枠の検出（リビジョン 3）が連続した角度で返す。
+        // ランドマーク検出の向きは 0・±45・±90 度の 3 段階なので使わない
+        let angleRequest = Self.angleRequest()
         var requests: [VNRequest] = [poseRequest]
         if silhouetteWidth != nil { requests.append(segmentation) }
-        if wantsFace { requests.append(faceRequest) }
+        if wantsFace { requests += [faceRequest, angleRequest] }
         do {
             try handler.perform(requests)
         } catch {
@@ -97,26 +98,41 @@ final class PoseDetector {
         if let width = silhouetteWidth, let mask = segmentation.results?.first?.pixelBuffer {
             silhouette = Self.cells(of: mask, width: width, height: max(1, Int((CGFloat(width) / aspect).rounded())))
         }
-        let face = wantsFace ? Self.faceShape(from: faceRequest.results ?? []) : nil
+        let face = wantsFace ? Self.faceShape(from: faceRequest.results ?? [], angles: angleRequest.results ?? []) : nil
         return Live(pose: pose, silhouette: silhouette, face: face)
     }
 
     /// 写真のいちばん大きい顔のパーツ（画像座標）。型を作るときに使う。
     static func faceShape(ciImage: CIImage) -> FaceShape? {
         let request = VNDetectFaceLandmarksRequest()
-        request.revision = VNDetectFaceLandmarksRequestRevision3
-        try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request])
-        return faceShape(from: request.results ?? [])
+        let angles = angleRequest()
+        try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request, angles])
+        return faceShape(from: request.results ?? [], angles: angles.results ?? [])
+    }
+
+    /// 顔の向きを連続した角度で返す、顔の枠の検出（iOS 15 以降のリビジョン 3）
+    private static func angleRequest() -> VNDetectFaceRectanglesRequest {
+        let request = VNDetectFaceRectanglesRequest()
+        request.revision = VNDetectFaceRectanglesRequestRevision3
+        return request
     }
 
     /// いちばん大きい顔を、画像座標（左上原点・0...1）で返す。
     /// 横顔などでパーツが取れなくても、枠と向き（iOS 15 以降の顔検出は向きを連続した値で返す）があれば返す。
-    static func faceShape(from faces: [VNFaceObservation]) -> FaceShape? {
-        guard let face = faces.max(by: { $0.boundingBox.height < $1.boundingBox.height }) else { return nil }
+    /// faces: ランドマーク検出の結果、angles: 顔の枠の検出の結果（向きはこちらから取る）
+    static func faceShape(from faces: [VNFaceObservation], angles: [VNFaceObservation] = []) -> FaceShape? {
+        // パーツの取れた顔を優先し、なければ枠だけの顔でもよい
+        guard let face = (faces.isEmpty ? angles : faces).max(by: { $0.boundingBox.height < $1.boundingBox.height })
+        else { return nil }
         let box = face.boundingBox  // 左下原点
+        // 同じ顔（枠の中心がいちばん近いもの）の、連続した角度を使う
+        let angleSource = angles.min {
+            hypot($0.boundingBox.midX - box.midX, $0.boundingBox.midY - box.midY)
+                < hypot($1.boundingBox.midX - box.midX, $1.boundingBox.midY - box.midY)
+        } ?? face
         // Vision の yaw は本人から見た向き。画像の右を向くと負になるので、画像基準（右が正）に直す
-        let yaw = -(face.yaw?.doubleValue ?? 0) * 180 / .pi
-        let roll = (face.roll?.doubleValue ?? 0) * 180 / .pi
+        let yaw = -(angleSource.yaw?.doubleValue ?? 0) * 180 / .pi
+        let roll = (angleSource.roll?.doubleValue ?? 0) * 180 / .pi
         var shape = FaceShape(center: CGPoint(x: box.midX, y: 1 - box.midY), height: box.height, yaw: yaw, roll: roll)
         guard let marks = face.landmarks else { return shape }
         let unit = CGSize(width: 1, height: 1)
