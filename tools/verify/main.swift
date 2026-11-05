@@ -9,6 +9,7 @@ import AppKit
 import CoreImage
 import Foundation
 import ImageIO
+import Vision
 
 let context = CIContext()
 let outDir = URL(fileURLWithPath: "out", isDirectory: true)
@@ -172,8 +173,8 @@ func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
         "inputCenter": CIVector(x: center.x, y: center.y),
         "inputRadius0": unit * 0.25,
         "inputRadius1": unit * 0.75,
-        "inputColor0": CIColor(red: 0.30, green: 0.33, blue: 0.42, alpha: 0.42),
-        "inputColor1": CIColor(red: 0.30, green: 0.33, blue: 0.42, alpha: 0),
+        "inputColor0": CIColor(red: 0.30, green: 0.34, blue: 0.44, alpha: 0.32),
+        "inputColor1": CIColor(red: 0.30, green: 0.34, blue: 0.44, alpha: 0),
     ])!.outputImage!.transformed(by: CGAffineTransform(translationX: -center.x, y: -center.y)
         .concatenating(CGAffineTransform(scaleX: 1.15, y: 0.8))
         .concatenating(CGAffineTransform(translationX: center.x, y: center.y)))
@@ -183,8 +184,13 @@ func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
         .applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
             "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-            "inputAVector": CIVector(x: 0.6, y: 0, z: 0, w: -0.35),
-            "inputBiasVector": CIVector(x: 0.2, y: 0.22, z: 0.3, w: 0),
+            "inputAVector": CIVector(x: 0.5, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: 0.25, y: 0.27, z: 0.34, w: -0.32),
+        ])
+        // 負の値（真っ黒な点）にならないよう 0〜1 に収める。点の濃さは最大 0.18
+        .applyingFilter("CIColorClamp", parameters: [
+            "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 0.18),
         ])
         .cropped(to: image.extent)
         .applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: shade])
@@ -236,8 +242,7 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
 // 人の所にだけフラッシュの光（元の明るさの 1.5 倍ぶん）を足した画像を「フラッシュ写真」として確かめる。
 // 期待: 背景（周りの光だけ）は 1/4 の明るさに、人（ほとんどフラッシュの光）は少しだけ暗くなる。
 report.append("direct flash kernel loaded: \(DirectFlash.kernel != nil)")
-if let (name, ambient) = inputs.first,
-   let person = detector.analyze(ciImage: ambient, wantsMasks: true).masks?.person {
+if let (name, ambient) = inputs.first, let person = personMask(ambient) {
     let flashLight = ambient.applyingFilter("CIColorMatrix", parameters: [
         "inputRVector": CIVector(x: 1.5, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 1.5, z: 0, w: 0),
         "inputBVector": CIVector(x: 0, y: 0, z: 1.5, w: 0),
@@ -281,6 +286,18 @@ do {
     } else {
         report.append("silent exif: failed to write")
     }
+}
+
+/// 人の領域（白）。美肌のマスクは肌のモデルを優先するので、ここでは人物の判定を直接使う
+func personMask(_ image: CIImage) -> CIImage? {
+    let request = VNGeneratePersonSegmentationRequest()
+    request.qualityLevel = .accurate
+    request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+    try? VNImageRequestHandler(ciImage: image, options: [:]).perform([request])
+    guard let buffer = request.results?.first?.pixelBuffer else { return nil }
+    let mask = CIImage(cvPixelBuffer: buffer)
+    return mask.transformed(by: CGAffineTransform(scaleX: image.extent.width / mask.extent.width,
+                                                  y: image.extent.height / mask.extent.height))
 }
 
 /// マスクの範囲の平均の明るさと色み（YCbCr、ガンマのかかった sRGB）

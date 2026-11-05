@@ -371,22 +371,9 @@ struct PoseStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 18) {
                     ForEach(library.categories, id: \.self) { category in
-                        let active = category == (activeCategory ?? library.categories.first)
-                        Button { jump(to: category) } label: {
-                            VStack(spacing: 3) {
-                                HStack(spacing: 3) {
-                                    if category == PoseLibrary.favoriteCategory {
-                                        Image(systemName: "heart.fill").font(.system(size: 10))
-                                    }
-                                    Text(category)
-                                }
-                                .font(.system(size: 13, weight: active ? .bold : .medium))
-                                .foregroundStyle(active ? Color.yellow : .white.opacity(0.75))
-                                Capsule()
-                                    .fill(active ? Color.yellow : .clear)
-                                    .frame(height: 2)
-                            }
-                            .fixedSize()
+                        CategoryTab(title: category,
+                                    active: category == (activeCategory ?? library.categories.first)) {
+                            jump(to: category)
                         }
                         .id(category)
                     }
@@ -415,12 +402,9 @@ struct PoseStrip: View {
                     TileLabel(systemImage: "square.grid.2x2", title: "一覧")
                 }
                 ForEach(items) { item in
-                    Button { selection = item.pose } label: {
-                        PoseThumbnail(template: item.pose, isSelected: selection?.id == item.pose.id,
-                                      isFavorite: library.isFavorite(item.pose))
+                    PoseCell(library: library, pose: item.pose, selection: $selection) {
+                        selection = item.pose
                     }
-                    // 長押しでお気に入りに追加・解除（自分で登録したポーズは削除も）
-                    .contextMenu { PoseMenu(library: library, pose: item.pose, selection: $selection) }
                 }
             }
             .scrollTargetLayout()
@@ -484,14 +468,10 @@ struct PoseLibraryView: View {
                             .padding(.horizontal)
                         LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(library.poses(in: category)) { pose in
-                                Button {
+                                PoseCell(library: library, pose: pose, selection: $selection) {
                                     selection = pose
                                     dismiss()
-                                } label: {
-                                    PoseThumbnail(template: pose, isSelected: selection?.id == pose.id,
-                                                  isFavorite: library.isFavorite(pose))
                                 }
-                                .contextMenu { PoseMenu(library: library, pose: pose, selection: $selection) }
                             }
                         }
                         .padding(.horizontal)
@@ -508,6 +488,49 @@ struct PoseLibraryView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+/// ポーズのカテゴリの見出し 1 つ。
+struct CategoryTab: View {
+    let title: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                HStack(spacing: 3) {
+                    if title == PoseLibrary.favoriteCategory {
+                        Image(systemName: "heart.fill").font(.system(size: 10))
+                    }
+                    Text(title)
+                }
+                .font(.system(size: 13, weight: active ? .bold : .medium))
+                .foregroundStyle(active ? Color.yellow : Color.white.opacity(0.75))
+                Capsule()
+                    .fill(active ? Color.yellow : Color.clear)
+                    .frame(height: 2)
+            }
+            .fixedSize()
+        }
+    }
+}
+
+/// ポーズ 1 つ。タップで選び、長押しでお気に入りに追加・解除（自分で登録したポーズは削除も）。
+struct PoseCell: View {
+    @ObservedObject var library: PoseLibrary
+    let pose: PoseTemplate
+    @Binding var selection: PoseTemplate?
+    let onSelect: () -> Void
+
+    var body: some View {
+        let selected: Bool = selection?.id == pose.id
+        let favorite: Bool = library.isFavorite(pose)
+        return Button(action: onSelect) {
+            PoseThumbnail(template: pose, isSelected: selected, isFavorite: favorite)
+        }
+        .contextMenu { PoseMenu(library: library, pose: pose, selection: $selection) }
     }
 }
 
