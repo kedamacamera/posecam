@@ -434,14 +434,18 @@ func silhouetteTests(_ label: String, _ image: CIImage) {
         let value = PoseMatcher.silhouetteScore(template: cells, detected: silhouette.cells, width: silhouette.width)
         return value.map { String(format: "%.1f", $0) } ?? "nil"
     }
-    func moved(_ dx: CGFloat, _ scale: CGFloat = 1) -> [[CGPoint]] {
-        outlines.map { $0.map { CGPoint(x: $0.x * scale + dx, y: ($0.y - 0.5) * scale + 0.5) } }
+    func moved(_ dx: CGFloat, _ scale: CGFloat = 1, dy: CGFloat = 0) -> [[CGPoint]] {
+        outlines.map { $0.map { CGPoint(x: $0.x * scale + dx, y: ($0.y - 0.5) * scale + 0.5 + dy) } }
     }
     report.append("silhouette \(label) (body joints found: \(jointCount), grid \(silhouette.width)x\(silhouette.height)):")
     report.append("  same: \(scoreFor(outlines))")
     report.append("  shifted 10% right: \(scoreFor(moved(0.1)))")
     report.append("  shifted 25% right: \(scoreFor(moved(0.25)))")
     report.append("  80% size: \(scoreFor(moved(0, 0.8)))")
+    // 型が人より上にある（実機で 94% と出ていた状況: 型の頭が画面の上、人の頭は真ん中）
+    report.append("  template 10% higher: \(scoreFor(moved(0, dy: -0.1)))")
+    report.append("  template 25% higher: \(scoreFor(moved(0, dy: -0.25)))")
+    report.append("  template 140% size: \(scoreFor(moved(0, 1.4)))")
 }
 
 if inputs.count > 1 {
