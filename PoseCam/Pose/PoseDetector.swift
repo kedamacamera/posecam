@@ -16,6 +16,8 @@ struct BeautyMasks {
     var beard: CIImage?
     /// あごの輪郭のすぐ外側（首との境目）を白にしたマスク（輪郭の影入れ用）
     var jawShade: CIImage?
+    /// 鼻より上の顔（頬・額）を白にしたマスク。ひげの生えない肌の色を知るのに使う
+    var upperFace: CIImage?
 
     /// 大きさの確認に使う
     var extent: CGRect? { (skin ?? person)?.extent }
@@ -23,7 +25,8 @@ struct BeautyMasks {
     func map(_ transform: (CIImage) -> CIImage) -> BeautyMasks {
         BeautyMasks(skin: skin.map(transform), person: person.map(transform),
                     features: features.map(transform), redFeatures: redFeatures.map(transform),
-                    beard: beard.map(transform), jawShade: jawShade.map(transform))
+                    beard: beard.map(transform), jawShade: jawShade.map(transform),
+                    upperFace: upperFace.map(transform))
     }
 }
 
@@ -191,7 +194,8 @@ final class PoseDetector {
                 features: Self.featureMask(faces, imageSize: imageSize, forRedness: false),
                 redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true),
                 beard: Self.beardMask(faces, imageSize: imageSize),
-                jawShade: Self.jawShadeMask(faces, imageSize: imageSize))
+                jawShade: Self.jawShadeMask(faces, imageSize: imageSize),
+                upperFace: Self.upperFaceMask(faces, imageSize: imageSize))
         }
         return result
     }
@@ -292,6 +296,33 @@ final class PoseDetector {
             .clampedToExtent()
             .applyingGaussianBlur(sigma: sigma)
             .cropped(to: CGRect(origin: .zero, size: imageSize))
+    }
+
+    /// 鼻より上の顔（頬・額）。顔の輪郭の内側を、鼻の下端より上だけ塗る（目・眉は後で肌の判定で外れる）。
+    private static func upperFaceMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
+        drawMask(imageSize: imageSize, blurOfFace: 0.02, faces: faces) { context, size in
+            for face in faces {
+                guard let marks = face.landmarks, let contour = marks.faceContour,
+                      let nose = marks.nose else { continue }
+                let points = contour.pointsInImage(imageSize: size)
+                guard points.count > 2, let noseBottom = nose.pointsInImage(imageSize: size).map(\.y).min()
+                else { continue }
+                let box = face.boundingBox
+                context.saveGState()
+                context.clip(to: CGRect(x: 0, y: noseBottom, width: size.width, height: size.height - noseBottom))
+                context.setFillColor(gray: 1, alpha: 1)
+                // 輪郭の線は耳の高さまでなので、その上（額）は顔の枠の上端まで延ばす
+                context.beginPath()
+                context.addLines(between: points)
+                if let last = points.last, let first = points.first {
+                    context.addLine(to: CGPoint(x: last.x, y: box.maxY * size.height))
+                    context.addLine(to: CGPoint(x: first.x, y: box.maxY * size.height))
+                }
+                context.closePath()
+                context.fillPath()
+                context.restoreGState()
+            }
+        }
     }
 
     /// ひげの生える範囲。顔の輪郭（あごのライン）の内側のうち鼻より下を塗り、唇を外す。

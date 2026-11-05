@@ -122,7 +122,7 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
     float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
-    if (weightSum < 0.02) {
+    if (weightSum < 0.0005) {
         return debug > 0.5 ? float4(0.0, weightSum * 10.0, 0.0, 1.0) : color;
     }
     float3 average = skinSum.sample(skinSum.transform(coord)).rgb / weightSum;

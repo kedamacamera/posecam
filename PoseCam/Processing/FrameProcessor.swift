@@ -60,8 +60,8 @@ final class FrameProcessor {
             // 剃り跡の所は肌のモデルの確からしさが下がるので、2 倍して 1 で止める（顔の輪郭の内側だけなので背景には出ない）
             let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [
                 kCIInputBackgroundImageKey: Self.boosted(skinRegion)])
-            let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, strength: settings.beard,
-                                         longSide: longSide)
+            let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, upperFace: masks.upperFace,
+                                         strength: settings.beard, longSide: longSide)
             result = blend(concealed, over: result, mask: beardMask, amount: 1)
         }
         if settings.smoothing > 0.01 {
@@ -120,21 +120,26 @@ final class FrameProcessor {
     }()
 
     /// 青ひげを、ひげの所を除いた周りの肌（頬など）の色に近づける（BeautyKernels.ci.metal の beardConceal）。
-    private func concealBeard(_ image: CIImage, beardMask: CIImage, skinMask: CIImage, strength: Double,
-                              longSide: CGFloat, debug: Bool = false) -> CIImage {
+    private func concealBeard(_ image: CIImage, beardMask: CIImage, skinMask: CIImage, upperFace: CIImage?,
+                              strength: Double, longSide: CGFloat, debug: Bool = false) -> CIImage {
         guard let kernel = Self.beardKernel else { return image }
         let extent = image.extent
         let black = CIImage(color: .black).cropped(to: extent)
-        // 参照する肌 = 肌のうちひげの所ではない所。ひげの範囲の中央まで届くよう広くぼかす
+        // 目標の色 = ひげの生えない所（鼻より上の頬・額）の肌の平均の色。
+        // ひげの周りの肌を使うと、剃り跡の青みが周りにも少し広がっているぶん、目標の色まで青くなって効きが弱まる
         let notBeard = beardMask.applyingFilter("CIColorInvert")
-        let reference = skinMask.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: notBeard])
-        let sigma = longSide * 0.03
+        var reference = skinMask.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: notBeard])
+        if let upperFace {
+            reference = reference.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: upperFace])
+        }
         let skinOnly = image.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: black,
             kCIInputMaskImageKey: reference,
         ])
-        let sum = skinOnly.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
-        let weight = reference.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        // 顔全体で 1 つの平均の色にする（1x1 の画像を、どこを読んでも同じ値になるよう広げる）
+        let area = CIVector(cgRect: extent)
+        let sum = skinOnly.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
+        let weight = reference.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
         // 剃り跡のむらは毛穴より大きいので、少しぼかした色で判定する
         let local = image.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.004).cropped(to: extent)
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
@@ -153,7 +158,8 @@ final class FrameProcessor {
             .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
         let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [
             kCIInputBackgroundImageKey: Self.boosted(skinRegion)])
-        return concealBeard(image, beardMask: beardMask, skinMask: mask, strength: 1, longSide: longSide, debug: true)
+        return concealBeard(image, beardMask: beardMask, skinMask: mask, upperFace: masks.upperFace, strength: 1,
+                            longSide: longSide, debug: true)
     }
 
     /// 青ひげ隠しの範囲（白）。確認用のツールから使う。
