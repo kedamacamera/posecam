@@ -188,8 +188,7 @@ struct ContentView: View {
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
-                    ] + Diagnostics.events).joined(separator: "
-")
+                    ] + Diagnostics.events).joined(separator: "\n")
                 }
                 Button("ライセンス") { showLicenses = true }
             } label: {
