@@ -119,17 +119,17 @@ enum PoseMatcher {
 
     /// 型の形と、映っている人の形の重なりから 0〜100 の点数を出す。
     /// 体の関節が取れない顔のアップでも、人の形は取れるので採点できる。
-    /// 細い全身の形はわずかにずれただけで重なりが大きく減るので、相手の形から少し（横幅の約 3%）
-    /// はみ出した所までは「重なっている」とみなす。
+    /// 細い全身の形はわずかにずれただけで重なりが大きく減るので、相手の形から少し
+    /// はみ出した所までは「重なっている」とみなす（横幅の約 4.5%）。
     /// - 型のうち、人の形の近くにある割合（型を埋められているか）
     /// - 人の形のうち、型の近くにある割合（型からはみ出していないか）
-    /// の両方をまとめた値（F 値）が 70% 以下で 0 点、97% 以上で満点。
+    /// の両方をまとめた値（F 値）が 62% 以下で 0 点、95% 以上で満点。
     /// さらに「頭のてっぺんの高さ」と「左右の位置（重心）」のずれを見る。大きな型に体の一部が収まっているだけ
-    /// （頭の位置が全然違う）でも重なりは大きく出るので、ずれが画面の 3% までは満点、18% で 0 点にする。
+    /// （頭の位置が全然違う）でも重なりは大きく出るので、ずれが画面の 3% までは満点、25% で 0 点にする。
     static func silhouetteScore(template: [Bool], detected: [Bool], width: Int) -> Double? {
         guard template.count == detected.count, !template.isEmpty, width > 0 else { return nil }
         let height = template.count / width
-        let radius = max(1, Int((Double(width) * 0.03).rounded()))
+        let radius = max(1, Int((Double(width) * 0.045).rounded()))
         let nearTemplate = dilate(template, width: width, height: height, radius: radius)
         let nearDetected = dilate(detected, width: width, height: height, radius: radius)
         var templateCount = 0, templateCovered = 0, detectedCount = 0, detectedInside = 0
@@ -149,7 +149,7 @@ enum PoseMatcher {
         let precision = Double(detectedInside) / Double(detectedCount)
         guard recall + precision > 0 else { return 0 }
         let f = 2 * recall * precision / (recall + precision)
-        let overlap = max(0, min(1, (f - 0.7) / (0.97 - 0.7)))
+        let overlap = max(0, min(1, (f - 0.62) / (0.95 - 0.62)))
         return overlap * alignment(template, detected, width: width, height: height) * 100
     }
 
@@ -176,7 +176,7 @@ enum PoseMatcher {
         guard let tTop = top(template), let dTop = top(detected),
               let tX = centerX(template), let dX = centerX(detected) else { return 0 }
         func factor(_ difference: Double) -> Double {
-            max(0, min(1, 1 - (difference - 0.03) / (0.18 - 0.03)))
+            max(0, min(1, 1 - (difference - 0.03) / (0.25 - 0.03)))
         }
         return factor(abs(tTop - dTop)) * factor(abs(tX - dX))
     }
