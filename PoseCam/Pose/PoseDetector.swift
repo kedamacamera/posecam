@@ -130,8 +130,8 @@ final class PoseDetector {
             hypot($0.boundingBox.midX - box.midX, $0.boundingBox.midY - box.midY)
                 < hypot($1.boundingBox.midX - box.midX, $1.boundingBox.midY - box.midY)
         } ?? face
-        // Vision の yaw は本人から見た向き。画像の右を向くと負になるので、画像基準（右が正）に直す
-        let yaw = -(angleSource.yaw?.doubleValue ?? 0) * 180 / .pi
+        // Vision の yaw は、画像の右を向くと正（確認画像 faces_yaw.png で、横顔 48 枚の向きと照らし合わせて確認）
+        let yaw = (angleSource.yaw?.doubleValue ?? 0) * 180 / .pi
         let roll = (angleSource.roll?.doubleValue ?? 0) * 180 / .pi
         var shape = FaceShape(center: CGPoint(x: box.midX, y: 1 - box.midY), height: box.height, yaw: yaw, roll: roll)
         guard let marks = face.landmarks else { return shape }
