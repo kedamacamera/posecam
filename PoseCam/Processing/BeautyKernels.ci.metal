@@ -116,13 +116,14 @@ float4 directFlash(sampler photo, sampler photoLow, sampler ambientLow, float ra
 /// skinSum / skinWeight: ひげの所を除いた肌の平均の色（頬などから広くぼかして求める）。
 /// local: src を少しぼかしたもの（剃り跡のむらを判定する）。
 /// 周りよりずっと暗い所（伸びたひげ・鼻の穴・影）は剃り跡ではないので変えない。
+/// debug が 1 のときは、確認用に (効き具合 w, 参照できる肌の量 ×10, 青み, 暗さ ×10) を色として返す。
 float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWeight, float strength,
-                    destination dest) {
+                    float debug, destination dest) {
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
     float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
     if (weightSum < 0.02) {
-        return color;
+        return debug > 0.5 ? float4(0.0, weightSum * 10.0, 0.0, 1.0) : color;
     }
     float3 average = skinSum.sample(skinSum.transform(coord)).rgb / weightSum;
     float3 near = local.sample(local.transform(coord)).rgb;
@@ -139,6 +140,9 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float amount = smoothstep(0.0, 0.04, bluish + 0.4 * max(darker, 0.0));
     float darkGuard = 1.0 - smoothstep(0.18, 0.3, darker);
     float w = amount * darkGuard * strength;
+    if (debug > 0.5) {
+        return float4(w, weightSum * 10.0, clamp(bluish * 10.0, 0.0, 1.0), 1.0);
+    }
 
     float y = dot(color.rgb, lumaWeights);
     float cb = color.b - y;

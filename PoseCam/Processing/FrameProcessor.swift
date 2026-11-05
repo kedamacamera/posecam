@@ -98,7 +98,7 @@ final class FrameProcessor {
 
     /// 青ひげを、ひげの所を除いた周りの肌（頬など）の色に近づける（BeautyKernels.ci.metal の beardConceal）。
     private func concealBeard(_ image: CIImage, beardMask: CIImage, skinMask: CIImage, strength: Double,
-                              longSide: CGFloat) -> CIImage {
+                              longSide: CGFloat, debug: Bool = false) -> CIImage {
         guard let kernel = Self.beardKernel else { return image }
         let extent = image.extent
         let black = CIImage(color: .black).cropped(to: extent)
@@ -115,8 +115,21 @@ final class FrameProcessor {
         // 剃り跡のむらは毛穴より大きいので、少しぼかした色で判定する
         let local = image.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.004).cropped(to: extent)
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
-                                  arguments: [image, local, sum, weight, Float(strength)])
+                                  arguments: [image, local, sum, weight, Float(strength), Float(debug ? 1 : 0)])
         return output?.cropped(to: extent) ?? image
+    }
+
+    /// 確認用: 青ひげ隠しの中の値を色で表した画像（赤: 効き具合、緑: 参照できる肌の量 ×10、青: 青み ×10）。
+    func beardDebug(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
+        guard let beard = masks.beard else { return nil }
+        let extent = image.extent
+        let longSide = max(extent.width, extent.height)
+        let base = skinBase(image, masks: masks, longSide: longSide)
+        let mask = applyFeatures(base, masks.features)
+        let skinRegion = (masks.skin ?? masks.person ?? base)
+            .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
+        let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: skinRegion])
+        return concealBeard(image, beardMask: beardMask, skinMask: mask, strength: 1, longSide: longSide, debug: true)
     }
 
     /// 青ひげ隠しの範囲（白）。確認用のツールから使う。

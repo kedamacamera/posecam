@@ -250,6 +250,7 @@ struct MatchBadge: View {
 struct PoseThumbnail: View {
     let template: PoseTemplate
     let isSelected: Bool
+    var isFavorite = false
 
     static let size = CGSize(width: 58, height: 80)
 
@@ -276,6 +277,16 @@ struct PoseThumbnail: View {
             .background(Color.white.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSelected ? Color.yellow : .clear, lineWidth: 2))
+            .overlay(alignment: .topTrailing) {
+                if isFavorite {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.pink)
+                        .padding(3)
+                        .background(Circle().fill(Color.black.opacity(0.5)))
+                        .padding(3)
+                }
+            }
             Text(template.name)
                 .font(.caption2)
                 .lineLimit(1)

@@ -221,7 +221,8 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
     let beardView = (processor.beardMask(image, masks: masks) ?? CIImage(color: .black))
         .applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
     var strip = CIImage.empty()
-    for (i, panel) in [original, image, concealed, beardView, smoothed, full].enumerated() {
+    let debugView = processor.beardDebug(image, masks: masks) ?? CIImage(color: .black)
+    for (i, panel) in [original, image, concealed, beardView, debugView, full].enumerated() {
         strip = panel.cropped(to: rect).transformed(by: toOrigin.concatenating(
             CGAffineTransform(translationX: side * CGFloat(i), y: 0))).composited(over: strip)
     }
@@ -234,7 +235,7 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
         }
         report.append("beard_\(name): original [\(chroma(original))] stubble [\(chroma(image))] concealed [\(chroma(concealed))]")
     }
-    report.append("beard_\(name): original, stubble added, beard 100, beard mask, smoothing 80, smoothing 80 + beard + contour 80")
+    report.append("beard_\(name): original, stubble added, beard 100, beard mask, debug (R=w, G=ref skin x10, B=bluish x10), smoothing 80 + beard + contour 80")
 }
 
 // MARK: - ダイレクトフラッシュ
