@@ -484,23 +484,82 @@ struct StrengthSlider: View {
     }
 }
 
-/// 三分割の線。料理や物の主役を線の交点に置くと、構図が決まりやすい。
+/// 構図のガイドの線の種類。
+enum GridStyle: String, CaseIterable, Identifiable {
+    case off, thirds, thirdsDiagonal, halves, halvesDiagonal, center, golden
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "なし"
+        case .thirds: return "3分割"
+        case .thirdsDiagonal: return "3分割＋斜線"
+        case .halves: return "2分割"
+        case .halvesDiagonal: return "2分割＋斜線"
+        case .center: return "日の丸"
+        case .golden: return "黄金比"
+        }
+    }
+}
+
+/// 構図のガイドの線。3 分割・2 分割（それぞれ対角線つきも）、日の丸（中央の円と十字）、黄金比（1 : 0.618 の分割）。
 struct GridOverlay: View {
+    var style: GridStyle = .thirds
+
     var body: some View {
         Canvas { context, size in
+            let w = size.width, h = size.height
             var path = Path()
-            for i in 1...2 {
-                let x = size.width * CGFloat(i) / 3
-                let y = size.height * CGFloat(i) / 3
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: size.height))
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
+            func vertical(_ x: CGFloat) { path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: h)) }
+            func horizontal(_ y: CGFloat) { path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: w, y: y)) }
+            func diagonals() {
+                path.move(to: .zero); path.addLine(to: CGPoint(x: w, y: h))
+                path.move(to: CGPoint(x: w, y: 0)); path.addLine(to: CGPoint(x: 0, y: h))
+            }
+            switch style {
+            case .off:
+                break
+            case .thirds, .thirdsDiagonal:
+                for i in 1...2 {
+                    vertical(w * CGFloat(i) / 3)
+                    horizontal(h * CGFloat(i) / 3)
+                }
+                if style == .thirdsDiagonal { diagonals() }
+            case .halves, .halvesDiagonal:
+                vertical(w / 2)
+                horizontal(h / 2)
+                if style == .halvesDiagonal { diagonals() }
+            case .center:
+                let r = min(w, h) * 0.16
+                path.addEllipse(in: CGRect(x: w / 2 - r, y: h / 2 - r, width: r * 2, height: r * 2))
+                path.move(to: CGPoint(x: w / 2 - r * 0.35, y: h / 2)); path.addLine(to: CGPoint(x: w / 2 + r * 0.35, y: h / 2))
+                path.move(to: CGPoint(x: w / 2, y: h / 2 - r * 0.35)); path.addLine(to: CGPoint(x: w / 2, y: h / 2 + r * 0.35))
+            case .golden:
+                let phi: CGFloat = 0.382
+                vertical(w * phi); vertical(w * (1 - phi))
+                horizontal(h * phi); horizontal(h * (1 - phi))
             }
             context.stroke(path, with: .color(.black.opacity(0.3)), lineWidth: 2)
             context.stroke(path, with: .color(.white.opacity(0.7)), lineWidth: 0.8)
         }
         .allowsHitTesting(false)
+    }
+}
+
+/// 上のバーのグリッドのボタン。押すと線の種類を選べる。
+struct GridMenu: View {
+    @Binding var style: GridStyle
+
+    var body: some View {
+        Menu {
+            Picker("グリッド", selection: $style) {
+                ForEach(GridStyle.allCases) { Text($0.title).tag($0) }
+            }
+        } label: {
+            LabeledIcon(systemImage: "squareshape.split.3x3",
+                        label: style == .off ? "グリッド" : style.title, active: style != .off)
+        }
     }
 }
 
@@ -801,16 +860,14 @@ struct ShutterButton: View {
     }
 }
 
-/// 最後に撮った写真・動画。タップで写真アプリを開く。
+/// 最後に撮った写真・動画。タップでアプリ内のアルバムを開く。
 struct ThumbnailButton: View {
     let image: UIImage?
+    /// アプリ内のアルバムを開く
+    let action: () -> Void
 
     var body: some View {
-        Button {
-            if let url = URL(string: "photos-redirect://") {
-                UIApplication.shared.open(url)
-            }
-        } label: {
+        Button(action: action) {
             HStack(spacing: 6) {
                 Group {
                     if let image {

@@ -69,7 +69,12 @@ final class FrameProcessor {
                 kCIInputBackgroundImageKey: Self.boosted(skinRegion)])
             let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, upperFace: masks.upperFace,
                                          strength: settings.beard, longSide: longSide)
-            result = blend(concealed, over: result, mask: beardMask, amount: 1)
+            // 色を周りの肌に寄せても、剃り跡の 1 本 1 本の黒い点は細かい質感として残り、一部しか消えないように見えていた。
+            // ひげの所だけ、周りより暗い細かい点を周りの明るさで埋め、さらに軽くならす（ほくろ・鼻の穴のような濃い所は残す）
+            let despeckled = removeDarkSpots(concealed, strength: settings.beard, radius: longSide * 0.003,
+                                             low: 0.002, high: 0.03, cap: 0.25)
+            let smoothed = bilateralSmooth(despeckled, amount: 0.6 * settings.beard, longSide: longSide)
+            result = blend(smoothed, over: result, mask: beardMask, amount: 1)
         }
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。

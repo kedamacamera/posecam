@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct ContentView: View {
@@ -15,9 +16,15 @@ struct ContentView: View {
     @State private var poseOpacity = 0.85
     @State private var showLibrary = false
     @State private var showLicenses = false
-    @State private var showPerspective = false
-    /// 三分割の線（料理・物撮りの構図合わせ）
-    @AppStorage("showGrid") private var showGrid = false
+    @State private var showAlbum = false
+    /// 「写真を編集」で、まず写真を選ぶ画面を出す
+    @State private var showEditPicker = false
+    @State private var editPickerItem: PhotosPickerItem?
+    @State private var editing: EditorInput?
+    /// 構図のガイドの線
+    @AppStorage("gridStyle") private var gridStyle: GridStyle = .off
+    /// 水平器
+    @AppStorage("showLevel") private var showLevel = true
     @State private var zoomAtGestureStart: CGFloat?
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
@@ -119,8 +126,20 @@ struct ContentView: View {
         .sheet(isPresented: $showLicenses) {
             LicensesView()
         }
-        .fullScreenCover(isPresented: $showPerspective) {
-            PerspectiveEditorView()
+        .fullScreenCover(isPresented: $showAlbum) {
+            AlbumView()
+        }
+        // 「写真を編集」: 写真を選んだら、そのまま編集の画面を開く
+        .photosPicker(isPresented: $showEditPicker, selection: $editPickerItem, matching: .images)
+        .onChange(of: editPickerItem) {
+            guard let item = editPickerItem else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) { editing = EditorInput(data: data) }
+                editPickerItem = nil
+            }
+        }
+        .fullScreenCover(item: $editing) { input in
+            PhotoEditorView(data: input.data)
         }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
@@ -143,12 +162,11 @@ struct ContentView: View {
             if camera.showSkeleton {
                 SkeletonLayer(feed: camera.poseFeed)
             }
-            if showGrid {
-                GridOverlay()
+            if gridStyle != .off {
+                GridOverlay(style: gridStyle)
             }
-            // 料理・ドリンクの構図の型では、真上（俯瞰）・45 度・真横の角度を水準器で合わせる
-            if camera.template?.isObject == true {
-                AngleLevelView()
+            if showLevel {
+                LevelView()
             }
             if showsLegRange {
                 LegRangeOverlay(feed: camera.poseFeed, settings: $camera.settings)
@@ -176,27 +194,10 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack {
-            // 写真: オフ → オン → ダイレクト（背景を暗く落とす）→ オフ。動画・スナップはライトのオン・オフ
-            LabeledIconButton(systemImage: camera.flashOn ? (camera.directFlash && camera.mode == .photo
-                                                             ? "bolt.circle.fill" : "bolt.fill") : "bolt.slash",
-                              label: camera.mode != .photo ? "ライト"
-                                  : camera.flashOn && camera.directFlash ? "ダイレクト" : "フラッシュ",
-                              active: camera.flashOn) {
-                if camera.mode != .photo {
-                    camera.flashOn.toggle()
-                } else if !camera.flashOn {
-                    camera.directFlash = false
-                    camera.flashOn = true
-                } else if !camera.directFlash {
-                    camera.directFlash = true
-                } else {
-                    camera.flashOn = false
-                    camera.directFlash = false
-                }
-            }
-            Spacer()
             AspectMenu(aspect: $camera.aspect)
                 .disabled(camera.isRecording)
+            Spacer()
+            GridMenu(style: $gridStyle)
             Spacer()
             LabeledIconButton(systemImage: "timer",
                               label: camera.timerSeconds == 0 ? "タイマー" : "\(camera.timerSeconds)秒",
@@ -213,13 +214,13 @@ struct ContentView: View {
             .opacity(camera.mode == .photo ? 1 : 0.4)
             Spacer()
             Menu {
-                Toggle("無音で撮影", isOn: $camera.muteShutter)
+                Toggle("ミュート", isOn: $camera.muteShutter)
                 if !camera.canMuteShutter {
-                    Text("映像のコマを写真として保存します（画角は通常と同じ・同じ画素数に拡大）")
+                    Text("画質が劣化します")
                 }
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
-                Toggle("グリッド（三分割）", isOn: $showGrid)
-                Button("写真の傾き補正（射影変換）") { showPerspective = true }
+                Toggle("水平器", isOn: $showLevel)
+                Button("写真を編集（傾き補正・伸縮・肌）") { showEditPicker = true }
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
@@ -319,7 +320,7 @@ struct ContentView: View {
             PanelChips(panel: $panel)
 
             HStack {
-                Color.clear.frame(width: 48, height: 48)
+                flashButton
                 Spacer()
                 ShutterButton(mode: camera.mode,
                               isRecording: camera.isRecording,
@@ -362,7 +363,7 @@ struct ContentView: View {
                     camera.setMode($0)
                 }
                 HStack {
-                    ThumbnailButton(image: camera.lastThumbnail)
+                    ThumbnailButton(image: camera.lastThumbnail) { showAlbum = true }
                     Spacer()
                 }
                 .padding(.horizontal, 20)
@@ -374,6 +375,28 @@ struct ContentView: View {
             LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
         )
+    }
+
+    /// 写真: オフ → オン → ダイレクト（背景を暗く落とす）→ オフ。動画・スナップはライトのオン・オフ
+    private var flashButton: some View {
+        LabeledIconButton(systemImage: camera.flashOn ? (camera.directFlash && camera.mode == .photo
+                                                         ? "bolt.circle.fill" : "bolt.fill") : "bolt.slash",
+                          label: camera.mode != .photo ? "ライト"
+                              : camera.flashOn && camera.directFlash ? "ダイレクト" : "フラッシュ",
+                          active: camera.flashOn) {
+            if camera.mode != .photo {
+                camera.flashOn.toggle()
+            } else if !camera.flashOn {
+                camera.directFlash = false
+                camera.flashOn = true
+            } else if !camera.directFlash {
+                camera.directFlash = true
+            } else {
+                camera.flashOn = false
+                camera.directFlash = false
+            }
+        }
+        .frame(width: 48, height: 48)
     }
 
     private func next(after value: Int, in values: [Int]) -> Int {

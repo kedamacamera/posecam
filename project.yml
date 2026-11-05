@@ -28,6 +28,7 @@ targets:
         NSCameraUsageDescription: 写真・動画の撮影とポーズの判定にカメラを使用します。
         NSMicrophoneUsageDescription: 動画撮影時の録音にマイクを使用します。
         NSPhotoLibraryAddUsageDescription: 撮影した写真・動画を写真アプリに保存します。
+        NSPhotoLibraryUsageDescription: アプリ内のアルバムで写真・動画を表示し、編集できるようにします。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.posecam

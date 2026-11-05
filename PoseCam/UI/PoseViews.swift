@@ -156,7 +156,7 @@ enum PoseDrawing {
     }
 
     /// 顔のボーン（あごのライン・両目・鼻・口）。transform は顔の座標から描画先の座標への変換。
-    /// 横顔などでパーツが取れていないときは、顔の枠（楕円）と、顔の向いている方向の線を描く。
+    /// 横顔などで目が取れていないときは、顔の枠（楕円）と、向いている側に鼻の形（くの字）を描く。
     static func drawFace(_ face: FaceShape, in context: GraphicsContext, transform: (CGPoint) -> CGPoint,
                          color: Color, lineWidth: CGFloat) {
         let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
@@ -195,14 +195,17 @@ enum PoseDrawing {
                 context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
             }
         } else {
-            // 顔の向き: 中心から、向いている方向へ線を伸ばす（横顔ほど長い）
+            // 横顔・斜めの顔: 目が取れないので、鼻の形（くの字）を、顔の向いている側に描く。
+            // 以前は中心からの線と丸で向きを表していたが、目が下がって見えるため鼻と分かる形にした
             let angle = face.yaw * .pi / 180
-            let tip = CGPoint(x: center.x + CGFloat(sin(angle)) * h * 0.55, y: center.y)
-            var direction = Path()
-            direction.move(to: center)
-            direction.addLine(to: tip)
-            context.stroke(direction, with: .color(color), style: style)
-            context.fill(Path(ellipseIn: CGRect(x: tip.x - r, y: tip.y - r, width: r * 2, height: r * 2)), with: .color(color))
+            let side: CGFloat = face.yaw >= 0 ? 1 : -1
+            let tip = face.nose.map(transform)
+                ?? CGPoint(x: center.x + CGFloat(sin(angle)) * h * 0.5, y: center.y + h * 0.05)
+            var nose = Path()
+            nose.move(to: CGPoint(x: tip.x - side * h * 0.1, y: tip.y - h * 0.2))
+            nose.addLine(to: tip)
+            nose.addLine(to: CGPoint(x: tip.x - side * h * 0.08, y: tip.y + h * 0.04))
+            context.stroke(nose, with: .color(color), style: style)
         }
     }
 

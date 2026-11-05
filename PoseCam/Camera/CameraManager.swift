@@ -559,19 +559,28 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// セルフタイマー中の合図のライト。背面のライトをいちばん弱い明るさで点け、シャッターの瞬間に消す。
     /// 画面が見えない背面側からでも、いつシャッターが切れたか分かるようにする。sessionQueue から呼ぶ。
-    private func setTimerLight(_ on: Bool) {
-        guard let device = videoInput?.device, device.hasTorch, device.position == .back else { return }
-        guard on != timerLightOn else { return }
+    @discardableResult
+    private func setTimerLight(_ on: Bool) -> Bool {
+        guard let device = videoInput?.device, device.hasTorch, device.position == .back else { return false }
+        // 覚えている状態ではなく、実際のライトの状態で判断する（撮影や構成の変更で、知らないうちに消えていることがある）
+        guard on != (device.torchMode == .on) else {
+            timerLightOn = on
+            return true
+        }
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             if on {
                 try device.setTorchModeOn(level: 0.01)
             } else {
                 device.torchMode = .off
             }
-            device.unlockForConfiguration()
             timerLightOn = on
-        } catch {}
+            return true
+        } catch {
+            Diagnostics.log("ライト: \(on ? "点灯" : "消灯")できず（使える状態 \(device.isTorchAvailable)）\(error.localizedDescription)")
+            return false
+        }
     }
 
     /// 合図のライトを、deadline（シャッターの時刻）に近づくほど速く点滅させる。sessionQueue から呼ぶ。
@@ -613,11 +622,20 @@ final class CameraManager: NSObject, ObservableObject {
     private func signalSequenceFinished(after delay: Double) {
         blinkGeneration += 1
         let generation = blinkGeneration
-        let start = delay
-        for (time, on) in [(0.0, true), (0.12, false), (0.27, true), (0.39, false)] {
-            sessionQueue.asyncAfter(deadline: .now() + start + time) {
+        let position = videoInput?.device.position
+        Diagnostics.log("連続撮影: 終わりの合図（\(position == .back ? "背面" : "前面のためライトなし")）")
+        // 見落とさないよう、0.15 秒ずつ 2 回点ける
+        for (time, on) in [(0.0, true), (0.15, false), (0.35, true), (0.5, false)] {
+            sessionQueue.asyncAfter(deadline: .now() + delay + time) {
                 guard generation == self.blinkGeneration else { return }
-                self.setTimerLight(on)
+                if !self.setTimerLight(on), on {
+                    // 撮影の直後でライトが使えないときは、少し待ってもう一度
+                    self.sessionQueue.asyncAfter(deadline: .now() + 0.3) {
+                        guard generation == self.blinkGeneration else { return }
+                        self.setTimerLight(true)
+                        self.sessionQueue.asyncAfter(deadline: .now() + 0.15) { self.setTimerLight(false) }
+                    }
+                }
             }
         }
     }
@@ -840,7 +858,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func showCountdown(_ seconds: Int) {
         guard seconds > 0 else { return }
         countdown = seconds
-        AudioServicesPlaySystemSound(1103)
+        Sounds.play(.tick)
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
         timer.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(1))
         timer.setEventHandler { [weak self, weak timer] in
@@ -851,7 +869,7 @@ final class CameraManager: NSObject, ObservableObject {
                 timer?.cancel()
             } else {
                 self.countdown = next
-                AudioServicesPlaySystemSound(1103)
+                Sounds.play(.tick)
             }
         }
         countdownTimer = timer
@@ -1069,7 +1087,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
         // 無音の設定では開始・停止の音を鳴らさない（鳴らすと、その音が動画に入る）
         let mute = muteShutter
-        if !mute { AudioServicesPlaySystemSound(1117) }
+        if !mute { Sounds.play(.recordStart) }
         recordTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.recordingSeconds += 1
@@ -1102,7 +1120,7 @@ final class CameraManager: NSObject, ObservableObject {
         recordingTake.value = nil
         let take = takeCounter
         let isSnap = mode == .snap && !quick
-        if !muteShutter { AudioServicesPlaySystemSound(1118) }
+        if !muteShutter { Sounds.play(.recordStop) }
 
         savingVideos += 1
         let background = BackgroundTask(name: "動画の保存")

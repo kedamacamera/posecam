@@ -10,8 +10,9 @@ import CoreImage
 ///
 /// そこで、発光する直前の映像のコマ（周りの光だけ）と、フラッシュを焚いた写真（周りの光 + フラッシュ）を比べ、
 /// 写真の明るさのうち「周りの光」の割合が大きい所ほど暗くする。
-/// 結果は「フラッシュの光はそのまま、周りの光だけを ambientGain 倍（既定 1/4 = 2 段分シャッター速度を
+/// 結果は「フラッシュの光はそのまま、周りの光だけを ambientGain 倍（既定 1/8 = 3 段分シャッター速度を
 /// 上げたのと同じ）」になる。比べるのはぼかした明るさなので、多少の手ぶれでは崩れない。
+/// さらに、フラッシュらしい硬さ（パキッとした感じ）を出すため、輪郭のコントラスト（明瞭度）と全体のコントラストを上げる。
 enum DirectFlash {
     static let kernel: CIKernel? = {
         guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
@@ -20,7 +21,7 @@ enum DirectFlash {
     }()
 
     /// photo と ambient は同じ大きさ・同じ切り抜き。exposureRatio は（写真の露出）/（コマの露出）。
-    static func apply(photo: CIImage, ambient: CIImage, exposureRatio: Double, ambientGain: Double = 0.25) -> CIImage {
+    static func apply(photo: CIImage, ambient: CIImage, exposureRatio: Double, ambientGain: Double = 0.125) -> CIImage {
         guard let kernel else { return photo }
         let extent = photo.extent
         let sigma = max(extent.width, extent.height) * 0.006
@@ -29,9 +30,15 @@ enum DirectFlash {
         guard let relit = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
                                        arguments: [photo, photoLow, ambientLow, Float(exposureRatio),
                                                    Float(ambientGain)]) else { return photo }
-        // フラッシュらしい周辺の落ち込みを少しだけ足す
+        // 明瞭度（大きめの半径のアンシャープマスク）とコントラストで硬い光にし、周辺の落ち込みを少し足す
         return relit.cropped(to: extent)
-            .applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: 0.35, kCIInputRadiusKey: 1.6])
+            .clampedToExtent()
+            .applyingFilter("CIUnsharpMask", parameters: [kCIInputRadiusKey: max(extent.width, extent.height) * 0.008,
+                                                          kCIInputIntensityKey: 0.45])
+            .cropped(to: extent)
+            .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.12, kCIInputSaturationKey: 1.05,
+                                                            kCIInputBrightnessKey: 0])
+            .applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: 0.45, kCIInputRadiusKey: 1.6])
             .cropped(to: extent)
     }
 }

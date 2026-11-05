@@ -153,8 +153,8 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 色み（青み）は周りの肌の色へ、明るさは暗い分の 7 割を戻す
     float newCb = cb + (averageCb - nearCb) * w;
     float newCr = cr + (averageCr - nearCr) * w;
-    // 明るさは暗い分の 6 割だけ戻す（全部戻すと、頬・額と同じ明るさになって顔の陰影が平らになる）
-    float newY = y + max(0.0, darker) * 0.6 * w;
+    // 明るさは暗い分の 4 割だけ戻す（戻しすぎると、あごの周りだけ明るく浮いて見える）
+    float newY = y + max(0.0, darker) * 0.4 * w;
     float r = newY + newCr;
     float b = newY + newCb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
