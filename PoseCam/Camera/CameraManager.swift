@@ -246,6 +246,16 @@ final class CameraManager: NSObject, ObservableObject {
 
         updateConnections(position: .back)
         refreshLenses(keepingDisplayZoom: nil)
+        // セッションが止まったら（マイクの切り替え・他のアプリとの取り合いなど）記録して動かし直す
+        NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification,
+                                               object: session, queue: nil) { [weak self] note in
+            let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            Diagnostics.log("セッションのエラー: \(error?.localizedDescription ?? "") (\(error?.code ?? 0))")
+            guard let self else { return }
+            self.sessionQueue.async {
+                if !self.session.isRunning { self.session.startRunning() }
+            }
+        }
         Diagnostics.mark("構成: 完了")
     }
 
@@ -284,6 +294,17 @@ final class CameraManager: NSObject, ObservableObject {
     /// セッションの画質（プリセット）を変える。変えるとデバイスの倍率が 1（超広角）に戻ってしまうので、
     /// 構成の中で倍率も設定し、倍率が戻るまでのコマは画面に出さない（最後のコマを表示したままにする）。
     /// audio: マイクをつなぐか（nil は変えない）、torch: ライト（nil は変えない）
+    /// 構成の変更後、コマが届かないまま画面が止まり続けないよう、一定時間で必ず表示を再開する。
+    private func unfreezeLater() {
+        videoQueue.asyncAfter(deadline: .now() + 1.0) {
+            if self.framesToSkip > 0 {
+                Diagnostics.log("表示: 1 秒たってもコマが届かないので固定を解除")
+                self.framesToSkip = 0
+                self.renderer.setFrozen(false)
+            }
+        }
+    }
+
     private func changeSession(preset: AVCaptureSession.Preset, audio: Bool?, position: AVCaptureDevice.Position,
                                zoom: CGFloat, torch: Bool?) {
         renderer.setFrozen(true)
@@ -306,6 +327,7 @@ final class CameraManager: NSObject, ObservableObject {
             if let torch { self.setTorch(torch) }
             // 倍率を設定した後のコマが届くまで、数コマ待ってから表示を再開する
             self.videoQueue.async { self.framesToSkip = 3 }
+            self.unfreezeLater()
         }
     }
 
@@ -834,26 +856,34 @@ final class CameraManager: NSObject, ObservableObject {
 
         videoQueue.async {
             self.wantsRecording = false
-            guard let recorder = self.recorder else { return }
+            guard let recorder = self.recorder else {
+                // 録画中に映像のコマが 1 つも届かなかった（以前は何も表示せずに終わっていた）
+                Diagnostics.log("録画: コマが届かず録画できず（受信 \(self.frameCount) コマ目）")
+                self.report("録画できませんでした（カメラの映像が届いていません）")
+                return
+            }
             self.recorder = nil
             let thumbnail = self.lastRecordedFrame.flatMap { self.makeThumbnail($0) }
             self.lastRecordedFrame = nil
 
-            recorder.finish { url in
+            recorder.finish { url, reason in
                 DispatchQueue.main.async { AudioServicesPlaySystemSound(1118) }
                 guard let url else {
-                    self.report("動画の書き出しに失敗しました")
+                    Diagnostics.log("録画: 書き出し失敗 \(reason ?? "")")
+                    self.report("動画の書き出しに失敗しました: \(reason ?? "理由不明")")
                     return
                 }
                 if isSnap {
                     DispatchQueue.main.async { self.snapClip = SnapClip(url: url) }
                     return
                 }
-                MediaSaver.saveVideo(at: url) { ok in
+                MediaSaver.saveVideo(at: url) { ok, reason in
                     if ok {
+                        Diagnostics.log("録画: 保存完了")
                         DispatchQueue.main.async { self.lastThumbnail = thumbnail }
                     } else {
-                        self.report("動画を保存できませんでした（写真へのアクセス許可を確認してください）")
+                        Diagnostics.log("録画: 保存失敗 \(reason ?? "")")
+                        self.report("動画を保存できませんでした: \(reason ?? "写真へのアクセス許可を確認してください")")
                     }
                 }
             }
@@ -874,11 +904,21 @@ final class CameraManager: NSObject, ObservableObject {
                 recorder = try VideoRecorder(url: url, size: image.extent.size,
                                              audioSettings: audioSettings, context: renderer.ciContext)
             } catch {
-                wantsRecording = false
-                report("録画を開始できませんでした")
-                DispatchQueue.main.async { self.stopRecording() }
-                return
+                // HEVC で始められない機種・状態では H.264 で作り直す
+                Diagnostics.log("録画: HEVC で開始できず \(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: url)
+                do {
+                    recorder = try VideoRecorder(url: url, size: image.extent.size, audioSettings: audioSettings,
+                                                 context: renderer.ciContext, codec: .h264)
+                } catch {
+                    wantsRecording = false
+                    Diagnostics.log("録画: 開始できず \(error.localizedDescription)")
+                    report("録画を開始できませんでした: \(error.localizedDescription)")
+                    DispatchQueue.main.async { self.stopRecording() }
+                    return
+                }
             }
+            Diagnostics.log("録画: 開始 \(Int(image.extent.width))x\(Int(image.extent.height))")
         }
         recorder?.appendVideo(image, at: time)
         lastRecordedFrame = image
@@ -972,7 +1012,8 @@ final class CameraManager: NSObject, ObservableObject {
     func report(_ message: String) {
         DispatchQueue.main.async {
             self.statusMessage = message
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            // 失敗の理由は読み切れるよう長めに出す
+            DispatchQueue.main.asyncAfter(deadline: .now() + (message.count > 30 ? 8 : 2.5)) {
                 if self.statusMessage == message { self.statusMessage = nil }
             }
         }

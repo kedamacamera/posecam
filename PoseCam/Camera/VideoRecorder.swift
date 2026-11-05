@@ -16,14 +16,19 @@ final class VideoRecorder {
     private let context: CIContext
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private var sessionStarted = false
+    /// 書き込めたコマの数（失敗の理由を知らせるのに使う）
+    private(set) var framesWritten = 0
+    private var failureReason: String?
 
-    init(url: URL, size: CGSize, audioSettings: [String: Any]?, context: CIContext) throws {
+    /// codec は HEVC が使えなければ H.264 で作り直す（CameraManager 側）
+    init(url: URL, size: CGSize, audioSettings: [String: Any]?, context: CIContext,
+         codec: AVVideoCodecType = .hevc) throws {
         let width = Int(size.width) / 2 * 2
         let height = Int(size.height) / 2 * 2
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
         ])
@@ -59,7 +64,10 @@ final class VideoRecorder {
     }
 
     func appendVideo(_ image: CIImage, at time: CMTime) {
-        guard writer.status == .writing else { return }
+        guard writer.status == .writing else {
+            noteFailure()
+            return
+        }
         if !sessionStarted {
             writer.startSession(atSourceTime: time)
             sessionStarted = true
@@ -70,7 +78,11 @@ final class VideoRecorder {
         guard let buffer else { return }
         let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         context.render(image, to: buffer, bounds: bounds, colorSpace: colorSpace)
-        adaptor.append(buffer, withPresentationTime: time)
+        if adaptor.append(buffer, withPresentationTime: time) {
+            framesWritten += 1
+        } else {
+            noteFailure()
+        }
     }
 
     func appendAudio(_ sampleBuffer: CMSampleBuffer) {
@@ -79,22 +91,35 @@ final class VideoRecorder {
         audioInput.append(sampleBuffer)
     }
 
-    /// 書き出しが終わったら URL を返す。1 フレームも書けていなければ nil。
-    func finish(_ completion: @escaping (URL?) -> Void) {
-        guard writer.status == .writing, sessionStarted else {
+    private func noteFailure() {
+        guard failureReason == nil else { return }
+        let error = writer.error as NSError?
+        failureReason = error.map { "\($0.localizedDescription) (\($0.domain) \($0.code))" } ?? "status \(writer.status.rawValue)"
+        Diagnostics.log("録画: 書き込み失敗 \(failureReason ?? "")")
+    }
+
+    /// 書き出しが終わったら URL を返す。失敗したときは nil と理由を返す。
+    func finish(_ completion: @escaping (URL?, String?) -> Void) {
+        guard writer.status == .writing, sessionStarted, framesWritten > 0 else {
+            noteFailure()
+            let reason = framesWritten == 0 ? "映像を 1 コマも書き込めませんでした（\(failureReason ?? "不明")）"
+                                            : failureReason
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: url)
-            completion(nil)
+            completion(nil, reason)
             return
         }
         videoInput.markAsFinished()
         audioInput?.markAsFinished()
+        let frames = framesWritten
         writer.finishWriting { [writer, url] in
             if writer.status == .completed {
-                completion(url)
+                Diagnostics.log("録画: 書き出し完了 \(frames) コマ")
+                completion(url, nil)
             } else {
+                let error = writer.error as NSError?
                 try? FileManager.default.removeItem(at: url)
-                completion(nil)
+                completion(nil, error.map { "\($0.localizedDescription) (\($0.domain) \($0.code))" } ?? "不明")
             }
         }
     }

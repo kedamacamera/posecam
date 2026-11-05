@@ -4,16 +4,16 @@ import Photos
 /// 写真アプリへの保存。追加のみの権限（.addOnly）で足りる。
 enum MediaSaver {
     static func savePhoto(_ data: Data, completion: @escaping (Bool) -> Void) {
-        withAddPermission(completion) {
+        withAddPermission({ ok, _ in completion(ok) }) {
             PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
         }
     }
 
     /// 成功時は一時ファイルを写真ライブラリへ移動する。失敗時は一時ファイルを消す。
-    static func saveVideo(at url: URL, completion: @escaping (Bool) -> Void) {
-        withAddPermission({ ok in
+    static func saveVideo(at url: URL, completion: @escaping (Bool, String?) -> Void) {
+        withAddPermission({ ok, reason in
             if !ok { try? FileManager.default.removeItem(at: url) }
-            completion(ok)
+            completion(ok, reason)
         }) {
             let options = PHAssetResourceCreationOptions()
             options.shouldMoveFile = true
@@ -21,14 +21,16 @@ enum MediaSaver {
         }
     }
 
-    private static func withAddPermission(_ completion: @escaping (Bool) -> Void, changes: @escaping () -> Void) {
+    private static func withAddPermission(_ completion: @escaping (Bool, String?) -> Void,
+                                          changes: @escaping () -> Void) {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else {
-                completion(false)
+                completion(false, "写真への追加が許可されていません")
                 return
             }
-            PHPhotoLibrary.shared().performChanges(changes) { success, _ in
-                completion(success)
+            PHPhotoLibrary.shared().performChanges(changes) { success, error in
+                let nsError = error as NSError?
+                completion(success, nsError.map { "\($0.localizedDescription) (\($0.domain) \($0.code))" })
             }
         }
     }

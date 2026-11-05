@@ -13,6 +13,7 @@ enum Diagnostics {
     private static let inProgressKey = "diag.inProgress"
     private static let stepsKey = "diag.steps"
     private static let exceptionKey = "diag.exception"
+    private static let eventsKey = "diag.events"
     private static let lock = NSLock()
 
     /// 前回の起動がカメラ起動中に終わっていれば、その記録を返す。
@@ -44,6 +45,20 @@ enum Diagnostics {
         defaults.set(Array(steps.suffix(40)), forKey: stepsKey)
         defaults.set(true, forKey: inProgressKey)
     }
+
+    /// 起動後の出来事（録画の失敗など）を記録だけする。「落ちた」とは判定しない。
+    static func log(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let defaults = UserDefaults.standard
+        var lines = defaults.stringArray(forKey: eventsKey) ?? []
+        let time = ISO8601DateFormatter().string(from: Date())
+        lines.append("\(time) \(message)")
+        defaults.set(Array(lines.suffix(60)), forKey: eventsKey)
+    }
+
+    /// log で記録した出来事（新しいものが後ろ）
+    static var events: [String] { UserDefaults.standard.stringArray(forKey: eventsKey) ?? [] }
 
     static func markHealthy() {
         lock.lock()

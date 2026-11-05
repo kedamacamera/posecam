@@ -185,6 +185,12 @@ struct ContentView: View {
                     Text("2秒ごと").tag(2.0)
                 }
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
+                Button("動作の記録をコピー") {
+                    UIPasteboard.general.string = ([
+                        "iOS \(UIDevice.current.systemVersion)",
+                    ] + Diagnostics.events).joined(separator: "
+")
+                }
                 Button("ライセンス") { showLicenses = true }
             } label: {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
