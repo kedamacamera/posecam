@@ -12,13 +12,18 @@ struct BeautyMasks {
     var features: CIImage?
     /// 目・唇だけを黒にしたマスク（赤み消しを外す所）。眉や小鼻の際の赤みは消したいので外さない
     var redFeatures: CIImage?
+    /// ひげの生える所（鼻の下〜あご、唇は除く）を白にしたマスク（青ひげ隠し用）
+    var beard: CIImage?
+    /// あごの輪郭のすぐ外側（首との境目）を白にしたマスク（輪郭の影入れ用）
+    var jawShade: CIImage?
 
     /// 大きさの確認に使う
     var extent: CGRect? { (skin ?? person)?.extent }
 
     func map(_ transform: (CIImage) -> CIImage) -> BeautyMasks {
         BeautyMasks(skin: skin.map(transform), person: person.map(transform),
-                    features: features.map(transform), redFeatures: redFeatures.map(transform))
+                    features: features.map(transform), redFeatures: redFeatures.map(transform),
+                    beard: beard.map(transform), jawShade: jawShade.map(transform))
     }
 }
 
@@ -184,7 +189,9 @@ final class PoseDetector {
                 skin: skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
                 person: personBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
                 features: Self.featureMask(faces, imageSize: imageSize, forRedness: false),
-                redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true))
+                redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true),
+                beard: Self.beardMask(faces, imageSize: imageSize),
+                jawShade: Self.jawShadeMask(faces, imageSize: imageSize))
         }
         return result
     }
@@ -264,10 +271,116 @@ final class PoseDetector {
             .cropped(to: CGRect(origin: .zero, size: imageSize))
     }
 
+    /// 1/4 の大きさのグレーの画用紙（黒で塗りつぶし済み）に draw で描き、元の大きさに引き伸ばしてぼかす。
+    private static func drawMask(imageSize: CGSize, blurOfFace: CGFloat, faces: [VNFaceObservation],
+                                 draw: (CGContext, CGSize) -> Void) -> CIImage? {
+        let scale: CGFloat = 0.25
+        let width = max(Int(imageSize.width * scale), 1)
+        let height = max(Int(imageSize.height * scale), 1)
+        guard !faces.isEmpty,
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        let size = CGSize(width: width, height: height)
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(origin: .zero, size: size))
+        draw(context, size)
+        guard let cgImage = context.makeImage() else { return nil }
+        let largestFace = faces.map(\.boundingBox.width).max() ?? 0
+        let sigma = max(imageSize.width * 0.004, largestFace * imageSize.width * blurOfFace)
+        return scaled(CIImage(cgImage: cgImage), to: imageSize)
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: sigma)
+            .cropped(to: CGRect(origin: .zero, size: imageSize))
+    }
+
+    /// ひげの生える範囲。顔の輪郭（あごのライン）の内側のうち鼻より下を塗り、唇を外す。
+    private static func beardMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
+        drawMask(imageSize: imageSize, blurOfFace: 0.035, faces: faces) { context, size in
+            for face in faces {
+                guard let marks = face.landmarks, let contour = marks.faceContour,
+                      let nose = marks.nose else { continue }
+                let faceWidth = face.boundingBox.width * size.width
+                let points = contour.pointsInImage(imageSize: size)
+                // pointsInImage は左下原点なので、y が小さいほど下
+                guard points.count > 2, let noseBottom = nose.pointsInImage(imageSize: size).map(\.y).min()
+                else { continue }
+                context.saveGState()
+                context.clip(to: CGRect(x: 0, y: 0, width: size.width, height: noseBottom - faceWidth * 0.02))
+                context.setFillColor(gray: 1, alpha: 1)
+                context.beginPath()
+                context.addLines(between: points)
+                context.closePath()
+                context.fillPath()
+                context.restoreGState()
+                if let lips = marks.outerLips?.pointsInImage(imageSize: size), lips.count > 2 {
+                    context.setFillColor(gray: 0, alpha: 1)
+                    context.setStrokeColor(gray: 0, alpha: 1)
+                    context.setLineWidth(faceWidth * 0.04)
+                    context.setLineJoin(.round)
+                    context.beginPath()
+                    context.addLines(between: lips)
+                    context.closePath()
+                    context.drawPath(using: .fillStroke)
+                }
+            }
+        }
+    }
+
+    /// あごの輪郭のすぐ外側の帯。鼻より下の輪郭を、顔の中心から外へ少しずらしてなぞる。
+    /// 首との境目に影ができ、美肌でぼやけたフェイスラインがはっきりする（メイクのシェーディングと同じ）。
+    private static func jawShadeMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
+        drawMask(imageSize: imageSize, blurOfFace: 0.03, faces: faces) { context, size in
+            for face in faces {
+                guard let marks = face.landmarks, let contour = marks.faceContour,
+                      let nose = marks.nose else { continue }
+                let faceWidth = face.boundingBox.width * size.width
+                let box = face.boundingBox
+                let center = CGPoint(x: box.midX * size.width, y: box.midY * size.height)
+                guard let noseBottom = nose.pointsInImage(imageSize: size).map(\.y).min() else { continue }
+                let lower = contour.pointsInImage(imageSize: size).filter { $0.y < noseBottom }
+                guard lower.count > 2 else { continue }
+                let shifted = lower.map { p -> CGPoint in
+                    let dx = p.x - center.x, dy = p.y - center.y
+                    let length = max(hypot(dx, dy), 0.001)
+                    let offset = faceWidth * 0.035
+                    return CGPoint(x: p.x + dx / length * offset, y: p.y + dy / length * offset)
+                }
+                context.setStrokeColor(gray: 1, alpha: 1)
+                context.setLineWidth(faceWidth * 0.06)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                context.beginPath()
+                context.addLines(between: shifted)
+                context.strokePath()
+            }
+        }
+    }
+
     // MARK: - 写真の人物の輪郭
 
     /// 写真に写っている人物の輪郭を、画像座標（左上原点・0...1）の閉じた多角形で、大きい順に返す。
     /// 2 人写っていれば 2 つ返す（いちばん大きい人の 2 割に満たない小さな影などは除く）。
+    /// 料理・ドリンクの写真の、主な被写体（お皿・グラス・それを持つ手）の輪郭。画像座標（左上原点・0...1）。
+    /// 人物用の判定は使えないので、写真の手前にある物を切り抜く判定（iOS 17 / macOS 14 以降）を使う。
+    /// 使えない環境では、目立つ所（顕著性）の判定で代わりにする。
+    static func objectOutlines(ciImage: CIImage) -> [[CGPoint]] {
+        var mask: CVPixelBuffer?
+        let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
+        let foreground = VNGenerateForegroundInstanceMaskRequest()
+        if (try? handler.perform([foreground])) != nil, let result = foreground.results?.first {
+            mask = try? result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+        }
+        if mask == nil {
+            let saliency = VNGenerateObjectnessBasedSaliencyImageRequest()
+            if (try? handler.perform([saliency])) != nil {
+                mask = saliency.results?.first?.pixelBuffer
+            }
+        }
+        guard let mask else { return [] }
+        return outlines(of: mask, minimumShare: 0.08, limit: 4)
+    }
+
     static func personOutlines(ciImage: CIImage) -> [[CGPoint]] {
         let segmentation = VNGeneratePersonSegmentationRequest()
         segmentation.qualityLevel = .accurate
@@ -278,7 +391,12 @@ final class PoseDetector {
             return []
         }
         guard let mask = segmentation.results?.first?.pixelBuffer else { return [] }
+        return outlines(of: mask, minimumShare: 0.2, limit: 8)
+    }
 
+    /// マスク（白が対象）の外形を、大きい順に閉じた多角形で返す。
+    /// minimumShare: いちばん大きい形に対して、これより小さい形は除く。
+    private static func outlines(of mask: CVPixelBuffer, minimumShare: Float, limit: Int) -> [[CGPoint]] {
         let contours = VNDetectContoursRequest()
         contours.detectsDarkOnLight = false
         contours.contrastAdjustment = 1
@@ -299,7 +417,7 @@ final class PoseDetector {
         }
         let sorted = observation.topLevelContours.sorted { area($0) > area($1) }
         guard let largestArea = sorted.first.map(area) else { return [] }
-        return sorted.filter { area($0) >= largestArea * 0.2 }.compactMap { contour -> [CGPoint]? in
+        return sorted.filter { area($0) >= largestArea * minimumShare }.prefix(limit).compactMap { contour -> [CGPoint]? in
             let simplified = (try? contour.polygonApproximation(epsilon: 0.002)) ?? contour
             let points = simplified.normalizedPoints.map { CGPoint(x: CGFloat($0.x), y: 1 - CGFloat($0.y)) }
             return points.count >= 8 ? points : nil

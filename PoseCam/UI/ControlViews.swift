@@ -384,8 +384,19 @@ struct PanelChips: View {
 
 struct FilterStrip: View {
     @Binding var selection: PhotoFilter
+    @Binding var strength: Double
 
     var body: some View {
+        VStack(spacing: 8) {
+            StrengthSlider(value: $strength, standard: PhotoFilter.standardStrength)
+                .padding(.horizontal)
+                .opacity(selection == .none ? 0.35 : 1)
+                .disabled(selection == .none)
+            thumbnails
+        }
+    }
+
+    private var thumbnails: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(PhotoFilter.allCases) { filter in
@@ -411,6 +422,74 @@ struct FilterStrip: View {
             }
             .padding(.horizontal)
         }
+    }
+}
+
+/// フィルターの濃さ。標準（70%）の所に点があり、近くまで動かすと磁石のように吸い付く（軽い振動つき）。
+/// 100% はわざと少しやりすぎなくらいの濃さ。
+struct StrengthSlider: View {
+    @Binding var value: Double
+    let standard: Double
+    /// この範囲まで近づいたら標準に吸い付く
+    private let snapRange = 0.04
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("濃さ")
+                .font(.caption.weight(.semibold))
+            GeometryReader { geo in
+                let width = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.3)).frame(height: 4)
+                    Capsule().fill(Color.yellow).frame(width: width * value, height: 4)
+                    // 標準の位置の点
+                    Circle()
+                        .fill(abs(value - standard) < 0.001 ? Color.yellow : .white)
+                        .frame(width: 7, height: 7)
+                        .offset(x: width * standard - 3.5)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 20, height: 20)
+                        .shadow(color: .black.opacity(0.4), radius: 2)
+                        .offset(x: width * value - 10)
+                }
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                    var next = min(max(drag.location.x / width, 0), 1)
+                    if abs(next - standard) < snapRange { next = standard }
+                    if next == standard && value != standard {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
+                    value = next
+                })
+            }
+            .frame(height: 24)
+            Text("\(Int((value * 100).rounded()))")
+                .font(.caption.monospacedDigit())
+                .frame(width: 28, alignment: .trailing)
+        }
+        .foregroundStyle(.white)
+    }
+}
+
+/// 三分割の線。料理や物の主役を線の交点に置くと、構図が決まりやすい。
+struct GridOverlay: View {
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            for i in 1...2 {
+                let x = size.width * CGFloat(i) / 3
+                let y = size.height * CGFloat(i) / 3
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(path, with: .color(.black.opacity(0.3)), lineWidth: 2)
+            context.stroke(path, with: .color(.white.opacity(0.7)), lineWidth: 0.8)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -452,6 +531,8 @@ enum BeautyItem: String, CaseIterable, Identifiable {
     case redness = "赤み"
     case blemish = "シミ"
     case wrinkle = "シワ"
+    case beard = "青ひげ"
+    case contour = "輪郭"
     case legLength = "脚長"
 
     var id: String { rawValue }
@@ -463,6 +544,8 @@ enum BeautyItem: String, CaseIterable, Identifiable {
         case .redness: return "drop"
         case .blemish: return "circle.dotted"
         case .wrinkle: return "water.waves"
+        case .beard: return "mustache"
+        case .contour: return "face.smiling"
         case .legLength: return "arrow.up.and.down"
         }
     }
@@ -474,6 +557,8 @@ enum BeautyItem: String, CaseIterable, Identifiable {
         case .redness: return \.redness
         case .blemish: return \.blemish
         case .wrinkle: return \.wrinkle
+        case .beard: return \.beard
+        case .contour: return \.contour
         case .legLength: return \.legLength
         }
     }
@@ -512,7 +597,9 @@ struct BeautyPanel: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
-                    Button { settings = ProcessingSettings(filter: settings.filter) } label: {
+                    Button {
+                        settings = ProcessingSettings(filter: settings.filter, filterStrength: settings.filterStrength)
+                    } label: {
                         itemLabel(systemImage: "arrow.counterclockwise", title: "リセット", active: false, value: nil)
                     }
                     ForEach(BeautyItem.allCases) { item in
@@ -724,24 +811,35 @@ struct BurstRing: View {
     }
 
     private func run() async {
-        // タイマーのカウントダウン中（1 枚目より前）は数字の表示に任せる
-        await sleep(until: timeline.firstShot)
+        if timeline.showsLeadIn {
+            // タイマーなしの連続撮影: 押してから 1 枚目（2 秒後）までも円で表す
+            await deplete(next: 1, until: timeline.firstShot)
+        } else {
+            // タイマーのカウントダウン中（1 枚目より前）は数字の表示に任せる
+            await sleep(until: timeline.firstShot)
+        }
         for shot in 1..<timeline.total {
             guard !Task.isCancelled else { return }
             let nextShot = timeline.firstShot.addingTimeInterval(Double(shot) * timeline.interval)
-            var reset = Transaction()
-            reset.disablesAnimations = true
-            withTransaction(reset) {
-                visible = true
-                next = shot + 1
-                remaining = 1
-            }
-            // 満タンに戻した状態を一度画面に出してから、減らすアニメーションを始める
-            try? await Task.sleep(nanoseconds: 16_000_000)
-            withAnimation(.linear(duration: max(0.05, nextShot.timeIntervalSinceNow))) { remaining = 0 }
-            await sleep(until: nextShot)
+            await deplete(next: shot + 1, until: nextShot)
         }
         visible = false
+    }
+
+    /// 円を満タンに戻し、date に 0 になるよう一定の速さで減らす。
+    private func deplete(next shotNumber: Int, until date: Date) async {
+        guard !Task.isCancelled else { return }
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) {
+            visible = true
+            next = shotNumber
+            remaining = 1
+        }
+        // 満タンに戻した状態を一度画面に出してから、減らすアニメーションを始める
+        try? await Task.sleep(nanoseconds: 16_000_000)
+        withAnimation(.linear(duration: max(0.05, date.timeIntervalSinceNow))) { remaining = 0 }
+        await sleep(until: date)
     }
 
     private func sleep(until date: Date) async {

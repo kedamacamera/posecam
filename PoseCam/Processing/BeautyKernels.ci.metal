@@ -93,5 +93,65 @@ float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float st
     return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
 }
 
+/// ダイレクトフラッシュ。Core Image の作業色空間はリニア（光の量に比例）なので、明るさをそのまま比べられる。
+/// photoLow: フラッシュ写真をぼかしたもの、ambientLow: 発光直前のコマ（周りの光だけ）をぼかしたもの。
+/// ratio: コマの明るさを写真の露出にそろえる倍率。ambientGain: 周りの光を何倍にするか（0.25 で 2 段暗く）。
+/// 写真の明るさのうち周りの光の割合 f を求め、明るさを (1 - f) + f * ambientGain 倍にする
+/// ＝フラッシュの光はそのまま、周りの光だけを減らす。
+float4 directFlash(sampler photo, sampler photoLow, sampler ambientLow, float ratio, float ambientGain,
+                   destination dest) {
+    float2 coord = dest.coord();
+    float4 color = photo.sample(photo.transform(coord));
+    float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
+    float total = dot(photoLow.sample(photoLow.transform(coord)).rgb, lumaWeights);
+    float ambient = dot(ambientLow.sample(ambientLow.transform(coord)).rgb, lumaWeights) * ratio;
+    float f = clamp(ambient / max(total, 0.0005), 0.0, 1.0);
+    float gain = (1.0 - f) + f * ambientGain;
+    return float4(color.rgb * gain, color.a);
+}
+
+/// 青ひげ隠し。ひげの剃り跡は、皮膚の下の毛が透けて「周りの肌より青く・少し暗く」見える。
+/// メイクの色補正（青の反対色のオレンジで打ち消す）と同じ考えで、周りの肌の色との差のうち
+/// 青み・暗さの分だけを打ち消す。細かい質感（src - local）は残すので、塗りつぶしたようにはならない。
+/// skinSum / skinWeight: ひげの所を除いた肌の平均の色（頬などから広くぼかして求める）。
+/// local: src を少しぼかしたもの（剃り跡のむらを判定する）。
+/// 周りよりずっと暗い所（伸びたひげ・鼻の穴・影）は剃り跡ではないので変えない。
+float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWeight, float strength,
+                    destination dest) {
+    float2 coord = dest.coord();
+    float4 color = src.sample(src.transform(coord));
+    float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
+    if (weightSum < 0.02) {
+        return color;
+    }
+    float3 average = skinSum.sample(skinSum.transform(coord)).rgb / weightSum;
+    float3 near = local.sample(local.transform(coord)).rgb;
+    float3 lumaWeights = float3(0.299, 0.587, 0.114);
+
+    float nearY = dot(near, lumaWeights);
+    float averageY = dot(average, lumaWeights);
+    float nearCb = near.b - nearY, nearCr = near.r - nearY;
+    float averageCb = average.b - averageY, averageCr = average.r - averageY;
+
+    // 青い（Cb が高い・Cr が低い）ほど、暗いほど強く効かせる
+    float bluish = (nearCb - averageCb) + 0.5 * (averageCr - nearCr);
+    float darker = averageY - nearY;
+    float amount = smoothstep(0.0, 0.04, bluish + 0.4 * max(darker, 0.0));
+    float darkGuard = 1.0 - smoothstep(0.18, 0.3, darker);
+    float w = amount * darkGuard * strength;
+
+    float y = dot(color.rgb, lumaWeights);
+    float cb = color.b - y;
+    float cr = color.r - y;
+    // 色み（青み）は周りの肌の色へ、明るさは暗い分の 7 割を戻す
+    float newCb = cb + (averageCb - nearCb) * w;
+    float newCr = cr + (averageCr - nearCr) * w;
+    float newY = y + max(0.0, darker) * 0.7 * w;
+    float r = newY + newCr;
+    float b = newY + newCb;
+    float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
+    return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
+}
+
 }
 }

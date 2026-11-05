@@ -6,8 +6,11 @@ import UIKit
 /// 組み込みポーズと、ユーザーが写真から登録したポーズを管理する。
 final class PoseLibrary: ObservableObject {
     static let userCategory = PoseTemplate.userCategory
+    static let favoriteCategory = "お気に入り"
 
     @Published private(set) var userPoses: [PoseTemplate] = []
+    /// お気に入りにしたポーズの id（追加した順）
+    @Published private(set) var favoriteIDs: [String] = UserDefaults.standard.stringArray(forKey: "favoritePoses") ?? []
     /// 起動直後は角度から作った形。見本写真の解析が終わると、写真の骨格と輪郭に置き換わる
     @Published private(set) var builtInPoses = BuiltInPoses.all
 
@@ -24,13 +27,36 @@ final class PoseLibrary: ObservableObject {
 
     var allPoses: [PoseTemplate] { userPoses + readyBuiltInPoses }
 
+    /// お気に入り（あれば）→ マイポーズ（あれば）→ 組み込みのカテゴリ の順
     var categories: [String] {
         let used = Set(readyBuiltInPoses.map(\.category))
-        return (userPoses.isEmpty ? [] : [Self.userCategory]) + BuiltInPoses.categories.filter { used.contains($0) }
+        return (favorites.isEmpty ? [] : [Self.favoriteCategory])
+            + (userPoses.isEmpty ? [] : [Self.userCategory])
+            + BuiltInPoses.categories.filter { used.contains($0) }
     }
 
     func poses(in category: String) -> [PoseTemplate] {
-        category == Self.userCategory ? userPoses : readyBuiltInPoses.filter { $0.category == category }
+        switch category {
+        case Self.favoriteCategory: return favorites
+        case Self.userCategory: return userPoses
+        default: return readyBuiltInPoses.filter { $0.category == category }
+        }
+    }
+
+    var favorites: [PoseTemplate] {
+        let all = Dictionary(allPoses.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return favoriteIDs.compactMap { all[$0] }
+    }
+
+    func isFavorite(_ pose: PoseTemplate) -> Bool { favoriteIDs.contains(pose.id) }
+
+    func toggleFavorite(_ pose: PoseTemplate) {
+        if let index = favoriteIDs.firstIndex(of: pose.id) {
+            favoriteIDs.remove(at: index)
+        } else {
+            favoriteIDs.append(pose.id)
+        }
+        UserDefaults.standard.set(favoriteIDs, forKey: "favoritePoses")
     }
 
     func add(_ pose: PoseTemplate) {
@@ -40,6 +66,7 @@ final class PoseLibrary: ObservableObject {
 
     func delete(_ pose: PoseTemplate) {
         userPoses.removeAll { $0.id == pose.id }
+        if isFavorite(pose) { toggleFavorite(pose) }
         save()
     }
 
@@ -97,11 +124,14 @@ final class PoseLibrary: ObservableObject {
                       let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
                 else { continue }
                 let key = "\(name)-\(size)"
+                let isObject = updated[index].isObject
                 if cache[key] == nil,
                    let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
-                   let analysis = PoseImporter.analyze(image) {
+                   let analysis = isObject ? PoseImporter.analyzeObject(image) : PoseImporter.analyze(image) {
                     // 組み込みポーズは、写真モードの標準の比率（3:4）で枠を決める
-                    let crop = PoseImporter.defaultCrop(for: analysis, aspect: 3.0 / 4.0)
+                    let crop = isObject
+                        ? PoseImporter.fullFrameCrop(size: analysis.size, aspect: 3.0 / 4.0)
+                        : PoseImporter.defaultCrop(for: analysis, aspect: 3.0 / 4.0)
                     cache[key] = PoseImporter.shape(for: analysis, crop: crop)
                     changed = true
                 }

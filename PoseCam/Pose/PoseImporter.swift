@@ -48,6 +48,26 @@ enum PoseImporter {
         return PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines)
     }
 
+    /// 料理・ドリンクの写真から、主な被写体（お皿・グラス・手）の輪郭を取り出す。
+    static func analyzeObject(_ source: CIImage) -> PhotoAnalysis? {
+        let image = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
+                                                             y: -source.extent.minY))
+        let outlines = PoseDetector.objectOutlines(ciImage: image)
+        guard !outlines.isEmpty else { return nil }
+        return PhotoAnalysis(size: image.extent.size, joints: [:], outlines: outlines)
+    }
+
+    /// 料理・ドリンクは写真の構図そのものが手本なので、写真の中央を画面の比率でできるだけ大きく切り抜く。
+    static func fullFrameCrop(size: CGSize, aspect: CGFloat) -> CGRect {
+        var width = size.width
+        var height = width / aspect
+        if height > size.height {
+            height = size.height
+            width = height * aspect
+        }
+        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2, width: width, height: height)
+    }
+
     /// 人物全体が枠に収まる、最初の枠。
     /// 写真の下端まで人が写っている（上半身の写真など）ときは、写真の下端を枠の下端にして元の構図を保つ。
     static func defaultCrop(for analysis: PhotoAnalysis, aspect: CGFloat) -> CGRect {

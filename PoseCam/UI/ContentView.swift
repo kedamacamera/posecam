@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var poseOpacity = 0.85
     @State private var showLibrary = false
     @State private var showLicenses = false
+    @State private var showPerspective = false
+    /// 三分割の線（料理・物撮りの構図合わせ）
+    @AppStorage("showGrid") private var showGrid = false
     @State private var zoomAtGestureStart: CGFloat?
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
@@ -111,6 +114,9 @@ struct ContentView: View {
         .sheet(isPresented: $showLicenses) {
             LicensesView()
         }
+        .fullScreenCover(isPresented: $showPerspective) {
+            PerspectiveEditorView()
+        }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
         }
@@ -132,6 +138,13 @@ struct ContentView: View {
             if camera.showSkeleton {
                 SkeletonLayer(feed: camera.poseFeed)
             }
+            if showGrid {
+                GridOverlay()
+            }
+            // 料理・ドリンクの構図の型では、真上（俯瞰）・45 度・真横の角度を水準器で合わせる
+            if camera.template?.isObject == true {
+                AngleLevelView()
+            }
         }
         .frame(width: screen.width, height: height)
         .clipped()
@@ -152,10 +165,23 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack {
-            LabeledIconButton(systemImage: camera.flashOn ? "bolt.fill" : "bolt.slash",
-                              label: camera.mode == .photo ? "フラッシュ" : "ライト",
+            // 写真: オフ → オン → ダイレクト（背景を暗く落とす）→ オフ。動画・スナップはライトのオン・オフ
+            LabeledIconButton(systemImage: camera.flashOn ? (camera.directFlash && camera.mode == .photo
+                                                             ? "bolt.circle.fill" : "bolt.fill") : "bolt.slash",
+                              label: camera.mode != .photo ? "ライト"
+                                  : camera.flashOn && camera.directFlash ? "ダイレクト" : "フラッシュ",
                               active: camera.flashOn) {
-                camera.flashOn.toggle()
+                if camera.mode != .photo {
+                    camera.flashOn.toggle()
+                } else if !camera.flashOn {
+                    camera.directFlash = false
+                    camera.flashOn = true
+                } else if !camera.directFlash {
+                    camera.directFlash = true
+                } else {
+                    camera.flashOn = false
+                    camera.directFlash = false
+                }
             }
             Spacer()
             AspectMenu(aspect: $camera.aspect)
@@ -170,7 +196,7 @@ struct ContentView: View {
             LabeledIconButton(systemImage: "square.stack.3d.down.right",
                               label: camera.burstCount == 1 ? "連続撮影" : "\(camera.burstCount)枚",
                               active: camera.burstCount > 1) {
-                camera.burstCount = next(after: camera.burstCount, in: [1, 3, 10])
+                camera.burstCount = next(after: camera.burstCount, in: [1, 3, 5, 10])
             }
             .disabled(camera.mode != .photo)
             .opacity(camera.mode == .photo ? 1 : 0.4)
@@ -178,13 +204,11 @@ struct ContentView: View {
             Menu {
                 Toggle("無音で撮影", isOn: $camera.muteShutter)
                 if !camera.canMuteShutter {
-                    Text("映像のコマを写真として保存します（約 600〜830 万画素）")
-                }
-                Picker("連続撮影の間隔", selection: $camera.burstInterval) {
-                    Text("1秒ごと").tag(1.0)
-                    Text("2秒ごと").tag(2.0)
+                    Text("映像のコマを写真として保存します（画角は通常と同じ・同じ画素数に拡大）")
                 }
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
+                Toggle("グリッド（三分割）", isOn: $showGrid)
+                Button("写真の傾き補正（射影変換）") { showPerspective = true }
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
@@ -201,7 +225,7 @@ struct ContentView: View {
     /// 一致度・録画時間・連続撮影の進み具合。
     private var statusRow: some View {
         HStack {
-            if camera.template != nil {
+            if let template = camera.template, !template.isObject {
                 MatchBadge(feed: camera.poseFeed)
             }
             Spacer()
@@ -224,7 +248,7 @@ struct ContentView: View {
                     mirrored: $mirrorPose,
                     autoShutter: $camera.autoShutter,
                     recommendedZoom: camera.template?.recommendedZoom,
-                    canAutoShutter: camera.mode == .photo,
+                    canAutoShutter: camera.mode == .photo && camera.template?.isObject != true,
                     onClear: { selectedPose = nil },
                     onApplyZoom: { camera.setDisplayZoom(CGFloat($0), animated: true) })
     }
@@ -248,13 +272,13 @@ struct ContentView: View {
                         PoseStrip(library: library, selection: $selectedPose,
                                   frameAspect: camera.frameAspect) { showLibrary = true }
                     case .filter:
-                        FilterStrip(selection: $camera.settings.filter)
+                        FilterStrip(selection: $camera.settings.filter, strength: $camera.settings.filterStrength)
                     case .beauty:
                         BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal)
                     }
                 }
                 // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）
-                .frame(height: panel == .beauty ? 120 : 104)
+                .frame(height: panel == .beauty ? 120 : panel == .pose ? 140 : 134)
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
                 .padding(.horizontal, 8)

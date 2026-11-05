@@ -10,7 +10,10 @@ import simd
 /// - 色相ごとの彩度: 緑は少し抑えて色相をずらす（フィルムらしい落ち着いた緑）、肌のオレンジは残す
 /// - 色温度: 全体を暖かく / 涼しく
 enum PhotoFilter: String, CaseIterable, Identifiable {
-    case none, natural, cineFilm, film, warmFilm, coolFilm, clear, vintage, bleach, mono, noir
+    case none, natural, cineFilm, film, warmFilm, coolFilm, clear, food, cafe, vintage, bleach, mono, noir
+
+    /// それぞれのフィルターの標準の濃さ（スライダーの 70%）。100% にすると少しやりすぎなくらいになる
+    static let standardStrength = 0.7
 
     var id: String { rawValue }
 
@@ -23,6 +26,8 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         case .warmFilm: return "ウォーム"
         case .coolFilm: return "クール"
         case .clear: return "クリア"
+        case .food: return "フード"
+        case .cafe: return "カフェ"
         case .vintage: return "ヴィンテージ"
         case .bleach: return "ブリーチ"
         case .mono: return "モノクロ"
@@ -62,6 +67,18 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         case .clear:
             // 明るく透明感のある韓国風: 明るめ・低コントラスト・やや涼しげ
             return Look(exposure: 0.12, contrast: -0.15, lift: 0.02, saturation: 0.9, warmth: -0.15)
+        case .food:
+            // 料理向け: 明るく、暖かく、赤・オレンジ・黄（焼き色・ソース・卵・パン）を鮮やかに。
+            // 料理写真の編集の定番どおり、全体の彩度より暖色だけを上げ、暗部は少し持ち上げて濁らせない。
+            // 青は少し抑える（料理が冷たく見えない）。葉物の緑は少しだけ鮮やかに
+            return Look(exposure: 0.1, contrast: 0.1, lift: 0.025, saturation: 1.02, warmth: 0.22,
+                        greenSaturation: 1.08, blueSaturation: 0.88, warmSaturation: 1.2)
+        case .cafe:
+            // カフェ・スイーツ向け: 明るく柔らかい「エアリー」な仕上げ。コントラストを下げ、黒を持ち上げ、
+            // ハイライトはクリーム色に。緑はくすませて落ち着いた雰囲気に
+            return Look(exposure: 0.16, contrast: -0.14, lift: 0.045, ceiling: 0.985, saturation: 0.92,
+                        warmth: 0.16, highlightTint: [0.012, 0.008, -0.006],
+                        greenSaturation: 0.78, greenHueShift: -4, warmSaturation: 1.06)
         case .vintage:
             // 色あせた古い写真風: 黒を大きく浮かせ、彩度を落として暖かく
             return Look(contrast: -0.1, lift: 0.08, ceiling: 0.94, saturation: 0.75, warmth: 0.4,
@@ -77,8 +94,9 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    func apply(to image: CIImage) -> CIImage {
-        guard let data = Self.cubes[self] else { return image }
+    /// strength: 0...1。standardStrength（0.7）でそれぞれのルックの標準の濃さ、1 でその 1.43 倍
+    func apply(to image: CIImage, strength: Double = PhotoFilter.standardStrength) -> CIImage {
+        guard let data = cube(strength: strength) else { return image }
         return image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
             "inputCubeDimension": Self.cubeSize,
             "inputCubeData": data,
@@ -88,14 +106,22 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
 
     private static let cubeSize = 33
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
-    /// 最初に使うときに全部のルックの表を作る（全部で数ミリ秒）
-    private static let cubes: [PhotoFilter: Data] = {
-        var result: [PhotoFilter: Data] = [:]
-        for filter in allCases {
-            if let look = filter.look { result[filter] = look.makeCube(size: cubeSize) }
-        }
-        return result
-    }()
+    /// 作った表を濃さ（2% 刻み）ごとに覚えておく。1 つ作るのは 1〜2 ミリ秒
+    private static let cache = Locked<[String: Data]>([:])
+
+    private func cube(strength: Double) -> Data? {
+        guard let look else { return nil }
+        let step = Int((min(max(strength, 0), 1) * 50).rounded())
+        guard step > 0 else { return nil }
+        let key = "\(rawValue)-\(step)"
+        if let data = Self.cache.value[key] { return data }
+        let amount = Float(Double(step) / 50 / Self.standardStrength)
+        let data = look.scaled(by: amount).makeCube(size: Self.cubeSize)
+        var cache = Self.cache.value
+        cache[key] = data
+        Self.cache.value = cache
+        return data
+    }
 }
 
 /// ルックの材料。色はすべて sRGB（ガンマのかかった 0...1）で扱う。
@@ -123,8 +149,33 @@ private struct Look {
     var greenHueShift: Float = 0
     /// 青の彩度
     var blueSaturation: Float = 1
+    /// 赤〜オレンジ〜黄（暖色）の彩度
+    var warmSaturation: Float = 1
     /// 白黒にするときの R・G・B の重み
     var monoWeights: SIMD3<Float>?
+    /// 白黒にする割合（濃さを下げたときに少し色を残す）
+    var monoAmount: Float = 1
+
+    /// 濃さを変えたルック。k = 1 が標準、0 で何もしない、1 より大きいと標準より強くかける
+    func scaled(by k: Float) -> Look {
+        var look = self
+        look.exposure = exposure * k
+        // S 字カーブは係数が 1 を超えると折り返すので、その手前で止める
+        look.contrast = min(max(contrast * k, -0.9), 0.9)
+        look.lift = lift * k
+        look.ceiling = 1 - (1 - ceiling) * k
+        look.saturation = max(0, 1 + (saturation - 1) * k)
+        look.warmth = warmth * k
+        look.tint = tint * k
+        look.shadowTint = shadowTint * k
+        look.highlightTint = highlightTint * k
+        look.greenSaturation = max(0, 1 + (greenSaturation - 1) * k)
+        look.greenHueShift = greenHueShift * k
+        look.blueSaturation = max(0, 1 + (blueSaturation - 1) * k)
+        look.warmSaturation = max(0, 1 + (warmSaturation - 1) * k)
+        look.monoAmount = min(1, k)
+        return look
+    }
 
     func makeCube(size n: Int) -> Data {
         var values = [Float](repeating: 0, count: n * n * n * 4)
@@ -161,12 +212,14 @@ private struct Look {
         c = simd_clamp(c, SIMD3(repeating: 0), SIMD3(repeating: 1))
 
         // 色相ごとの彩度
-        if greenSaturation != 1 || greenHueShift != 0 || blueSaturation != 1 {
+        if greenSaturation != 1 || greenHueShift != 0 || blueSaturation != 1 || warmSaturation != 1 {
             var (h, s, v) = Self.hsv(c)
             let green = Self.bell(h, center: 120, width: 50)
             let blue = Self.bell(h, center: 220, width: 35)
+            let warm = Self.bell(h, center: 30, width: 45)
             s *= 1 + (greenSaturation - 1) * green
             s *= 1 + (blueSaturation - 1) * blue
+            s *= 1 + (warmSaturation - 1) * warm
             h += greenHueShift * green
             s = min(max(s, 0), 1)
             c = Self.rgb(h, s, v)
@@ -174,7 +227,7 @@ private struct Look {
 
         if let monoWeights {
             let l = simd_dot(c, monoWeights)
-            c = SIMD3(repeating: l)
+            c = c + (SIMD3(repeating: l) - c) * monoAmount
         } else {
             let l = simd_dot(c, Self.lumaWeights)
             c = SIMD3(repeating: l) + (c - SIMD3(repeating: l)) * saturation

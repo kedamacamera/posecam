@@ -8,6 +8,7 @@
 import AppKit
 import CoreImage
 import Foundation
+import ImageIO
 
 let context = CIContext()
 let outDir = URL(fileURLWithPath: "out", isDirectory: true)
@@ -156,6 +157,146 @@ for (name, image) in inputs {
             report.append("steps_\(name): original, " + steps.map(\.0).joined(separator: ", "))
         }
     }
+}
+
+// MARK: - 青ひげ・輪郭
+
+/// 鼻の下〜あごに、青みがかった剃り跡（細かい点々＋青黒いくすみ）を描き足す（実在の人の写真を使わずに確かめる）。
+func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
+    guard let nose = pose[.nose], let ls = pose[.leftShoulder], let rs = pose[.rightShoulder] else { return image }
+    let w = image.extent.width, h = image.extent.height
+    let unit = abs(ls.x - rs.x) * w / 4
+    let center = CGPoint(x: nose.x * w, y: (1 - nose.y) * h - unit * 0.75)
+    // 口のまわり〜あごを覆う楕円（下ほど濃い）
+    let shade = CIFilter(name: "CIRadialGradient", parameters: [
+        "inputCenter": CIVector(x: center.x, y: center.y),
+        "inputRadius0": unit * 0.25,
+        "inputRadius1": unit * 0.75,
+        "inputColor0": CIColor(red: 0.30, green: 0.33, blue: 0.42, alpha: 0.42),
+        "inputColor1": CIColor(red: 0.30, green: 0.33, blue: 0.42, alpha: 0),
+    ])!.outputImage!.transformed(by: CGAffineTransform(translationX: -center.x, y: -center.y)
+        .concatenating(CGAffineTransform(scaleX: 1.15, y: 0.8))
+        .concatenating(CGAffineTransform(translationX: center.x, y: center.y)))
+        .cropped(to: image.extent)
+    // 毛穴ほどの細かい点（ランダム）を、楕円の濃さで混ぜる
+    let dots = CIFilter(name: "CIRandomGenerator")!.outputImage!
+        .applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0.6, y: 0, z: 0, w: -0.35),
+            "inputBiasVector": CIVector(x: 0.2, y: 0.22, z: 0.3, w: 0),
+        ])
+        .cropped(to: image.extent)
+        .applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: shade])
+    return dots.composited(over: shade.composited(over: image))
+}
+
+report.append("beard kernel loaded: \(FrameProcessor.beardKernel != nil), direct flash kernel: n/a in verifier")
+for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
+    guard let pose = detector.detect(ciImage: original) else { continue }
+    let image = addStubble(original, pose: pose)
+    let analysis = detector.analyze(ciImage: image, wantsMasks: true)
+    guard let masks = analysis.masks, let nose = analysis.pose?[.nose] else { continue }
+    var settings = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
+    settings.beard = 1
+    let concealed = processor.process(image, settings: settings, hipY: nil, masks: masks)
+    settings.smoothing = 0.8
+    settings.contour = 0.8
+    let full = processor.process(image, settings: settings, hipY: nil, masks: masks)
+    var smoothOnly = ProcessingSettings(filter: .none, smoothing: 0.8, brightening: 0)
+    smoothOnly.contour = 0
+    let smoothed = processor.process(image, settings: smoothOnly, hipY: nil, masks: masks)
+
+    let width = image.extent.width
+    let side = width * 0.4
+    let c = CGPoint(x: nose.x * width, y: (1 - nose.y) * image.extent.height - side * 0.15)
+    let rect = CGRect(x: c.x - side / 2, y: c.y - side / 2, width: side, height: side)
+    let toOrigin = CGAffineTransform(translationX: -rect.minX, y: -rect.minY)
+    let beardView = (processor.beardMask(image, masks: masks) ?? CIImage(color: .black))
+        .applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+    var strip = CIImage.empty()
+    for (i, panel) in [original, image, concealed, beardView, smoothed, full].enumerated() {
+        strip = panel.cropped(to: rect).transformed(by: toOrigin.concatenating(
+            CGAffineTransform(translationX: side * CGFloat(i), y: 0))).composited(over: strip)
+    }
+    let scale = 2400 / (side * 6)
+    savePNG(strip.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), "beard_\(name).png")
+    if let beard = processor.beardMask(image, masks: masks) {
+        func chroma(_ img: CIImage) -> String {
+            let v = meanColor(img, mask: beard)
+            return String(format: "Y %.3f Cb %+.3f Cr %+.3f", v.y, v.cb, v.cr)
+        }
+        report.append("beard_\(name): original [\(chroma(original))] stubble [\(chroma(image))] concealed [\(chroma(concealed))]")
+    }
+    report.append("beard_\(name): original, stubble added, beard 100, beard mask, smoothing 80, smoothing 80 + beard + contour 80")
+}
+
+// MARK: - ダイレクトフラッシュ
+// 実写のフラッシュ写真は用意できないので、見本写真を「周りの光だけのコマ」とみなし、
+// 人の所にだけフラッシュの光（元の明るさの 1.5 倍ぶん）を足した画像を「フラッシュ写真」として確かめる。
+// 期待: 背景（周りの光だけ）は 1/4 の明るさに、人（ほとんどフラッシュの光）は少しだけ暗くなる。
+report.append("direct flash kernel loaded: \(DirectFlash.kernel != nil)")
+if let (name, ambient) = inputs.first,
+   let person = detector.analyze(ciImage: ambient, wantsMasks: true).masks?.person {
+    let flashLight = ambient.applyingFilter("CIColorMatrix", parameters: [
+        "inputRVector": CIVector(x: 1.5, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 1.5, z: 0, w: 0),
+        "inputBVector": CIVector(x: 0, y: 0, z: 1.5, w: 0),
+    ]).applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: person])
+    let flashPhoto = flashLight.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: ambient])
+        .cropped(to: ambient.extent)
+    let result = DirectFlash.apply(photo: flashPhoto, ambient: ambient, exposureRatio: 1)
+    let background = person.applyingFilter("CIColorInvert")
+    report.append(String(format: "direct flash %@: person luma %.3f -> %.3f, background luma %.3f -> %.3f",
+                         name, meanLuma(flashPhoto, mask: person), meanLuma(result, mask: person),
+                         meanLuma(flashPhoto, mask: background), meanLuma(result, mask: background)))
+    let w = ambient.extent.width
+    let sheet = flashPhoto.transformed(by: CGAffineTransform(translationX: w, y: 0))
+        .composited(over: result.transformed(by: CGAffineTransform(translationX: w * 2, y: 0)))
+        .composited(over: ambient)
+    let scale = 1800 / (w * 3)
+    savePNG(sheet.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), "directflash.png")
+    report.append("directflash.png: ambient frame, flash photo, direct flash result")
+}
+
+// MARK: - 無音撮影の Exif
+// 映像のコマに付く Exif（実機の例と同じ形）から作った情報が、保存した JPEG に入っているか確かめる。
+do {
+    let frameExif: [String: Any] = [
+        kCGImagePropertyExifExposureTime as String: 1.0 / 60,
+        kCGImagePropertyExifFNumber as String: 1.78,
+        kCGImagePropertyExifISOSpeedRatings as String: [200],
+        kCGImagePropertyExifFocalLength as String: 6.765,
+        kCGImagePropertyExifLensModel as String: "iPhone 15 Pro Max back triple camera 6.765mm f/1.78",
+    ]
+    let metadata = PhotoMetadata.forVideoFrame(exif: frameExif, position: .back)
+    if let image = inputs.first?.1, let jpeg = PhotoMetadata.jpeg(image, metadata: metadata, context: context),
+       let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+        let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+        let tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        report.append("silent exif: Make=\(tiff["Make"] ?? "-") Model=\(tiff["Model"] ?? "-") "
+            + "LensMake=\(exif["LensMake"] ?? "-") LensModel=\(exif["LensModel"] ?? "-") "
+            + "FNumber=\(exif["FNumber"] ?? "-") ISO=\(exif["ISOSpeedRatings"] ?? "-") "
+            + "Size=\(exif["PixelXDimension"] ?? "-")x\(exif["PixelYDimension"] ?? "-") Orientation=\(props["Orientation"] ?? "-")")
+    } else {
+        report.append("silent exif: failed to write")
+    }
+}
+
+/// マスクの範囲の平均の明るさと色み（YCbCr、ガンマのかかった sRGB）
+func meanColor(_ image: CIImage, mask: CIImage) -> (y: Double, cb: Double, cr: Double) {
+    let masked = image.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: mask])
+    func average(_ input: CIImage) -> [Double] {
+        let avg = input.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: image.extent)])
+        var pixel = [Float](repeating: 0, count: 4)
+        context.render(avg, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return pixel.map(Double.init)
+    }
+    let m = average(masked), w = max(average(mask)[0], 1e-6)
+    let r = m[0] / w, g = m[1] / w, b = m[2] / w
+    let y = 0.299 * r + 0.587 * g + 0.114 * b
+    return (y, b - y, r - y)
 }
 
 // MARK: - フィルター

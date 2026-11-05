@@ -5,6 +5,8 @@ import Foundation
 struct PoseTemplate: Identifiable, Codable, Hashable {
     /// 写真から登録したポーズのカテゴリ
     static let userCategory = "マイポーズ"
+    /// 人ではなく料理・ドリンクの構図の型のカテゴリ。人の判定（一致度・自動撮影）は使わない
+    static let objectCategories: Set<String> = ["フード", "ドリンク"]
 
     let id: String
     var name: String
@@ -32,6 +34,9 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         self.outline = outline
         self.imageName = imageName
     }
+
+    /// 料理・ドリンクの構図の型か
+    var isObject: Bool { Self.objectCategories.contains(category) }
 
     var joints: [Joint: CGPoint] {
         Dictionary(uniqueKeysWithValues: points.compactMap { key, value in

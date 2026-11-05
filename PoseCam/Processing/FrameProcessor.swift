@@ -19,7 +19,7 @@ final class FrameProcessor {
         if settings.needsSkinMask, let masks {
             image = beautify(image, settings: settings, masks: masks)
         }
-        image = settings.filter.apply(to: image)
+        image = settings.filter.apply(to: image, strength: settings.filterStrength)
         if settings.legLength > 0.01, let hipY {
             image = stretchLegs(image, hipY: hipY, amount: settings.legLength)
         }
@@ -52,6 +52,16 @@ final class FrameProcessor {
             let calmed = removeRedness(result, mask: redMask, strength: settings.redness, longSide: longSide)
             result = blend(calmed, over: result, mask: redMask, amount: 1)
         }
+        if settings.beard > 0.01, let beard = masks.beard {
+            // 青ひげ: ひげの所だけ、周りの肌（頬）の色との差のうち青み・暗さを打ち消す
+            // 剃り跡の青黒い所は「肌の色」の判定から外れることがあるので、肌の色ではなく肌の領域（モデル）で絞る
+            let skinRegion = (masks.skin ?? masks.person ?? base)
+                .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
+            let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: skinRegion])
+            let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, strength: settings.beard,
+                                         longSide: longSide)
+            result = blend(concealed, over: result, mask: beardMask, amount: 1)
+        }
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。
             // 強くしたときはほぼ置き換え、弱いときは元の質感を残す
@@ -69,7 +79,51 @@ final class FrameProcessor {
                 ])
             result = blend(brightened, over: result, mask: mask, amount: settings.brightening)
         }
+        if settings.contour > 0.01, let shade = masks.jawShade {
+            // 輪郭: あごのすぐ外側（首との境目）に影を入れる。肌（人物）の所だけにかけ、背景は暗くしない
+            let region = (masks.skin ?? masks.person ?? base)
+                .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.01).cropped(to: extent)
+            let shadeMask = shade.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: region])
+            let shaded = result.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.9 * settings.contour])
+            result = blend(shaded, over: result, mask: shadeMask, amount: 1)
+        }
         return result
+    }
+
+    static let beardKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "beardConceal", fromMetalLibraryData: data)
+    }()
+
+    /// 青ひげを、ひげの所を除いた周りの肌（頬など）の色に近づける（BeautyKernels.ci.metal の beardConceal）。
+    private func concealBeard(_ image: CIImage, beardMask: CIImage, skinMask: CIImage, strength: Double,
+                              longSide: CGFloat) -> CIImage {
+        guard let kernel = Self.beardKernel else { return image }
+        let extent = image.extent
+        let black = CIImage(color: .black).cropped(to: extent)
+        // 参照する肌 = 肌のうちひげの所ではない所。ひげの範囲の中央まで届くよう広くぼかす
+        let notBeard = beardMask.applyingFilter("CIColorInvert")
+        let reference = skinMask.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: notBeard])
+        let sigma = longSide * 0.03
+        let skinOnly = image.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: black,
+            kCIInputMaskImageKey: reference,
+        ])
+        let sum = skinOnly.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        let weight = reference.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        // 剃り跡のむらは毛穴より大きいので、少しぼかした色で判定する
+        let local = image.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.004).cropped(to: extent)
+        let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
+                                  arguments: [image, local, sum, weight, Float(strength)])
+        return output?.cropped(to: extent) ?? image
+    }
+
+    /// 青ひげ隠しの範囲（白）。確認用のツールから使う。
+    func beardMask(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
+        let longSide = max(image.extent.width, image.extent.height)
+        return masks.beard?.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: skinBase(image, masks: masks, longSide: longSide)])
     }
 
     /// 美肌をかける範囲（白）。肌の領域のうち肌の色の所だけで、目・眉・唇を除いたもの。

@@ -47,7 +47,11 @@ struct LensOption: Identifiable, Equatable {
 
 /// 連続撮影の予定。1 枚目を撮る時刻と間隔から、次のシャッターまでの残りを計算できる。
 struct BurstTimeline: Equatable {
+    /// シャッターを押した時刻
+    let start: Date
     let firstShot: Date
+    /// 1 枚目までの待ち時間も円で表すか（セルフタイマーのときは数字のカウントダウンに任せる）
+    let showsLeadIn: Bool
     let interval: Double
     let total: Int
 }
@@ -68,6 +72,8 @@ struct SnapClip: Identifiable {
 /// @Published なプロパティはメインスレッドでのみ更新する。
 final class CameraManager: NSObject, ObservableObject {
     static let matchThreshold: Double = 80
+    /// 連続撮影の間隔（秒）。1 枚目もシャッターを押してからこの時間で撮る（構える時間）
+    static let burstInterval: Double = 2
     static let snapMaxSeconds = 10
 
     // MARK: 状態（表示用）
@@ -105,6 +111,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var flashOn = false {
         didSet { applyTorch() }
     }
+    /// ダイレクトフラッシュ（写ルンです・昔のコンデジ風）。フラッシュの光が届かない背景を暗く落とす
+    @Published var directFlash = false
     @Published var autoShutter = false {
         didSet { updatePoseNeeded() }
     }
@@ -113,10 +121,8 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var timerSeconds = 0
     @Published var burstCount = 1
-    /// 連続撮影の間隔（秒）
-    @Published var burstInterval: Double = 1
     @Published var muteShutter = false {
-        didSet { if mode == .photo { applyPreset(photoModePreset) } }
+        didSet { if mode == .photo { applyPhotoFormat() } }
     }
     @Published var aspect: AspectOption = .threeFour {
         didSet { updateTargetAspect() }
@@ -133,8 +139,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
     @Published var template: PoseTemplate? {
         didSet {
-            templateBox.value = template
-            if template == nil { poseFeed.score = nil }
+            // 料理・ドリンクの構図の型は人の判定をしないので、骨格や一致度の判定には渡さない
+            templateBox.value = template?.isObject == true ? nil : template
+            if template == nil || template?.isObject == true { poseFeed.score = nil }
             updatePoseNeeded()
         }
     }
@@ -164,6 +171,12 @@ final class CameraManager: NSObject, ObservableObject {
     private let poseNeeded = Locked(false)
     /// 無音撮影に使う、加工前の最新のコマ。シャッターの瞬間にすぐ取り出せるよう、映像のキューを待たずに読める箱に入れる
     private let latestSourceBox = Locked<CIImage?>(nil)
+    /// 最新のコマの撮影情報（Exif: 絞り・シャッター速度・ISO・レンズ名）。無音撮影の写真とダイレクトフラッシュに使う
+    private let latestExifBox = Locked<[String: Any]>([:])
+    /// カメラ（前・後）ごとの、通常の写真の大きさ（縦向き）。無音撮影の写真をこの大きさにそろえる
+    private let photoSizeBox = Locked<[AVCaptureDevice.Position: CGSize]>([:])
+    /// ダイレクトフラッシュで撮る写真ごとの、発光直前のコマ（写真の uniqueID ごと）
+    private let ambientFrames = Locked<[Int64: (image: CIImage, exif: [String: Any])]>([:])
 
     // sessionQueue 専用
     private var videoInput: AVCaptureDeviceInput?
@@ -174,6 +187,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var lensObservation: NSKeyValueObservation?
     /// セルフタイマー中に背面のライトを弱く点けているか
     private var timerLightOn = false
+    /// 合図のライトの点滅を止めるための番号（増やすと、それより前に始めた点滅は止まる）
+    private var blinkGeneration = 0
 
     // detectionQueue 専用
     /// 型の輪郭を一致度用のマス目に塗ったもの（型と比率が変わったときだけ作り直す）
@@ -268,9 +283,10 @@ final class CameraManager: NSObject, ObservableObject {
         let torch = flashOn && newMode != .photo
         let zoom = displayZoom
 
-        let preset = newMode == .photo ? photoModePreset : .hd1920x1080
+        let preset: AVCaptureSession.Preset = newMode == .photo ? .photo : .hd1920x1080
+        let silent = newMode == .photo && usesSilentFrames
         let reconfigure = {
-            self.changeSession(preset: preset, audio: newMode == .video, position: position,
+            self.changeSession(preset: preset, silent: silent, audio: newMode == .video, position: position,
                                zoom: zoom, torch: torch)
         }
 
@@ -281,14 +297,13 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// 無音撮影では映像のコマを写真にするので、写真モードでも 4K の映像を受け取って画素数を稼ぐ。
-    private var photoModePreset: AVCaptureSession.Preset {
-        muteShutter && !canMuteShutter ? .hd4K3840x2160 : .photo
-    }
+    /// iOS が消音を許可していない機種（日本向けの iPhone など）で無音撮影するときは、映像のコマを写真にする。
+    private var usesSilentFrames: Bool { muteShutter && !canMuteShutter }
 
-    private func applyPreset(_ preset: AVCaptureSession.Preset) {
+    private func applyPhotoFormat() {
         guard !isRecording, !isSequenceRunning else { return }
-        changeSession(preset: preset, audio: nil, position: position, zoom: displayZoom, torch: nil)
+        changeSession(preset: .photo, silent: usesSilentFrames, audio: nil, position: position,
+                      zoom: displayZoom, torch: nil)
     }
 
     /// セッションの画質（プリセット）を変える。変えるとデバイスの倍率が 1（超広角）に戻ってしまうので、
@@ -305,8 +320,8 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func changeSession(preset: AVCaptureSession.Preset, audio: Bool?, position: AVCaptureDevice.Position,
-                               zoom: CGFloat, torch: Bool?) {
+    private func changeSession(preset: AVCaptureSession.Preset, silent: Bool, audio: Bool?,
+                               position: AVCaptureDevice.Position, zoom: CGFloat, torch: Bool?) {
         renderer.setFrozen(true)
         sessionQueue.async {
             guard self.isConfigured else {
@@ -314,7 +329,7 @@ final class CameraManager: NSObject, ObservableObject {
                 return
             }
             self.session.beginConfiguration()
-            self.session.sessionPreset = self.session.canSetSessionPreset(preset) ? preset : .photo
+            self.configureVideoFormat(preset: preset, silent: silent)
             if let audio {
                 if audio { self.attachAudio() } else { self.detachAudio() }
             }
@@ -336,6 +351,8 @@ final class CameraManager: NSObject, ObservableObject {
         let newPosition: AVCaptureDevice.Position = position == .back ? .front : .back
         position = newPosition
         let torch = flashOn && mode != .photo
+        let preset: AVCaptureSession.Preset = mode == .photo ? .photo : .hd1920x1080
+        let silent = mode == .photo && usesSilentFrames
 
         sessionQueue.async {
             guard let device = Self.camera(at: newPosition),
@@ -348,12 +365,49 @@ final class CameraManager: NSObject, ObservableObject {
             } else if let old = self.videoInput {
                 self.session.addInput(old)
             }
+            self.configureVideoFormat(preset: preset, silent: silent)
             self.session.commitConfiguration()
             self.updateConnections(position: newPosition)
             self.refreshLenses(keepingDisplayZoom: nil)
             self.setTorch(torch)
         }
         videoQueue.async { self.smoothedHipY = nil }
+    }
+
+    /// 映像の形式を決める。sessionQueue の構成（beginConfiguration）の中から呼ぶ。
+    /// 無音撮影では映像のコマを写真にするので、写真と同じ 4:3 の映像の形式を直接選ぶ。
+    /// 以前は 4K（16:9）のプリセットを使っていたが、16:9 はセンサーの上下を切り捨てるので、
+    /// 3:4 に切り抜くと通常の写真より画角が狭くなっていた。
+    private func configureVideoFormat(preset: AVCaptureSession.Preset, silent: Bool) {
+        if silent, let device = videoInput?.device, let format = Self.fullSensorVideoFormat(device) {
+            do {
+                try device.lockForConfiguration()
+                device.activeFormat = format
+                if format.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }) {
+                    device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+                }
+                device.unlockForConfiguration()
+                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                Diagnostics.log("無音撮影の映像形式: \(d.width)x\(d.height)")
+                return
+            } catch {}
+        }
+        session.sessionPreset = session.canSetSessionPreset(preset) ? preset : .photo
+    }
+
+    /// 4:3 で 30 コマ/秒を出せる映像の形式のうち、いちばん画素数の多いもの（長辺 4032 まで）。
+    private static func fullSensorVideoFormat(_ device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        func pixels(_ format: AVCaptureDevice.Format) -> Int {
+            let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return Int(d.width) * Int(d.height)
+        }
+        return device.formats.filter { format in
+            let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            guard d.height > 0 else { return false }
+            let ratio = Double(d.width) / Double(d.height)
+            return abs(ratio - 4.0 / 3.0) < 0.01 && d.width <= 4032
+                && format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 29 }
+        }.max { pixels($0) < pixels($1) }
     }
 
     /// 背面は超広角・望遠をまとめた仮想カメラを使い、倍率に応じて iOS がレンズを切り替える。
@@ -410,6 +464,14 @@ final class CameraManager: NSObject, ObservableObject {
         let best = candidates.filter { pixels($0) <= 12_600_000 }.max { pixels($0) < pixels($1) } ?? candidates.first
         if let best {
             photoOutput.maxPhotoDimensions = best
+            // 通常の写真の大きさを覚えておく（無音撮影の写真をこの大きさにそろえる）
+            if session.sessionPreset == .photo {
+                let size = CGSize(width: CGFloat(min(best.width, best.height)),
+                                  height: CGFloat(max(best.width, best.height)))
+                var sizes = photoSizeBox.value
+                sizes[device.position] = size
+                photoSizeBox.value = sizes
+            }
         }
     }
 
@@ -471,6 +533,52 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {}
     }
 
+    /// 合図のライトを、deadline（シャッターの時刻）に近づくほど速く点滅させる。sessionQueue から呼ぶ。
+    /// 残り 3 秒より前は 1 秒に 1 回、3〜1.5 秒は 0.5 秒ごと、1.5〜0.7 秒は 0.25 秒ごと、最後は 0.14 秒ごと。
+    /// シャッターの直前（0.12 秒）は消して、ライトが写真に写り込まないようにする。
+    private func blinkLight(until deadline: Date) {
+        blinkGeneration += 1
+        blinkStep(generation: blinkGeneration, deadline: deadline)
+    }
+
+    private func blinkStep(generation: Int, deadline: Date) {
+        guard generation == blinkGeneration else { return }
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0.12 else {
+            setTimerLight(false)
+            return
+        }
+        let period = remaining > 3 ? 1.0 : remaining > 1.5 ? 0.5 : remaining > 0.7 ? 0.25 : 0.14
+        let onTime = min(0.08, period / 2, remaining - 0.12)
+        setTimerLight(true)
+        sessionQueue.asyncAfter(deadline: .now() + onTime) {
+            guard generation == self.blinkGeneration else { return }
+            self.setTimerLight(false)
+        }
+        sessionQueue.asyncAfter(deadline: .now() + period) {
+            self.blinkStep(generation: generation, deadline: deadline)
+        }
+    }
+
+    private func stopBlinking() {
+        blinkGeneration += 1
+        setTimerLight(false)
+    }
+
+    /// 連続撮影がすべて終わった合図。背面のライトを最低の明るさで 2 回チカチカさせる。sessionQueue から呼ぶ。
+    /// フラッシュを焚いたときは、発光が終わってから合図する。
+    private func signalSequenceFinished(afterFlash: Bool) {
+        blinkGeneration += 1
+        let generation = blinkGeneration
+        let start = afterFlash ? 1.2 : 0.35
+        for (time, on) in [(0.0, true), (0.12, false), (0.27, true), (0.39, false)] {
+            sessionQueue.asyncAfter(deadline: .now() + start + time) {
+                guard generation == self.blinkGeneration else { return }
+                self.setTimerLight(on)
+            }
+        }
+    }
+
     // MARK: - 比率
 
     private func updateSettingsBox() {
@@ -488,7 +596,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func updatePoseNeeded() {
-        let needed = template != nil || showSkeleton || autoShutter || settings.legLength > 0.01
+        let needed = (template != nil && template?.isObject != true) || showSkeleton || autoShutter || settings.legLength > 0.01
         poseNeeded.value = needed
         if !needed {
             poseFeed.detected = nil
@@ -599,6 +707,8 @@ final class CameraManager: NSObject, ObservableObject {
     /// 撮影 1 回ぶんの設定。シャッターを押した時点の値で固定する。
     private struct ShotOptions {
         let flash: Bool
+        /// ダイレクトフラッシュ（背景を暗く落とす）
+        let direct: Bool
         let mute: Bool
         /// iOS が消音を許可していない機種で、映像のコマを写真として保存する
         let silent: Bool
@@ -606,46 +716,50 @@ final class CameraManager: NSObject, ObservableObject {
         let fast: Bool
     }
 
-    /// タイマー → burstInterval 秒ごとに burstCount 枚撮る。
-    /// 撮影の時刻は開始時に「タイマー秒後、そこから間隔ごと」と決めておき、画面の処理とは別のキュー
+    /// タイマー → 2 秒ごとに burstCount 枚撮る。
+    /// 撮影の時刻は開始時に「待ち時間の後、そこから間隔ごと」と決めておき、画面の処理とは別のキュー
     /// （sessionQueue）の正確なタイマーで撮る。前の撮影の終わりを待たないので、間隔がずれない。
+    /// 連続撮影はタイマーなしでも、押してから 2 秒後に 1 枚目を撮る（構える時間）。
     private func startPhotoSequence() {
         guard !isSequenceRunning else { return }
         isSequenceRunning = true
         let total = burstCount
-        let delay = timerSeconds
-        let options = ShotOptions(flash: flashOn, mute: muteShutter,
-                                  silent: muteShutter && !canMuteShutter, fast: total > 1)
-        showCountdown(delay)
+        let interval = Self.burstInterval
+        let delay = timerSeconds > 0 ? Double(timerSeconds) : (total > 1 ? interval : 0)
+        let options = ShotOptions(flash: flashOn, direct: flashOn && directFlash, mute: muteShutter,
+                                  silent: usesSilentFrames, fast: total > 1)
+        showCountdown(timerSeconds)
         // 撮影のタイマーと同じ基準の時刻から、円の残りを計算する
+        let start = Date()
+        let firstShot = start.addingTimeInterval(delay)
         burstTimeline = total > 1
-            ? BurstTimeline(firstShot: Date().addingTimeInterval(Double(delay)), interval: burstInterval, total: total)
+            ? BurstTimeline(start: start, firstShot: firstShot, showsLeadIn: timerSeconds == 0,
+                            interval: interval, total: total)
             : nil
 
-        // セルフタイマーのときは、待っている間だけ背面のライトを弱く点ける（シャッターの瞬間に消す）
-        let usesTimerLight = delay > 0
-        let interval = burstInterval
-        if usesTimerLight {
-            sessionQueue.async { self.setTimerLight(true) }
+        // 待ち時間があるときは、背面のライトを最低の明るさで点滅させ、シャッターが近づくほど速くする。
+        // 背面カメラで自分を撮るとき、画面が見えなくてもいつ撮られるか分かる
+        let usesLight = delay > 0
+        if usesLight {
+            sessionQueue.async { self.blinkLight(until: firstShot) }
         }
 
         var shot = 0
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: sessionQueue)
-        timer.schedule(deadline: .now() + .seconds(delay), repeating: interval, leeway: .milliseconds(1))
+        timer.schedule(deadline: .now() + delay, repeating: interval, leeway: .milliseconds(1))
         timer.setEventHandler { [weak self, weak timer] in
             guard let self else { return }
             shot += 1
             // フラッシュを使うときも、ライトを消してから通常どおり発光させる
-            if usesTimerLight { self.setTimerLight(false) }
+            if usesLight { self.stopBlinking() }
             self.performCapture(options)
             let current = shot
             if current >= total {
                 timer?.cancel()
-            } else if usesTimerLight {
-                // 連続撮影では、次のシャッターまでの間また点ける（消えた瞬間が 1 枚ごとの合図になる）
-                self.sessionQueue.asyncAfter(deadline: .now() + min(0.4, interval / 2)) { [weak timer] in
-                    if let timer, !timer.isCancelled { self.setTimerLight(true) }
-                }
+                // 連続撮影が全部終わったら、背面のライトを 2 回チカチカさせて知らせる
+                if total > 1 { self.signalSequenceFinished(afterFlash: options.flash) }
+            } else if usesLight {
+                self.blinkLight(until: firstShot.addingTimeInterval(Double(current) * interval))
             }
             DispatchQueue.main.async {
                 self.shutterCount += 1
@@ -703,7 +817,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func cancelSequence() {
         burstTimeline = nil
         shotTimer?.cancel()
-        sessionQueue.async { self.setTimerLight(false) }
+        sessionQueue.async { self.stopBlinking() }
         shotTimer = nil
         countdownTimer?.cancel()
         countdownTimer = nil
@@ -738,6 +852,13 @@ final class CameraManager: NSObject, ObservableObject {
             : AVCapturePhotoSettings()
         if options.flash, photoOutput.supportedFlashModes.contains(.on) {
             photoSettings.flashMode = .on
+            if options.direct, let ambient = latestSourceBox.value {
+                // 発光する直前のコマ（フラッシュなしの明るさ）を覚えておき、写真と比べて
+                // 「フラッシュの光」と「周りの光」を分ける
+                var frames = ambientFrames.value
+                frames[photoSettings.uniqueID] = (ambient, latestExifBox.value)
+                ambientFrames.value = frames
+            }
         }
         if options.mute, #available(iOS 18.0, *), photoOutput.isShutterSoundSuppressionSupported {
             photoSettings.isShutterSoundSuppressionEnabled = true
@@ -762,9 +883,15 @@ final class CameraManager: NSObject, ObservableObject {
             DispatchQueue.main.async { self.photoFinished() }
             return
         }
+        let exif = latestExifBox.value
+        let position = videoInput?.device.position ?? .back
+        // 通常の写真と同じ画素数になるよう、裏で引き伸ばす
+        let targetSize = photoSizeBox.value[position]
         photoQueue.async {
             defer { DispatchQueue.main.async { self.photoFinished() } }
-            guard let result = self.processStill(frame, settings: settings, aspect: aspect) else {
+            let metadata = PhotoMetadata.forVideoFrame(exif: exif, position: position)
+            guard let result = self.processStill(frame, settings: settings, aspect: aspect, metadata: metadata,
+                                                 upscaleTo: targetSize) else {
                 self.report("写真の処理に失敗しました")
                 return
             }
@@ -782,18 +909,50 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func processPhoto(_ data: Data, settings: ProcessingSettings,
-                              aspect: CGFloat) -> (jpeg: Data, thumbnail: UIImage?)? {
+    private func processPhoto(_ data: Data, metadata: [String: Any], settings: ProcessingSettings, aspect: CGFloat,
+                              ambient: (image: CIImage, exif: [String: Any])?) -> (jpeg: Data, thumbnail: UIImage?)? {
         guard let source = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
-        return processStill(source, settings: settings, aspect: aspect)
+        var flash: (image: CIImage, ratio: Double)?
+        if let ambient {
+            // 写真とコマの露出（シャッター速度 × ISO）の比で、コマの明るさを写真の明るさにそろえる
+            if let photoExposure = PhotoMetadata.exposure(of: metadata),
+               let frameExposure = PhotoMetadata.exposure(ofExif: ambient.exif), frameExposure > 0 {
+                flash = (ambient.image, photoExposure / frameExposure)
+            } else {
+                Diagnostics.log("ダイレクトフラッシュ: 露出の情報がないので通常のフラッシュで保存")
+            }
+        }
+        return processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
+                            ambient: flash)
     }
 
-    private func processStill(_ source: CIImage, settings: ProcessingSettings,
-                              aspect: CGFloat) -> (jpeg: Data, thumbnail: UIImage?)? {
+    /// upscaleTo: 無音撮影で、通常の写真の大きさ（縦向き）。小さければ引き伸ばす。
+    /// ambient: ダイレクトフラッシュで、発光直前のコマと露出の比。
+    private func processStill(_ source: CIImage, settings: ProcessingSettings, aspect: CGFloat,
+                              metadata: [String: Any], upscaleTo: CGSize?,
+                              ambient: (image: CIImage, ratio: Double)? = nil) -> (jpeg: Data, thumbnail: UIImage?)? {
         let normalized = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
                                                                   y: -source.extent.minY))
-        let image = FrameGeometry(sourceSize: normalized.extent.size, aspect: aspect, maxLongSide: nil)
+        var image = FrameGeometry(sourceSize: normalized.extent.size, aspect: aspect, maxLongSide: nil)
             .apply(normalized)
+        if let target = upscaleTo {
+            // 通常の写真を同じ比率に切り抜いたときの大きさまで、Lanczos で引き伸ばす
+            let full = FrameGeometry(sourceSize: target, aspect: aspect, maxLongSide: nil).outputSize
+            let scale = full.height / image.extent.height
+            if scale > 1.01 {
+                image = image.applyingFilter("CILanczosScaleTransform", parameters: [
+                    kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1.0,
+                ]).cropped(to: CGRect(origin: .zero, size: full))
+            }
+        }
+        if let ambient {
+            let frame = ambient.image.transformed(by: CGAffineTransform(translationX: -ambient.image.extent.minX,
+                                                                        y: -ambient.image.extent.minY))
+            let cropped = FrameGeometry(sourceSize: frame.extent.size, aspect: aspect, maxLongSide: nil).apply(frame)
+            let fitted = cropped.transformed(by: CGAffineTransform(scaleX: image.extent.width / cropped.extent.width,
+                                                                   y: image.extent.height / cropped.extent.height))
+            image = DirectFlash.apply(photo: image, ambient: fitted, exposureRatio: ambient.ratio)
+        }
 
         let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
@@ -802,11 +961,8 @@ final class CameraManager: NSObject, ObservableObject {
         }
         let hipY = analysis.pose.flatMap(PoseDetector.hipY(of:))
         let output = processor.process(image, settings: settings, hipY: hipY, masks: analysis.masks)
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let jpeg = renderer.ciContext.jpegRepresentation(
-                  of: output, colorSpace: colorSpace,
-                  options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.92])
-        else { return nil }
+        // 撮影情報（Exif・レンズ名など）を付けて JPEG にする
+        guard let jpeg = PhotoMetadata.jpeg(output, metadata: metadata, context: renderer.ciContext) else { return nil }
         return (jpeg, makeThumbnail(output))
     }
 
@@ -1040,6 +1196,11 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 
         let source = CIImage(cvPixelBuffer: pixelBuffer)
         latestSourceBox.value = source
+        if modeBox.value == .photo,
+           let exif = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil)
+            as? [String: Any] {
+            latestExifBox.value = exif
+        }
 
         // 撮影モードの切り替え直後は、倍率が戻るまで数コマ捨てる（最後のコマを表示したまま）
         if framesToSkip > 0 {
@@ -1119,11 +1280,16 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
         let settings = settingsBox.value
         let aspect = aspectBox.value
         let data = photo.fileDataRepresentation()
+        let metadata = photo.metadata
+        var frames = ambientFrames.value
+        let ambient = frames.removeValue(forKey: photo.resolvedSettings.uniqueID)
+        ambientFrames.value = frames
 
         photoQueue.async {
             defer { DispatchQueue.main.async { self.photoFinished() } }
             guard error == nil, let data,
-                  let result = self.processPhoto(data, settings: settings, aspect: aspect) else {
+                  let result = self.processPhoto(data, metadata: metadata, settings: settings, aspect: aspect,
+                                                 ambient: ambient) else {
                 self.report("写真の処理に失敗しました")
                 return
             }

@@ -5,7 +5,8 @@ import Foundation
 /// 見本写真（Resources/Poses/pose_NN.jpg、specs と同じ順番）があれば、起動後にその写真から
 /// 骨格と輪郭を取り出して置き換える（PoseLibrary）。ここでの角度は写真が使えないときの代わり。
 enum BuiltInPoses {
-    static let categories = ["立ち", "寄りかかり", "歩き", "座り", "後ろ姿", "上半身", "自撮り", "タバコ", "2人", "アクション"]
+    static let categories = ["立ち", "寄りかかり", "歩き", "座り", "後ろ姿", "上半身", "自撮り", "タバコ", "2人", "食事",
+                             "フード", "ドリンク", "アクション"]
 
     /// 組み込みポーズすべて。サンプル写真から作ったポーズ（sample_poses.json）を先に並べる
     static let all: [PoseTemplate] = samplePoses + specs.enumerated().map { index, spec in

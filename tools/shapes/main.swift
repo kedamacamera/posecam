@@ -21,19 +21,28 @@ let files = (try FileManager.default.contentsOfDirectory(at: folder, includingPr
     .filter { $0.pathExtension == "jpg" }
     .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
+// 見本写真のカテゴリ（料理・ドリンクは人ではなく物の輪郭を取る）
+struct SampleEntry: Decodable { let image: String; let category: String }
+let entries = (try? JSONDecoder().decode([SampleEntry].self,
+    from: Data(contentsOf: folder.appendingPathComponent("sample_poses.json")))) ?? []
+let categories = Dictionary(entries.map { ($0.image, $0.category) }, uniquingKeysWith: { a, _ in a })
+
 var shapes: [String: PoseShape] = [:]
 var failed: [String] = []
 var previews: [(name: String, image: CGImage, analysis: PhotoAnalysis, crop: CGRect)] = []
 
 for url in files {
     let name = url.deletingPathExtension().lastPathComponent
+    let isObject = PoseTemplate.objectCategories.contains(categories[name] ?? "")
     guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
-          let analysis = PoseImporter.analyze(image) else {
+          let analysis = isObject ? PoseImporter.analyzeObject(image) : PoseImporter.analyze(image) else {
         failed.append(name)
         continue
     }
     // 組み込みポーズは、写真モードの標準の比率（3:4）で枠を決める（アプリの PoseLibrary と同じ）
-    let crop = PoseImporter.defaultCrop(for: analysis, aspect: 3.0 / 4.0)
+    let crop = isObject
+        ? PoseImporter.fullFrameCrop(size: analysis.size, aspect: 3.0 / 4.0)
+        : PoseImporter.defaultCrop(for: analysis, aspect: 3.0 / 4.0)
     shapes[name] = PoseImporter.shape(for: analysis, crop: crop)
 
     let scale = 200 / image.extent.width

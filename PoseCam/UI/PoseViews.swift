@@ -319,26 +319,30 @@ struct PoseStrip: View {
     @State private var importError: String?
     @State private var draft: PoseImportDraft?
 
+    /// 一覧の中で、いちばん左に見えているポーズ（"カテゴリ|id"）
+    @State private var visibleItem: String?
+    /// 上の見出しで選ばれているカテゴリ
+    @State private var activeCategory: String?
+    /// 見出しをタップして一覧を動かしている間は、スクロールに合わせて見出しを動かさない
+    @State private var isJumping = false
+
+    private struct Item: Identifiable {
+        let id: String
+        let category: String
+        let pose: PoseTemplate
+    }
+
+    /// カテゴリの順にすべてのポーズを並べたもの（お気に入りのポーズは、元のカテゴリにも並ぶ）
+    private var items: [Item] {
+        library.categories.flatMap { category in
+            library.poses(in: category).map { Item(id: "\(category)|\($0.id)", category: category, pose: $0) }
+        }
+    }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 10) {
-                Button { selection = nil } label: {
-                    TileLabel(systemImage: "nosign", title: "なし", highlighted: selection == nil)
-                }
-                PhotosPicker(selection: $pickerItem, matching: .images) {
-                    TileLabel(systemImage: isImporting ? "hourglass" : "photo.badge.plus", title: "写真から")
-                }
-                .disabled(isImporting)
-                Button(action: onShowAll) {
-                    TileLabel(systemImage: "square.grid.2x2", title: "一覧")
-                }
-                ForEach(library.allPoses) { pose in
-                    Button { selection = pose } label: {
-                        PoseThumbnail(template: pose, isSelected: selection?.id == pose.id)
-                    }
-                }
-            }
-            .padding(.horizontal)
+        VStack(spacing: 6) {
+            categoryTabs
+            poseRow
         }
         .onChange(of: pickerItem) {
             guard let item = pickerItem else { return }
@@ -358,6 +362,85 @@ struct PoseStrip: View {
                 selection = template
             }
         }
+    }
+
+    /// カテゴリの見出し。タップするとそのカテゴリの先頭へ一覧が動く。一覧をスライドすると、見えている
+    /// カテゴリの見出しが選ばれる。
+    private var categoryTabs: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 18) {
+                    ForEach(library.categories, id: \.self) { category in
+                        let active = category == (activeCategory ?? library.categories.first)
+                        Button { jump(to: category) } label: {
+                            VStack(spacing: 3) {
+                                HStack(spacing: 3) {
+                                    if category == PoseLibrary.favoriteCategory {
+                                        Image(systemName: "heart.fill").font(.system(size: 10))
+                                    }
+                                    Text(category)
+                                }
+                                .font(.system(size: 13, weight: active ? .bold : .medium))
+                                .foregroundStyle(active ? Color.yellow : .white.opacity(0.75))
+                                Capsule()
+                                    .fill(active ? Color.yellow : .clear)
+                                    .frame(height: 2)
+                            }
+                            .fixedSize()
+                        }
+                        .id(category)
+                    }
+                }
+                .padding(.horizontal)
+            }
+            .onChange(of: activeCategory) {
+                guard let activeCategory else { return }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(activeCategory, anchor: .center) }
+            }
+        }
+        .frame(height: 22)
+    }
+
+    private var poseRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 10) {
+                Button { selection = nil } label: {
+                    TileLabel(systemImage: "nosign", title: "なし", highlighted: selection == nil)
+                }
+                PhotosPicker(selection: $pickerItem, matching: .images) {
+                    TileLabel(systemImage: isImporting ? "hourglass" : "photo.badge.plus", title: "写真から")
+                }
+                .disabled(isImporting)
+                Button(action: onShowAll) {
+                    TileLabel(systemImage: "square.grid.2x2", title: "一覧")
+                }
+                ForEach(items) { item in
+                    Button { selection = item.pose } label: {
+                        PoseThumbnail(template: item.pose, isSelected: selection?.id == item.pose.id,
+                                      isFavorite: library.isFavorite(item.pose))
+                    }
+                    // 長押しでお気に入りに追加・解除（自分で登録したポーズは削除も）
+                    .contextMenu { PoseMenu(library: library, pose: item.pose, selection: $selection) }
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal)
+        }
+        .scrollPosition(id: $visibleItem, anchor: .leading)
+        .onChange(of: visibleItem) {
+            guard !isJumping, let visibleItem,
+                  let category = items.first(where: { $0.id == visibleItem })?.category,
+                  category != activeCategory else { return }
+            activeCategory = category
+        }
+    }
+
+    private func jump(to category: String) {
+        guard let first = items.first(where: { $0.category == category }) else { return }
+        isJumping = true
+        activeCategory = category
+        withAnimation(.easeOut(duration: 0.3)) { visibleItem = first.id }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { isJumping = false }
     }
 
     @MainActor
@@ -405,16 +488,10 @@ struct PoseLibraryView: View {
                                     selection = pose
                                     dismiss()
                                 } label: {
-                                    PoseThumbnail(template: pose, isSelected: selection?.id == pose.id)
+                                    PoseThumbnail(template: pose, isSelected: selection?.id == pose.id,
+                                                  isFavorite: library.isFavorite(pose))
                                 }
-                                .contextMenu {
-                                    if pose.isUserCreated {
-                                        Button("削除", role: .destructive) {
-                                            if selection?.id == pose.id { selection = nil }
-                                            library.delete(pose)
-                                        }
-                                    }
-                                }
+                                .contextMenu { PoseMenu(library: library, pose: pose, selection: $selection) }
                             }
                         }
                         .padding(.horizontal)
@@ -431,5 +508,30 @@ struct PoseLibraryView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+/// ポーズを長押ししたときのメニュー。お気に入りの追加・解除と、自分で登録したポーズの削除。
+struct PoseMenu: View {
+    @ObservedObject var library: PoseLibrary
+    let pose: PoseTemplate
+    @Binding var selection: PoseTemplate?
+
+    var body: some View {
+        if library.isFavorite(pose) {
+            Button { library.toggleFavorite(pose) } label: {
+                Label("お気に入りから外す", systemImage: "heart.slash")
+            }
+        } else {
+            Button { library.toggleFavorite(pose) } label: {
+                Label("お気に入りに追加", systemImage: "heart")
+            }
+        }
+        if pose.isUserCreated {
+            Button("削除", role: .destructive) {
+                if selection?.id == pose.id { selection = nil }
+                library.delete(pose)
+            }
+        }
     }
 }
