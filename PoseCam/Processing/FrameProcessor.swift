@@ -177,24 +177,24 @@ final class FrameProcessor {
     /// 肌を塗り分けるモデルがあればその結果を、なければ「人物の領域」を使い、肌の色の所だけに絞る。
     /// 境目は大きめにぼかし、加工した所としていない所の境目が見えないようにする。
     private func skinBase(_ image: CIImage, masks: BeautyMasks, longSide: CGFloat) -> CIImage {
-        let blurRadius = longSide * 0.004
         let black = CIImage(color: .black).cropped(to: image.extent)
         let skinColor = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
             "inputCubeDimension": Self.cubeSize,
             "inputCubeData": skinCube,
             "inputColorSpace": sRGB,
         ])
-        // 肌のモデル（なければ人物の領域）は境目をぼかしてなじませる
+        // 肌のモデル（なければ人物の領域）の外側の境目（顔の輪郭・首・髪の生え際）は大きくぼかしてなじませる
         let region = (masks.skin ?? masks.person ?? black)
-            .clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
+            .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.008).cropped(to: image.extent)
         // そのうえで、肌の色の所だけに絞る。モデルはメガネのフチなども「顔」に含めるが、
         // 黒いフチ・眉・髪は肌の色ではないので外れる
         let mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: black,
             kCIInputMaskImageKey: region,
         ])
-        // 肌の色の判定は画素ごとにばらつくので、ぼかして境目をなだらかにする
-        return mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
+        // 肌の色の判定は画素ごとにばらつくので、ごく軽くだけぼかす。強くぼかすとメガネのフチのような
+        // 細くて暗い線まで加工の範囲に入り、フチが薄くなる
+        return mask.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.0012).cropped(to: image.extent)
     }
 
     /// 顔のパーツのマスク（黒が外す所）を掛ける。

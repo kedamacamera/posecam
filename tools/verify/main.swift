@@ -142,9 +142,43 @@ for (name, image) in inputs {
 // MARK: - フィルター
 
 // 見本写真ごとに、全部のフィルターを横に並べる
+/// 色の出方を見るための表（上: 色相 × 彩度、下: 黒から白までの階調）
+func colorChart() -> CIImage {
+    let width = 300, height = 400
+    var pixels = [UInt8](repeating: 255, count: width * height * 4)
+    for y in 0..<height {
+        for x in 0..<width {
+            var r: Float, g: Float, b: Float
+            if y < 320 {
+                let h = Float(x) / Float(width) * 6
+                let sat = 1 - Float(y / 80) * 0.25
+                let v: Float = 0.85
+                let f = h - floor(h)
+                let pp = v * (1 - sat), q = v * (1 - sat * f), t = v * (1 - sat * (1 - f))
+                switch Int(h) % 6 {
+                case 0: (r, g, b) = (v, t, pp)
+                case 1: (r, g, b) = (q, v, pp)
+                case 2: (r, g, b) = (pp, v, t)
+                case 3: (r, g, b) = (pp, q, v)
+                case 4: (r, g, b) = (t, pp, v)
+                default: (r, g, b) = (v, pp, q)
+                }
+            } else {
+                let l = Float(x) / Float(width - 1)
+                (r, g, b) = (l, l, l)
+            }
+            let i = (y * width + x) * 4
+            pixels[i] = UInt8(r * 255); pixels[i + 1] = UInt8(g * 255); pixels[i + 2] = UInt8(b * 255)
+        }
+    }
+    let data = Data(pixels)
+    return CIImage(bitmapData: data, bytesPerRow: width * 4, size: CGSize(width: width, height: height),
+                   format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+}
+
 do {
     var rows: [CIImage] = []
-    for (_, image) in inputs.prefix(2) {
+    for image in inputs.prefix(2).map(\.1) + [colorChart()] {
         let cellHeight: CGFloat = 400
         let scale = cellHeight / image.extent.height
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
