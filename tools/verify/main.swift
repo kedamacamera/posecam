@@ -193,7 +193,8 @@ func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
             "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 0.18),
         ])
         .cropped(to: image.extent)
-        .applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: shade])
+        // 点は口のまわりの楕円の中だけに置く（以前は掛け合わせにしていて、画面全体に点が乗っていた）
+        .applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: shade])
     return dots.composited(over: shade.composited(over: image))
 }
 
