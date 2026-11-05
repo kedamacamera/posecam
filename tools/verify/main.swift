@@ -174,7 +174,7 @@ func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
         "inputRadius0": unit * 0.25,
         "inputRadius1": unit * 0.75,
         "inputColor0": CIColor(red: 0.30, green: 0.34, blue: 0.44, alpha: 0.32),
-        "inputColor1": CIColor(red: 0.30, green: 0.34, blue: 0.44, alpha: 0),
+        "inputColor1": CIColor(red: 0, green: 0, blue: 0, alpha: 0),
     ])!.outputImage!.transformed(by: CGAffineTransform(translationX: -center.x, y: -center.y)
         .concatenating(CGAffineTransform(scaleX: 1.15, y: 0.8))
         .concatenating(CGAffineTransform(translationX: center.x, y: center.y)))
@@ -192,6 +192,8 @@ func addStubble(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
             "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
             "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 0.18),
         ])
+        // 透明な所の色を 0 にする（しないと、透明なはずの所にも灰色が乗る）
+        .applyingFilter("CIPremultiply")
         .cropped(to: image.extent)
         // 点は口のまわりの楕円の中だけに置く（以前は掛け合わせにしていて、画面全体に点が乗っていた）
         .applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: shade])
