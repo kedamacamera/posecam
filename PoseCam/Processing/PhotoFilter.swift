@@ -42,12 +42,12 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
             // ソニーのクリエイティブルック「FL3」の方向性: コントラストを少し抑え、色はクリアに、全体を軽く。
             // 暗部はわずかにシアン、明部はわずかに暖色。緑は少し抑えてシアン寄りに
             return Look(exposure: 0.08, contrast: -0.18, lift: 0.035, ceiling: 0.975, saturation: 1.04,
-                        warmth: 0.08, shadowTint: [-0.020, 0.004, 0.024], highlightTint: [0.014, 0.008, -0.010],
+                        warmth: 0.08, shadowTint: [-0.010, 0.003, 0.012], highlightTint: [0.014, 0.008, -0.010],
                         greenSaturation: 0.8, greenHueShift: 10, blueSaturation: 1.05)
         case .film:
             // 映画フィルム風: コントラストはやや強め、黒は少し浮かせ、色は落ち着かせる。暗部シアン・明部イエロー、緑はオリーブ寄り
             return Look(contrast: 0.18, lift: 0.045, ceiling: 0.96, saturation: 0.82, warmth: 0.18,
-                        shadowTint: [-0.030, 0.010, 0.030], highlightTint: [0.024, 0.016, -0.020],
+                        shadowTint: [-0.016, 0.007, 0.015], highlightTint: [0.024, 0.016, -0.020],
                         greenSaturation: 0.65, greenHueShift: -8)
         case .warmFilm:
             // 暖色系のネガフィルム風: 柔らかいコントラスト、肌がきれいに見える暖かさ、クリーム色のハイライト
@@ -57,7 +57,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         case .coolFilm:
             // 寒色系のフィルム風: 暗部は緑がかったシアン、青は深く、肌は白っぽく
             return Look(contrast: 0.08, lift: 0.035, saturation: 0.95, warmth: -0.2, tint: -0.05,
-                        shadowTint: [-0.020, 0.015, 0.020], highlightTint: [0.010, 0, 0.010],
+                        shadowTint: [-0.010, 0.009, 0.010], highlightTint: [0.010, 0, 0.010],
                         greenSaturation: 0.95, greenHueShift: 8, blueSaturation: 1.1)
         case .clear:
             // 明るく透明感のある韓国風: 明るめ・低コントラスト・やや涼しげ

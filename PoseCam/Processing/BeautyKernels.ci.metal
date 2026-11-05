@@ -79,7 +79,9 @@ float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float st
 
     // 周りより赤い（赤みが多く、青みが少ない）ほど強く効かせる。周りと同じか赤くない所は変えない
     float excess = (cr - averageCr) - 0.5 * (cb - averageCb);
-    float weight = smoothstep(0.004, 0.04, excess) * strength;
+    // 周りよりずっと暗い所（メガネのフチ・髪・ほくろ）は赤みがあってもニキビではないので変えない
+    float darkGuard = 1.0 - smoothstep(0.12, 0.25, averageY - y);
+    float weight = smoothstep(0.004, 0.04, excess) * darkGuard * strength;
 
     float newCr = mix(cr, averageCr, weight);
     float newCb = mix(cb, averageCb, weight);
