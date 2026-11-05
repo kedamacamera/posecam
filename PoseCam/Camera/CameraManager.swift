@@ -83,6 +83,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var mode: CaptureMode = .photo
     @Published private(set) var position: AVCaptureDevice.Position = .back
     @Published private(set) var isRecording = false
+    /// 停止した後、書き出し・保存がまだ終わっていない動画の数（裏で保存を続け、その間も次を撮れる）
+    @Published private(set) var savingVideos = 0
     @Published private(set) var recordingSeconds = 0
     @Published private(set) var isCapturing = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
@@ -123,6 +125,10 @@ final class CameraManager: NSObject, ObservableObject {
             showSkeletonBox.value = showSkeleton
             updatePoseNeeded()
         }
+    }
+    /// 脚長で伸ばす範囲の線を表示している（脚長が 0 でも、線の位置を決めるために骨格を検出する）
+    var showsLegRange = false {
+        didSet { updatePoseNeeded() }
     }
     @Published var timerSeconds = 0
     @Published var burstCount = 1
@@ -181,6 +187,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let latestExifBox = Locked<[String: Any]>([:])
     /// カメラ（前・後）ごとの、通常の写真の大きさ（縦向き）。無音撮影の写真をこの大きさにそろえる
     private let photoSizeBox = Locked<[AVCaptureDevice.Position: CGSize]>([:])
+    /// 撮り終わったら連続撮影の終わりの合図をする写真（uniqueID）
+    private let endSignalPhotoID = Locked<Int64?>(nil)
     /// ダイレクトフラッシュで撮る写真ごとの、発光直前のコマ（写真の uniqueID ごと）
     private let ambientFrames = Locked<[Int64: (image: CIImage, exif: [String: Any])]>([:])
 
@@ -202,7 +210,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
-    private var smoothedHipY: CGFloat?
+    private var smoothedLegs: LegLayout?
     private var lastFrameSize: CGSize = .zero
     private var wantsRecording = false
     private var recorder: VideoRecorder?
@@ -377,7 +385,7 @@ final class CameraManager: NSObject, ObservableObject {
             self.refreshLenses(keepingDisplayZoom: nil)
             self.setTorch(torch)
         }
-        videoQueue.async { self.smoothedHipY = nil }
+        videoQueue.async { self.smoothedLegs = nil }
     }
 
     /// 映像の形式を決める。sessionQueue の構成（beginConfiguration）の中から呼ぶ。
@@ -488,9 +496,14 @@ final class CameraManager: NSObject, ObservableObject {
               let input = try? AVCaptureDeviceInput(device: mic),
               session.canAddInput(input) else { return }
         let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(.playAndRecord, mode: .videoRecording,
-                                      options: [.defaultToSpeaker, .allowBluetoothA2DP])
-        try? audioSession.setActive(true)
+        do {
+            try audioSession.setCategory(.playAndRecord, mode: .videoRecording,
+                                         options: [.defaultToSpeaker, .allowBluetoothA2DP])
+            try audioSession.setActive(true)
+        } catch {
+            // 録音できる設定にできないと、マイクの音が無音になる
+            Diagnostics.log("マイク: 音声の設定に失敗 \(error.localizedDescription)")
+        }
         session.addInput(input)
         audioInput = input
         if session.canAddOutput(audioOutput) {
@@ -540,8 +553,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// 合図のライトを、deadline（シャッターの時刻）に近づくほど速く点滅させる。sessionQueue から呼ぶ。
-    /// 残り 3 秒より前は 1 秒に 1 回、3〜1.5 秒は 0.5 秒ごと、1.5〜0.7 秒は 0.25 秒ごと、最後は 0.14 秒ごと。
-    /// シャッターの直前（0.12 秒）は消して、ライトが写真に写り込まないようにする。
+    /// 残り 3 秒より前は 1 秒に 1 回、3〜1.8 秒は 0.5 秒ごと、1.8〜1.1 秒は 0.25 秒ごと、最後は 0.14 秒ごと。
+    /// シャッターの 0.6 秒前には消しておく。ライトは点けてから実際に光るまで・消してから暗くなるまで遅れがあり、
+    /// 直前まで点けていると写真に写り込んでいた（フラッシュをオフにしていても明るくなっていた）。
     private func blinkLight(until deadline: Date) {
         blinkGeneration += 1
         blinkStep(generation: blinkGeneration, deadline: deadline)
@@ -550,12 +564,13 @@ final class CameraManager: NSObject, ObservableObject {
     private func blinkStep(generation: Int, deadline: Date) {
         guard generation == blinkGeneration else { return }
         let remaining = deadline.timeIntervalSinceNow
-        guard remaining > 0.12 else {
+        let darkBeforeShot = 0.6
+        guard remaining > darkBeforeShot + 0.03 else {
             setTimerLight(false)
             return
         }
-        let period = remaining > 3 ? 1.0 : remaining > 1.5 ? 0.5 : remaining > 0.7 ? 0.25 : 0.14
-        let onTime = min(0.08, period / 2, remaining - 0.12)
+        let period = remaining > 3 ? 1.0 : remaining > 1.8 ? 0.5 : remaining > 1.1 ? 0.25 : 0.14
+        let onTime = min(0.08, period / 2, remaining - darkBeforeShot)
         setTimerLight(true)
         sessionQueue.asyncAfter(deadline: .now() + onTime) {
             guard generation == self.blinkGeneration else { return }
@@ -572,11 +587,11 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// 連続撮影がすべて終わった合図。背面のライトを最低の明るさで 2 回チカチカさせる。sessionQueue から呼ぶ。
-    /// フラッシュを焚いたときは、発光が終わってから合図する。
-    private func signalSequenceFinished(afterFlash: Bool) {
+    /// 最後の写真の撮影が終わった（didFinishCaptureFor が届いた）後に呼ぶので、写真には写り込まない。
+    private func signalSequenceFinished(after delay: Double) {
         blinkGeneration += 1
         let generation = blinkGeneration
-        let start = afterFlash ? 1.2 : 0.35
+        let start = delay
         for (time, on) in [(0.0, true), (0.12, false), (0.27, true), (0.39, false)] {
             sessionQueue.asyncAfter(deadline: .now() + start + time) {
                 guard generation == self.blinkGeneration else { return }
@@ -588,7 +603,8 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 比率
 
     private func updateSettingsBox() {
-        settingsBox.value = showOriginal ? ProcessingSettings(filter: .none, smoothing: 0, brightening: 0) : settings
+        // 比較ボタン（美肌・スタイルのパネル）は美肌・スタイルの加工だけを外す。フィルターは残す
+        settingsBox.value = showOriginal ? settings.withoutBeauty : settings
     }
 
     func setScreenAspect(_ value: CGFloat) {
@@ -602,7 +618,8 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func updatePoseNeeded() {
-        let needed = (template != nil && template?.isObject != true) || showSkeleton || autoShutter || settings.legLength > 0.01
+        let needed = (template != nil && template?.isObject != true) || showSkeleton || autoShutter
+            || settings.legLength > 0.01 || showsLegRange
         poseNeeded.value = needed
         if !needed {
             poseFeed.detected = nil
@@ -744,9 +761,10 @@ final class CameraManager: NSObject, ObservableObject {
                             interval: interval, total: total)
             : nil
 
-        // 待ち時間があるときは、背面のライトを最低の明るさで点滅させ、シャッターが近づくほど速くする。
-        // 背面カメラで自分を撮るとき、画面が見えなくてもいつ撮られるか分かる
-        let usesLight = delay > 0
+        // セルフタイマーのときだけ、1 枚目までの待ち時間に背面のライトを最低の明るさで点滅させ、シャッターが
+        // 近づくほど速くする（背面カメラで自分を撮るとき、画面が見えなくてもいつ撮られるか分かる）。
+        // 連続撮影の構える時間・撮影の合間は点滅させない。終わったときに 2 回点滅させるだけにする
+        let usesLight = timerSeconds > 0
         if usesLight {
             sessionQueue.async { self.blinkLight(until: firstShot) }
         }
@@ -758,15 +776,12 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self else { return }
             shot += 1
             // フラッシュを使うときも、ライトを消してから通常どおり発光させる
-            if usesLight { self.stopBlinking() }
-            self.performCapture(options)
+            if usesLight && shot == 1 { self.stopBlinking() }
             let current = shot
+            // 連続撮影の最後の 1 枚は、撮り終わったらライトを 2 回チカチカさせて知らせる
+            self.performCapture(options, signalsEnd: total > 1 && current >= total)
             if current >= total {
                 timer?.cancel()
-                // 連続撮影が全部終わったら、背面のライトを 2 回チカチカさせて知らせる
-                if total > 1 { self.signalSequenceFinished(afterFlash: options.flash) }
-            } else if usesLight {
-                self.blinkLight(until: firstShot.addingTimeInterval(Double(current) * interval))
             }
             DispatchQueue.main.async {
                 self.shutterCount += 1
@@ -845,9 +860,11 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 写真
 
     /// sessionQueue から呼ぶ。
-    private func performCapture(_ options: ShotOptions) {
+    private func performCapture(_ options: ShotOptions, signalsEnd: Bool = false) {
         if options.silent {
             captureSilently()
+            // 映像のコマはもう取り出したので、すぐ合図してよい
+            if signalsEnd { signalSequenceFinished(after: 0.25) }
             return
         }
         guard photoOutput.connection(with: .video)?.isActive == true else {
@@ -874,6 +891,7 @@ final class CameraManager: NSObject, ObservableObject {
             photoSettings.photoQualityPrioritization = .speed
         }
         photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        if signalsEnd { endSignalPhotoID.value = photoSettings.uniqueID }
         photoOutput.capturePhoto(with: photoSettings, delegate: self)
     }
     private func photoFinished() {
@@ -963,11 +981,11 @@ final class CameraManager: NSObject, ObservableObject {
 
         let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
-        if wantsMasks || settings.legLength > 0.01 {
-            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks)
+        if settings.needsMasks || settings.legLength > 0.01 {
+            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask)
         }
-        let hipY = analysis.pose.flatMap(PoseDetector.hipY(of:))
-        let output = processor.process(image, settings: settings, hipY: hipY, masks: analysis.masks)
+        let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis.pose, manual: settings.legRange) : nil
+        let output = processor.process(image, settings: settings, legs: legs, masks: analysis.masks)
         // 撮影情報（Exif・レンズ名など）を付けて JPEG にする
         guard let jpeg = PhotoMetadata.jpeg(output, metadata: metadata, context: renderer.ciContext) else { return nil }
         return (jpeg, makeThumbnail(output))
@@ -995,7 +1013,9 @@ final class CameraManager: NSObject, ObservableObject {
         guard mode != .photo, !isRecording else { return }
         isRecording = true
         recordingSeconds = 0
-        AudioServicesPlaySystemSound(1117)
+        // 無音の設定では開始・停止の音を鳴らさない（鳴らすと、その音が動画に入る）
+        let mute = muteShutter
+        if !mute { AudioServicesPlaySystemSound(1117) }
         recordTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.recordingSeconds += 1
@@ -1003,19 +1023,34 @@ final class CameraManager: NSObject, ObservableObject {
                 self.stopRecording()
             }
         }
+        let route = AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portType.rawValue }
+        Diagnostics.log("録画: 開始の操作（マイク \(route.joined(separator: ",")), 音声の入力 \(mode == .video ? "あり" : "なし")）")
         // 開始音が録音に入らないよう、少し待ってから書き込みを始める
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (mute ? 0.05 : 0.45)) {
             guard self.isRecording else { return }
             self.videoQueue.async { self.wantsRecording = true }
         }
     }
 
+    /// 停止したら、すぐに停止音を鳴らし、書き出しと写真への保存は裏で続ける。
+    /// その間にほかのアプリへ移ったり、次の録画を始めたりしても、保存が終わるまで続ける
+    /// （iOS にバックグラウンドでの実行時間をもらう）。
     private func stopRecording() {
         guard isRecording else { return }
         isRecording = false
         recordTimer?.invalidate()
         recordTimer = nil
         let isSnap = mode == .snap
+        if !muteShutter { AudioServicesPlaySystemSound(1118) }
+
+        savingVideos += 1
+        let background = BackgroundTask(name: "動画の保存")
+        let finished = {
+            DispatchQueue.main.async {
+                self.savingVideos = max(0, self.savingVideos - 1)
+                background.end()
+            }
+        }
 
         videoQueue.async {
             self.wantsRecording = false
@@ -1023,31 +1058,38 @@ final class CameraManager: NSObject, ObservableObject {
                 // 録画中に映像のコマが 1 つも届かなかった（以前は何も表示せずに終わっていた）
                 Diagnostics.log("録画: コマが届かず録画できず（受信 \(self.frameCount) コマ目）")
                 self.report("録画できませんでした（カメラの映像が届いていません）")
+                finished()
                 return
             }
+            // 次の録画は新しい書き出し先で始まる。この録画の書き出しは、そのまま裏で続く
             self.recorder = nil
             let thumbnail = self.lastRecordedFrame.flatMap { self.makeThumbnail($0) }
             self.lastRecordedFrame = nil
 
-            recorder.finish { url, reason in
-                DispatchQueue.main.async { AudioServicesPlaySystemSound(1118) }
-                guard let url else {
-                    Diagnostics.log("録画: 書き出し失敗 \(reason ?? "")")
-                    self.report("動画の書き出しに失敗しました: \(reason ?? "理由不明")")
+            recorder.finish { outcome in
+                guard let url = outcome.url else {
+                    Diagnostics.log("録画: 書き出し失敗 \(outcome.failure ?? "")")
+                    self.report("動画の書き出しに失敗しました: \(outcome.failure ?? "理由不明")")
+                    finished()
                     return
                 }
                 if isSnap {
                     DispatchQueue.main.async { self.snapClip = SnapClip(url: url) }
+                    finished()
                     return
                 }
                 MediaSaver.saveVideo(at: url) { ok, reason in
                     if ok {
-                        Diagnostics.log("録画: 保存完了")
+                        Diagnostics.log("録画: 保存完了\(outcome.partial ? "（途中まで）" : "")")
                         DispatchQueue.main.async { self.lastThumbnail = thumbnail }
+                        if outcome.partial {
+                            self.report("動画の最後の部分を書き出せなかったので、途中まで保存しました")
+                        }
                     } else {
                         Diagnostics.log("録画: 保存失敗 \(reason ?? "")")
                         self.report("動画を保存できませんでした: \(reason ?? "写真へのアクセス許可を確認してください")")
                     }
+                    finished()
                 }
             }
         }
@@ -1060,9 +1102,15 @@ final class CameraManager: NSObject, ObservableObject {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
-            let audioSettings = modeBox.value == .video
-                ? audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
-                : nil
+            var audioSettings: [String: Any]?
+            if modeBox.value == .video {
+                // マイクがつながっていれば、カメラの勧める設定を使う。取れなければ AAC で書く
+                audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+                if audioSettings == nil {
+                    Diagnostics.log("録画: 音声の推奨設定が取れず、AAC で書き込む")
+                    audioSettings = VideoRecorder.fallbackAudioSettings
+                }
+            }
             do {
                 recorder = try VideoRecorder(url: url, size: image.extent.size,
                                              audioSettings: audioSettings, context: renderer.ciContext)
@@ -1173,11 +1221,15 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// 腰の高さを少しずつ追従させ、脚長加工の境目がちらつかないようにする。videoQueue から呼ぶ。
-    private func updatedHipY() -> CGFloat? {
-        guard let pose = poseBox.value, let y = PoseDetector.hipY(of: pose) else { return smoothedHipY }
-        let smoothed = smoothedHipY.map { $0 * 0.8 + y * 0.2 } ?? y
-        smoothedHipY = smoothed
+    /// 脚長で伸ばす範囲を少しずつ追従させ、境目がちらつかないようにする。videoQueue から呼ぶ。
+    private func updatedLegs(manual: ClosedRange<Double>?) -> LegLayout? {
+        guard let target = LegLayout.make(pose: poseBox.value, manual: manual) else { return smoothedLegs }
+        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a * 0.8 + b * 0.2 }
+        let smoothed = smoothedLegs.map {
+            LegLayout(shoulder: mix($0.shoulder, target.shoulder), start: mix($0.start, target.start),
+                      end: mix($0.end, target.end), headTop: mix($0.headTop, target.headTop))
+        } ?? target
+        smoothedLegs = smoothed
         return smoothed
     }
 
@@ -1195,6 +1247,24 @@ final class CameraManager: NSObject, ObservableObject {
                 if self.statusMessage == message { self.statusMessage = nil }
             }
         }
+    }
+}
+
+/// iOS にバックグラウンドで実行を続ける時間をもらう。end() は何度呼んでもよい（メインスレッドから使う）。
+private final class BackgroundTask {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            Diagnostics.log("\(name): バックグラウンドの時間切れ")
+            self?.end()
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
 
@@ -1237,7 +1307,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value,
                                      maxLongSide: isPhoto ? 1280 : 1920)
         let settings = settingsBox.value
-        let wantsMasks = settings.needsSkinMask
+        let wantsMasks = settings.needsMasks
         let wantsPose = poseNeeded.value
 
         let image = geometry.apply(source)
@@ -1256,10 +1326,11 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 加工の位置が遅れてずれる。間に合わないコマは捨てられる（alwaysDiscardsLateVideoFrames）
         var masks: BeautyMasks?
         if wantsMasks, let visionBuffer {
-            masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size)
+            masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size,
+                                         skin: settings.needsSkinMask, person: settings.needsPersonMask)
         }
-        let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
-        let processed = processor.process(image, settings: settings, hipY: hipY, masks: masks)
+        let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil
+        let processed = processor.process(image, settings: settings, legs: legs, masks: masks)
         renderer.display(processed)
         handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
@@ -1297,6 +1368,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 // MARK: - 写真受信
 
 extension CameraManager: AVCapturePhotoCaptureDelegate {
+    /// 写真 1 枚の撮影（露光・発光）がすべて終わった
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+                     error: Error?) {
+        guard endSignalPhotoID.value == resolvedSettings.uniqueID else { return }
+        endSignalPhotoID.value = nil
+        sessionQueue.async { self.signalSequenceFinished(after: resolvedSettings.isFlashEnabled ? 0.4 : 0.15) }
+    }
+
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         let settings = settingsBox.value

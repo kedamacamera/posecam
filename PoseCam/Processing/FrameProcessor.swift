@@ -11,17 +11,24 @@ final class FrameProcessor {
         skinCube = Self.makeSkinCube(size: Self.cubeSize)
     }
 
-    /// hipY: 腰の高さ（画像座標・上が 0）。masks: 人物の領域と顔のパーツ。
+    /// legs: 脚長で伸ばす範囲。masks: 人物の領域と顔のパーツ。
     /// どちらも人物が見つからないときは nil で、そのときは美肌・脚長をかけない。
-    func process(_ input: CIImage, settings: ProcessingSettings, hipY: CGFloat?, masks: BeautyMasks?) -> CIImage {
+    func process(_ input: CIImage, settings: ProcessingSettings, legs: LegLayout?, masks: BeautyMasks?) -> CIImage {
         let extent = input.extent
         var image = input
         if settings.needsSkinMask, let masks {
             image = beautify(image, settings: settings, masks: masks)
         }
-        image = settings.filter.apply(to: image, strength: settings.filterStrength)
-        if settings.legLength > 0.01, let hipY {
-            image = stretchLegs(image, hipY: hipY, amount: settings.legLength)
+        if settings.filter.needsPersonMask {
+            // 人物以外をモノクロ（パートカラー）: 人物の領域がなければ全体をモノクロにはせず、そのまま
+            if let person = masks?.person {
+                image = PhotoFilter.colorKeep(image, person: Self.gray(person), strength: settings.filterStrength)
+            }
+        } else {
+            image = settings.filter.apply(to: image, strength: settings.filterStrength)
+        }
+        if settings.legLength > 0.01, let legs {
+            image = LegStretch.apply(image, layout: legs, amount: settings.legLength)
         }
         return image.cropped(to: extent)
     }
@@ -351,33 +358,5 @@ final class FrameProcessor {
         if x < low { return max(0, 1 - (low - x) / falloff) }
         if x > high { return max(0, 1 - (x - high) / falloff) }
         return 1
-    }
-
-    // MARK: - 脚長
-
-    /// 腰から下を縦に伸ばし、そのぶん上半身を少し縮めて画像の高さを保つ。
-    private func stretchLegs(_ image: CIImage, hipY: CGFloat, amount: Double) -> CIImage {
-        let e = image.extent
-        // Core Image は左下原点なので、腰の位置を下からの距離に直す
-        let hip = (1 - hipY) * e.height
-        guard hip > e.height * 0.15, hip < e.height * 0.85 else { return image }
-
-        let newHip = min(hip * (1 + 0.2 * CGFloat(amount)), e.height * 0.9)
-        let legScale = newHip / hip
-        let bodyScale = (e.height - newHip) / (e.height - hip)
-
-        let toOrigin = CGAffineTransform(translationX: -e.minX, y: -e.minY)
-        let base = image.transformed(by: toOrigin)
-        let lower = base
-            .cropped(to: CGRect(x: 0, y: 0, width: e.width, height: hip))
-            .clampedToExtent()
-            .transformed(by: CGAffineTransform(scaleX: 1, y: legScale))
-            .cropped(to: CGRect(x: 0, y: 0, width: e.width, height: newHip))
-        let upper = base
-            .cropped(to: CGRect(x: 0, y: hip, width: e.width, height: e.height - hip))
-            .clampedToExtent()
-            .transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: bodyScale, tx: 0, ty: newHip - hip * bodyScale))
-            .cropped(to: CGRect(x: 0, y: newHip, width: e.width, height: e.height - newHip))
-        return upper.composited(over: lower).transformed(by: toOrigin.inverted())
     }
 }

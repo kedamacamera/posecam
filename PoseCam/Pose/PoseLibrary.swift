@@ -165,4 +165,16 @@ enum PoseImageCache {
         cache.setObject(thumbnail, forKey: name as NSString)
         return thumbnail
     }
+
+    /// 撮影画面の左下に出す見本写真（縦横比はそのまま、幅 360 ピクセル）
+    static func sample(named name: String) -> UIImage? {
+        let key = "sample|\(name)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
+              let image = UIImage(contentsOfFile: url.path), image.size.width > 0 else { return nil }
+        let size = CGSize(width: 360, height: (360 * image.size.height / image.size.width).rounded())
+        guard let sample = image.preparingThumbnail(of: size) else { return nil }
+        cache.setObject(sample, forKey: key)
+        return sample
+    }
 }

@@ -397,10 +397,14 @@ struct FilterStrip: View {
     }
 
     private var thumbnails: some View {
+        ScrollViewReader { proxy in
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(PhotoFilter.allCases) { filter in
-                    Button { selection = filter } label: {
+                    Button {
+                        selection = filter
+                        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(filter, anchor: .center) }
+                    } label: {
                         VStack(spacing: 6) {
                             Group {
                                 if let image = FilterThumbnails.image(for: filter) {
@@ -415,12 +419,18 @@ struct FilterStrip: View {
                                 .stroke(selection == filter ? Color.yellow : .clear, lineWidth: 3))
                             Text(filter.displayName)
                                 .font(.caption2)
+                                .lineLimit(1)
+                                .fixedSize()
                                 .foregroundStyle(selection == filter ? Color.yellow : .white)
                         }
                     }
+                    .id(filter)
                 }
             }
             .padding(.horizontal)
+        }
+        // パネルを閉じて開き直しても、使っているフィルターが中央に来るようにする
+        .onAppear { proxy.scrollTo(selection, anchor: .center) }
         }
     }
 }
@@ -515,7 +525,12 @@ enum FilterThumbnails {
     static func image(for filter: PhotoFilter) -> UIImage? {
         if let cached = cache[filter] { return cached }
         guard let source else { return nil }
-        let output = filter.apply(to: source)
+        var output = filter.apply(to: source)
+        if filter.needsPersonMask,
+           let person = PoseDetector().analyze(ciImage: source, wantsMasks: false, wantsPerson: true).masks?.person {
+            output = PhotoFilter.colorKeep(source, person: FrameProcessor.gray(person),
+                                           strength: PhotoFilter.standardStrength)
+        }
         guard let cgImage = context.createCGImage(output, from: source.extent) else { return nil }
         let image = UIImage(cgImage: cgImage)
         cache[filter] = image
@@ -566,10 +581,9 @@ enum BeautyItem: String, CaseIterable, Identifiable {
 
 struct BeautyPanel: View {
     @Binding var settings: ProcessingSettings
-    /// 押している間だけ加工前の映像に戻す（比べるため）
+    /// 押している間だけ、美肌・スタイルの加工を外した映像にする（比べるため。フィルターは残す）
     @Binding var showOriginal: Bool
-
-    @State private var selected: BeautyItem = .smoothing
+    @Binding var selected: BeautyItem
 
     var body: some View {
         VStack(spacing: 10) {
@@ -595,21 +609,26 @@ struct BeautyPanel: View {
             .foregroundStyle(.white)
             .padding(.horizontal)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    Button {
-                        settings = ProcessingSettings(filter: settings.filter, filterStrength: settings.filterStrength)
-                    } label: {
-                        itemLabel(systemImage: "arrow.counterclockwise", title: "リセット", active: false, value: nil)
-                    }
-                    ForEach(BeautyItem.allCases) { item in
-                        Button { selected = item } label: {
-                            itemLabel(systemImage: item.systemImage, title: item.rawValue,
-                                      active: selected == item, value: settings[keyPath: item.keyPath])
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        Button {
+                            settings = ProcessingSettings(filter: settings.filter, filterStrength: settings.filterStrength)
+                        } label: {
+                            itemLabel(systemImage: "arrow.counterclockwise", title: "リセット", active: false, value: nil)
+                        }
+                        ForEach(BeautyItem.allCases) { item in
+                            Button { selected = item } label: {
+                                itemLabel(systemImage: item.systemImage, title: item.rawValue,
+                                          active: selected == item, value: settings[keyPath: item.keyPath])
+                            }
+                            .id(item)
                         }
                     }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
+                // 開き直したとき、選んでいた項目が見えるようにする
+                .onAppear { proxy.scrollTo(selected, anchor: .center) }
             }
         }
     }

@@ -10,7 +10,7 @@ import simd
 /// - 色相ごとの彩度: 緑は少し抑えて色相をずらす（フィルムらしい落ち着いた緑）、肌のオレンジは残す
 /// - 色温度: 全体を暖かく / 涼しく
 enum PhotoFilter: String, CaseIterable, Identifiable {
-    case none, natural, cineFilm, film, warmFilm, coolFilm, clear, food, cafe, vintage, bleach, mono, noir
+    case none, natural, vivid, cineFilm, film, warmFilm, coolFilm, clear, food, cafe, vintage, bleach, mono, noir, colorKeep
 
     /// それぞれのフィルターの標準の濃さ（スライダーの 70%）。100% にすると少しやりすぎなくらいになる
     static let standardStrength = 0.7
@@ -21,6 +21,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         switch self {
         case .none: return "なし"
         case .natural: return "ナチュラル"
+        case .vivid: return "ヴィヴィッド"
         case .cineFilm: return "シネフィルム"
         case .film: return "フィルム"
         case .warmFilm: return "ウォーム"
@@ -32,7 +33,26 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         case .bleach: return "ブリーチ"
         case .mono: return "モノクロ"
         case .noir: return "ノワール"
+        case .colorKeep: return "背景モノクロ"
         }
+    }
+
+    /// 人物の領域を使うフィルター（人物以外をモノクロにする「パートカラー」）
+    var needsPersonMask: Bool { self == .colorKeep }
+
+    /// 人物だけ色を残し、それ以外を白黒にする。person は人物を白にしたマスク（画像と同じ大きさ）。
+    /// 白黒の濃さは「モノクロ」と同じ（標準の 70% で完全な白黒、それより下げると背景に色が少し残る）
+    static func colorKeep(_ image: CIImage, person: CIImage, strength: Double) -> CIImage {
+        let extent = image.extent
+        let mono = PhotoFilter.mono.apply(to: image, strength: strength)
+        // 境目をわずかにぼかして、人の縁に白黒の筋や色のにじみが出ないようにする
+        let mask = person.clampedToExtent()
+            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.003)
+            .cropped(to: extent)
+        return image.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: mono,
+            kCIInputMaskImageKey: mask,
+        ])
     }
 
     /// それぞれのルックの中身。
@@ -43,6 +63,11 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         case .natural:
             // 色は自然なまま、少しだけメリハリと血色を足す
             return Look(contrast: 0.12, saturation: 1.06, warmth: 0.12)
+        case .vivid:
+            // 鮮やか: メリハリを付け、くすんだ色ほど彩度を上げる（バイブランス）。もともと鮮やかな色と
+            // 肌のオレンジは上げすぎない（肌が赤黒くならない）。空の青と木の緑を少し深く
+            return Look(contrast: 0.2, saturation: 1.08, warmth: 0.04, greenSaturation: 1.1, blueSaturation: 1.12,
+                        warmSaturation: 0.97, vibrance: 0.55)
         case .cineFilm:
             // ソニーのクリエイティブルック「FL3」の方向性: コントラストを少し抑え、色はクリアに、全体を軽く。
             // 暗部はわずかにシアン、明部はわずかに暖色。緑は少し抑えてシアン寄りに
@@ -91,6 +116,9 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
             return Look(contrast: 0.12, lift: 0.03, monoWeights: [0.35, 0.5, 0.15])
         case .noir:
             return Look(contrast: 0.45, monoWeights: [0.4, 0.45, 0.15])
+        case .colorKeep:
+            // 人物の領域を使うので、色の対応表ではなく colorKeep(_:person:strength:) でかける
+            return nil
         }
     }
 
@@ -151,6 +179,8 @@ private struct Look {
     var blueSaturation: Float = 1
     /// 赤〜オレンジ〜黄（暖色）の彩度
     var warmSaturation: Float = 1
+    /// くすんだ色ほど彩度を上げる量（バイブランス）。肌の色相では弱める
+    var vibrance: Float = 0
     /// 白黒にするときの R・G・B の重み
     var monoWeights: SIMD3<Float>?
     /// 白黒にする割合（濃さを下げたときに少し色を残す）
@@ -173,6 +203,7 @@ private struct Look {
         look.greenHueShift = greenHueShift * k
         look.blueSaturation = max(0, 1 + (blueSaturation - 1) * k)
         look.warmSaturation = max(0, 1 + (warmSaturation - 1) * k)
+        look.vibrance = vibrance * k
         look.monoAmount = min(1, k)
         return look
     }
@@ -212,7 +243,7 @@ private struct Look {
         c = simd_clamp(c, SIMD3(repeating: 0), SIMD3(repeating: 1))
 
         // 色相ごとの彩度
-        if greenSaturation != 1 || greenHueShift != 0 || blueSaturation != 1 || warmSaturation != 1 {
+        if greenSaturation != 1 || greenHueShift != 0 || blueSaturation != 1 || warmSaturation != 1 || vibrance != 0 {
             var (h, s, v) = Self.hsv(c)
             let green = Self.bell(h, center: 120, width: 50)
             let blue = Self.bell(h, center: 220, width: 35)
@@ -221,6 +252,8 @@ private struct Look {
             s *= 1 + (blueSaturation - 1) * blue
             s *= 1 + (warmSaturation - 1) * warm
             h += greenHueShift * green
+            // 彩度の低い色ほど大きく上げる。肌（暖色）は半分にとどめる
+            s *= 1 + vibrance * (1 - s) * (1 - 0.5 * warm)
             s = min(max(s, 0), 1)
             c = Self.rgb(h, s, v)
         }

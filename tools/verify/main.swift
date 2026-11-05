@@ -104,7 +104,7 @@ for (name, image) in inputs {
     settings.redness = 0.8
     settings.blemish = 0.8
     settings.wrinkle = 0.8
-    let output = processor.process(image, settings: settings, hipY: nil, masks: masks)
+    let output = processor.process(image, settings: settings, legs: nil, masks: masks)
 
     let skin = masks.skin ?? masks.person!
     let before = meanLuma(image, mask: skin)
@@ -149,7 +149,7 @@ for (name, image) in inputs {
             for (i, step) in steps.enumerated() {
                 var single = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
                 single[keyPath: step.1] = 0.8
-                let out = processor.process(image, settings: single, hipY: nil, masks: masks)
+                let out = processor.process(image, settings: single, legs: nil, masks: masks)
                 strip = out.cropped(to: rect).transformed(by: toOrigin.concatenating(
                     CGAffineTransform(translationX: side * CGFloat(i + 1), y: 0))).composited(over: strip)
             }
@@ -208,13 +208,13 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
     guard let masks = analysis.masks, let nose = analysis.pose?[.nose] else { continue }
     var settings = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
     settings.beard = 1
-    let concealed = processor.process(image, settings: settings, hipY: nil, masks: masks)
+    let concealed = processor.process(image, settings: settings, legs: nil, masks: masks)
     settings.smoothing = 0.8
     settings.contour = 0.8
-    let full = processor.process(image, settings: settings, hipY: nil, masks: masks)
+    let full = processor.process(image, settings: settings, legs: nil, masks: masks)
     var smoothOnly = ProcessingSettings(filter: .none, smoothing: 0.8, brightening: 0)
     smoothOnly.contour = 0
-    let smoothed = processor.process(image, settings: smoothOnly, hipY: nil, masks: masks)
+    let smoothed = processor.process(image, settings: smoothOnly, legs: nil, masks: masks)
 
     let width = image.extent.width
     let side = width * 0.4
@@ -368,7 +368,13 @@ do {
                                                             width: cellWidth * CGFloat(PhotoFilter.allCases.count),
                                                             height: cellHeight))
         for (i, filter) in PhotoFilter.allCases.enumerated() {
-            let cell = filter.apply(to: small).transformed(by: CGAffineTransform(translationX: cellWidth * CGFloat(i), y: 0))
+            var filtered = filter.apply(to: small)
+            if filter.needsPersonMask {
+                filtered = personMask(small).map {
+                    PhotoFilter.colorKeep(small, person: FrameProcessor.gray($0), strength: PhotoFilter.standardStrength)
+                } ?? small
+            }
+            let cell = filtered.transformed(by: CGAffineTransform(translationX: cellWidth * CGFloat(i), y: 0))
             row = cell.composited(over: row)
         }
         rows.append(row)
@@ -476,6 +482,69 @@ if inputs.count > 1 {
     let crop = CGRect(x: 0, y: e.height * 0.55, width: e.width, height: e.height * 0.45)
     let face = upper.cropped(to: crop).transformed(by: CGAffineTransform(translationX: 0, y: -crop.minY))
     silhouetteTests("face close-up", face)
+}
+
+// MARK: - 脚長
+
+/// 1 行ぶんの平均の明るさ（行は上端 0）
+func rowLuma(_ image: CIImage, row: Int) -> Double {
+    let e = image.extent
+    let rect = CGRect(x: e.minX, y: e.maxY - CGFloat(row) - 1, width: e.width, height: 1)
+    let avg = image.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: rect)])
+    var pixel = [Float](repeating: 0, count: 4)
+    context.render(avg, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                   format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    return 0.299 * Double(pixel[0]) + 0.587 * Double(pixel[1]) + 0.114 * Double(pixel[2])
+}
+
+/// 継ぎ目の目立ち具合: その行と、上下 3 行の平均との差（明るさ 0〜1）
+func seam(_ image: CIImage, row: Int) -> Double {
+    let around = (rowLuma(image, row: row - 3) + rowLuma(image, row: row + 3)) / 2
+    return abs(rowLuma(image, row: row) - around)
+}
+
+do {
+    // 実機の写真と同じ大きさ（3024x4032）に引き伸ばして、写真と同じく CGImage に描いて確かめる
+    let original = inputs[0].1
+    let scale = 4032 / original.extent.height
+    let big = original.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale,
+                                                                              kCIInputAspectRatioKey: 1.0])
+        .cropped(to: CGRect(x: 0, y: 0, width: 3024, height: 4032))
+    let pose = detector.analyze(ciImage: big, wantsMasks: false).pose
+    for (label, manual) in [("auto", nil), ("manual 0.55-0.9", 0.55...0.9)] as [(String, ClosedRange<Double>?)] {
+        guard let legs = LegLayout.make(pose: pose, manual: manual) else {
+            report.append("legs \(label): no layout")
+            continue
+        }
+        var settings = ProcessingSettings(smoothing: 0, brightening: 0)
+        settings.legLength = 1
+        let output = processor.process(big, settings: settings, legs: legs, masks: nil)
+        guard let cg = context.createCGImage(output, from: output.extent) else {
+            report.append("legs \(label): render failed")
+            continue
+        }
+        let rendered = CIImage(cgImage: cg)
+        let plan = legs.plan(height: 4032, amount: 1)
+        let h = 4032
+        // 下の 10% が黒くなっていないか（元の画像と比べる）
+        let bottomRows = stride(from: h - 400, to: h, by: 40)
+        let bottomOut = bottomRows.map { rowLuma(rendered, row: $0) }.reduce(0, +) / 10
+        let bottomIn = bottomRows.map { rowLuma(big, row: $0) }.reduce(0, +) / 10
+        // 区切りの行に線が出ていないか
+        let joints = [Int(plan.shoulder - plan.shift), Int(plan.start - plan.added), Int(plan.end)]
+        let seams = joints.filter { $0 > 4 && $0 < h - 4 }.map { String(format: "%.4f", seam(rendered, row: $0)) }
+        // 肩より上は形を変えずにずらすだけ: 出力の行 y と元の行 y + shift が同じ明るさか
+        let headRow = Int(max(plan.shift + 20, plan.shoulder * 0.6))
+        let headDiff = abs(rowLuma(rendered, row: headRow - Int(plan.shift)) - rowLuma(big, row: headRow))
+        report.append(String(format: "legs %@: shoulder %.3f start %.3f end %.3f headTop %.3f, shift %.0fpx added %.0fpx, bottom luma in %.3f out %.3f, seams %@, head row diff %.4f",
+                             label, legs.shoulder, legs.start, legs.end, legs.headTop, plan.shift, plan.added,
+                             bottomIn, bottomOut, seams.joined(separator: "/"), headDiff))
+        let small = 800 / CGFloat(h)
+        let pair = big.transformed(by: CGAffineTransform(scaleX: small, y: small))
+            .composited(over: rendered.transformed(by: CGAffineTransform(scaleX: small, y: small)
+                .translatedBy(x: 3024, y: 0)))
+        savePNG(pair, "legs_\(label.replacingOccurrences(of: " ", with: "_")).png")
+    }
 }
 
 let text = report.joined(separator: "\n")

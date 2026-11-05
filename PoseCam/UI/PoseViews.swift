@@ -392,8 +392,10 @@ struct PoseStrip: View {
     @State private var importError: String?
     @State private var draft: PoseImportDraft?
 
-    /// 一覧の中で、いちばん左に見えているポーズ（"カテゴリ|id"）
+    /// 一覧の中で、画面の中央にあるポーズ（"カテゴリ|id"）
     @State private var visibleItem: String?
+    /// 最後に選んだポーズの一覧の中の位置（パネルを閉じて開き直しても、その位置から表示する）
+    private static var lastSelectedItem: String?
     /// 上の見出しで選ばれているカテゴリ
     @State private var activeCategory: String?
     /// 見出しをタップして一覧を動かしている間は、スクロールに合わせて見出しを動かさない
@@ -417,6 +419,7 @@ struct PoseStrip: View {
             categoryTabs
             poseRow
         }
+        .onAppear(perform: restorePosition)
         .onChange(of: pickerItem) {
             guard let item = pickerItem else { return }
             Task { await importPose(from: item) }
@@ -477,13 +480,20 @@ struct PoseStrip: View {
                 ForEach(items) { item in
                     PoseCell(library: library, pose: item.pose, selection: $selection) {
                         selection = item.pose
+                        Self.lastSelectedItem = item.id
+                        // 選んだポーズのカテゴリへ、見出しをすぐ切り替える
+                        isJumping = true
+                        activeCategory = item.category
+                        withAnimation(.easeOut(duration: 0.25)) { visibleItem = item.id }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { isJumping = false }
                     }
                 }
             }
             .scrollTargetLayout()
             .padding(.horizontal)
         }
-        .scrollPosition(id: $visibleItem, anchor: .leading)
+        // 画面の中央にあるポーズで見出しを決める（中央を越えた時点で、前後のカテゴリへ切り替わる）
+        .scrollPosition(id: $visibleItem, anchor: .center)
         .onChange(of: visibleItem) {
             guard !isJumping, let visibleItem,
                   let category = items.first(where: { $0.id == visibleItem })?.category,
@@ -498,6 +508,19 @@ struct PoseStrip: View {
         activeCategory = category
         withAnimation(.easeOut(duration: 0.3)) { visibleItem = first.id }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { isJumping = false }
+    }
+
+    /// パネルを開き直したとき、使っているポーズを中央に表示する（使っていなければ先頭のまま）
+    private func restorePosition() {
+        guard let selection else { return }
+        let all = items
+        let item = all.first(where: { $0.id == Self.lastSelectedItem && $0.pose.id == selection.id })
+            ?? all.first(where: { $0.pose.id == selection.id })
+        guard let item else { return }
+        isJumping = true
+        activeCategory = item.category
+        visibleItem = item.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { isJumping = false }
     }
 
     @MainActor

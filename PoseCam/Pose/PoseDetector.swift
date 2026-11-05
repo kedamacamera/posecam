@@ -180,15 +180,19 @@ final class PoseDetector {
     /// プレビューの毎コマ用。美肌のマスクだけを、そのコマ自身から求める（骨格は求めない）。
     /// 別のコマのマスクを当てると、カメラを動かしたときに加工の位置が顔から遅れてずれるため。
     /// pixelBuffer は判定用に縮小したコマ。マスクは outputSize（実際に加工する画像の大きさ）に引き伸ばして返す。
-    func beautyMasks(pixelBuffer: CVPixelBuffer, outputSize: CGSize) -> BeautyMasks? {
+    /// skin: 肌・顔のパーツのマスクが要るか、person: 人物の領域が要るか（人物以外をモノクロにするフィルター）
+    func beautyMasks(pixelBuffer: CVPixelBuffer, outputSize: CGSize, skin: Bool = true,
+                     person: Bool = false) -> BeautyMasks? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        return perform(handler, imageSize: outputSize, maskQuality: .balanced, includePose: false).masks
+        return perform(handler, imageSize: outputSize, maskQuality: skin ? .balanced : nil, includePose: false,
+                       person: person ? .balanced : nil).masks
     }
 
     /// 写真用。マスクは精度優先で求める。
-    func analyze(ciImage: CIImage, wantsMasks: Bool) -> Result {
+    func analyze(ciImage: CIImage, wantsMasks: Bool, wantsPerson: Bool = false) -> Result {
         let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
-        return perform(handler, imageSize: ciImage.extent.size, maskQuality: wantsMasks ? .accurate : nil)
+        return perform(handler, imageSize: ciImage.extent.size, maskQuality: wantsMasks ? .accurate : nil,
+                       person: wantsPerson ? .accurate : nil)
     }
 
     func detect(ciImage: CIImage) -> [Joint: CGPoint]? {
@@ -214,7 +218,8 @@ final class PoseDetector {
 
     private func perform(_ handler: VNImageRequestHandler, imageSize: CGSize,
                          maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?,
-                         includePose: Bool = true) -> Result {
+                         includePose: Bool = true,
+                         person: VNGeneratePersonSegmentationRequest.QualityLevel? = nil) -> Result {
         let poseRequest = VNDetectHumanBodyPoseRequest()
         var requests: [VNRequest] = includePose ? [poseRequest] : []
         var skinRequest: VNCoreMLRequest?
@@ -237,6 +242,14 @@ final class PoseDetector {
             let faces = VNDetectFaceLandmarksRequest()
             landmarks = faces
             requests.append(faces)
+        }
+        // 人物以外をモノクロにするフィルターでは、肌のモデルがあっても人物の領域を求める
+        if let person, segmentation == nil {
+            let request = VNGeneratePersonSegmentationRequest()
+            request.qualityLevel = person
+            request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+            segmentation = request
+            requests.append(request)
         }
         do {
             try handler.perform(requests)

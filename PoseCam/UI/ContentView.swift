@@ -6,6 +6,10 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var panel: ControlPanel?
+    /// 美肌・スタイルで選んでいる項目（パネルを閉じても覚えておく。脚長のときは伸ばす範囲の線を出す）
+    @State private var beautyItem: BeautyItem = .smoothing
+    /// 選んだポーズの見本写真を左下に出すか
+    @AppStorage("showPoseSample") private var showPoseSample = true
     @State private var selectedPose: PoseTemplate?
     @State private var mirrorPose = false
     @State private var poseOpacity = 0.85
@@ -100,6 +104,7 @@ struct ContentView: View {
             if crashReport == nil { camera.start() }
         }
         .onChange(of: selectedPose) { updateTemplate() }
+        .onChange(of: showsLegRange) { camera.showsLegRange = showsLegRange }
         .onChange(of: mirrorPose) { updateTemplate() }
         .onChange(of: scenePhase) {
             if scenePhase != .active {
@@ -145,6 +150,9 @@ struct ContentView: View {
             if camera.template?.isObject == true {
                 AngleLevelView()
             }
+            if showsLegRange {
+                LegRangeOverlay(feed: camera.poseFeed, settings: $camera.settings)
+            }
         }
         .frame(width: screen.width, height: height)
         .clipped()
@@ -160,6 +168,9 @@ struct ContentView: View {
         )
         .offset(y: top)
     }
+
+    /// 美肌・スタイルのパネルで脚長を選んでいる
+    private var showsLegRange: Bool { panel == .beauty && beautyItem == .legLength }
 
     // MARK: - 上部
 
@@ -232,6 +243,9 @@ struct ContentView: View {
             if let progress = camera.burstProgress {
                 Badge(text: progress)
             }
+            if camera.savingVideos > 0 {
+                Badge(text: camera.savingVideos > 1 ? "動画を保存中（\(camera.savingVideos) 本）" : "動画を保存中")
+            }
             if camera.isRecording {
                 let seconds = camera.recordingSeconds
                 Badge(text: camera.mode == .snap
@@ -257,6 +271,12 @@ struct ContentView: View {
 
     private var bottomControls: some View {
         VStack(spacing: 10) {
+            // 選んだポーズの見本写真（左下）。タップで隠す・出す
+            if let name = selectedPose?.imageName {
+                PoseSampleCard(imageName: name, mirrored: mirrorPose, shown: $showPoseSample)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 12)
+            }
             if camera.lensOptions.count > 1 {
                 LensBar(options: camera.lensOptions, zoom: camera.displayZoom,
                         minZoom: camera.minDisplayZoom, maxZoom: camera.maxDisplayZoom,
@@ -274,7 +294,8 @@ struct ContentView: View {
                     case .filter:
                         FilterStrip(selection: $camera.settings.filter, strength: $camera.settings.filterStrength)
                     case .beauty:
-                        BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal)
+                        BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal,
+                                    selected: $beautyItem)
                     }
                 }
                 // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）

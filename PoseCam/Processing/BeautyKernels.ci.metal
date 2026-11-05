@@ -161,5 +161,27 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
 }
 
+/// 脚長。出力の各行が、元の画像のどの行から来るかを区分ごとの一次式で決めて、1 回で引き伸ばす
+/// （画像を切り分けて継ぎ合わせると、継ぎ目に線が出る・大きな写真で一部が描けないことがあったため）。
+/// 座標は上端 0 の行（ピクセル）。h: 画像の高さ、s: 肩、a: 伸ばし始め、b: 伸ばし終わり、
+/// u: 肩より上をそのまま上へずらす量、d: 伸ばして増える長さ（d - u は肩〜伸ばし始めで縮める量）
+float4 legStretch(sampler src, float h, float s, float a, float b, float u, float d, destination dest) {
+    float2 p = dest.coord();
+    float y = h - p.y;
+    float torso = a - s;
+    float squeezed = max(torso - (d - u), 1.0);
+    float source;
+    if (y < s - u) {
+        source = y + u;
+    } else if (y < a - d) {
+        source = s + (y - (s - u)) * torso / squeezed;
+    } else if (y < b) {
+        source = a + (y - (a - d)) * (b - a) / (b - a + d);
+    } else {
+        source = y;
+    }
+    return src.sample(src.transform(float2(p.x, h - source)));
+}
+
 }
 }
