@@ -920,7 +920,8 @@ final class CameraManager: NSObject, ObservableObject {
                                                                          height: silhouette.height))
                     }
                     silhouetteScore = PoseMatcher.silhouetteScore(template: self.templateCells!.cells,
-                                                                  detected: silhouette.cells)
+                                                                  detected: silhouette.cells,
+                                                                  width: silhouette.width)
                 }
                 // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
                 score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore)

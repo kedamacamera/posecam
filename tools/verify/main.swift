@@ -269,7 +269,7 @@ func silhouetteTests(_ label: String, _ image: CIImage) {
     let jointCount = result.pose?.count ?? 0
     func scoreFor(_ transformed: [[CGPoint]]) -> String {
         let cells = PoseMatcher.rasterize(transformed, aspect: aspect, width: silhouette.width, height: silhouette.height)
-        let value = PoseMatcher.silhouetteScore(template: cells, detected: silhouette.cells)
+        let value = PoseMatcher.silhouetteScore(template: cells, detected: silhouette.cells, width: silhouette.width)
         return value.map { String(format: "%.1f", $0) } ?? "nil"
     }
     func moved(_ dx: CGFloat, _ scale: CGFloat = 1) -> [[CGPoint]] {

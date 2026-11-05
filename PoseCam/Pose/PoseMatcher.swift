@@ -117,20 +117,54 @@ enum PoseMatcher {
         return (0..<(width * height)).map { bytes[$0] > 127 }
     }
 
-    /// 型の形と、映っている人の形の重なり（IoU: 重なった面積 ÷ どちらかに含まれる面積）から 0〜100 の点数を出す。
+    /// 型の形と、映っている人の形の重なりから 0〜100 の点数を出す。
     /// 体の関節が取れない顔のアップでも、人の形は取れるので採点できる。
-    /// 重なりが 35% 以下で 0 点、80% 以上で満点（人の形の検出のぶれや体型の違いのぶんの余裕）。
-    static func silhouetteScore(template: [Bool], detected: [Bool]) -> Double? {
-        guard template.count == detected.count, !template.isEmpty else { return nil }
-        var both = 0, either = 0
+    /// 細い全身の形はわずかにずれただけで重なりが大きく減るので、相手の形から少し（横幅の約 6%）
+    /// はみ出した所までは「重なっている」とみなす。
+    /// - 型のうち、人の形の近くにある割合（型を埋められているか）
+    /// - 人の形のうち、型の近くにある割合（型からはみ出していないか）
+    /// の両方をまとめた値（F 値）が 55% 以下で 0 点、95% 以上で満点。
+    static func silhouetteScore(template: [Bool], detected: [Bool], width: Int) -> Double? {
+        guard template.count == detected.count, !template.isEmpty, width > 0 else { return nil }
+        let height = template.count / width
+        let radius = max(1, Int((Double(width) * 0.06).rounded()))
+        let nearTemplate = dilate(template, width: width, height: height, radius: radius)
+        let nearDetected = dilate(detected, width: width, height: height, radius: radius)
+        var templateCount = 0, templateCovered = 0, detectedCount = 0, detectedInside = 0
         for i in 0..<template.count {
-            let a = template[i], b = detected[i]
-            if a && b { both += 1 }
-            if a || b { either += 1 }
+            if template[i] {
+                templateCount += 1
+                if nearDetected[i] { templateCovered += 1 }
+            }
+            if detected[i] {
+                detectedCount += 1
+                if nearTemplate[i] { detectedInside += 1 }
+            }
         }
-        guard either > 0 else { return nil }
-        let iou = Double(both) / Double(either)
-        return max(0, min(1, (iou - 0.35) / (0.8 - 0.35))) * 100
+        guard templateCount > 0 else { return nil }
+        guard detectedCount > 0 else { return 0 }
+        let recall = Double(templateCovered) / Double(templateCount)
+        let precision = Double(detectedInside) / Double(detectedCount)
+        guard recall + precision > 0 else { return 0 }
+        let f = 2 * recall * precision / (recall + precision)
+        return max(0, min(1, (f - 0.55) / (0.95 - 0.55))) * 100
+    }
+
+    /// true のマスを radius マス分（正方形）広げる。
+    private static func dilate(_ cells: [Bool], width: Int, height: Int, radius: Int) -> [Bool] {
+        var horizontal = [Bool](repeating: false, count: cells.count)
+        for y in 0..<height {
+            for x in 0..<width where cells[y * width + x] {
+                for nx in max(0, x - radius)...min(width - 1, x + radius) { horizontal[y * width + nx] = true }
+            }
+        }
+        var result = [Bool](repeating: false, count: cells.count)
+        for y in 0..<height {
+            for x in 0..<width where horizontal[y * width + x] {
+                for ny in max(0, y - radius)...min(height - 1, y + radius) { result[ny * width + x] = true }
+            }
+        }
+        return result
     }
 
     /// 関節と人の形の点数をまとめる。両方あれば半分ずつ、片方しかなければそれだけで決める。
