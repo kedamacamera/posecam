@@ -4,12 +4,20 @@
         "category":  "上半身"
     },
     {
+        "image":  "s_001",
+        "category":  "2人"
+    },
+    {
         "image":  "s_002",
         "category":  "上半身"
     },
     {
         "image":  "s_003",
         "category":  "上半身"
+    },
+    {
+        "image":  "s_004",
+        "category":  "自撮り"
     },
     {
         "image":  "s_005",
@@ -44,6 +52,10 @@
         "category":  "立ち"
     },
     {
+        "image":  "s_013",
+        "category":  "2人"
+    },
+    {
         "image":  "s_014",
         "category":  "タバコ"
     },
@@ -68,12 +80,20 @@
         "category":  "立ち"
     },
     {
+        "image":  "s_020",
+        "category":  "自撮り"
+    },
+    {
         "image":  "s_021",
         "category":  "座り"
     },
     {
         "image":  "s_022",
         "category":  "座り"
+    },
+    {
+        "image":  "s_023",
+        "category":  "2人"
     },
     {
         "image":  "s_024",
@@ -90,6 +110,10 @@
     {
         "image":  "s_027",
         "category":  "後ろ姿"
+    },
+    {
+        "image":  "s_028",
+        "category":  "2人"
     },
     {
         "image":  "s_029",
@@ -126,6 +150,10 @@
     {
         "image":  "s_037",
         "category":  "寄りかかり"
+    },
+    {
+        "image":  "s_038",
+        "category":  "2人"
     },
     {
         "image":  "s_039",
@@ -172,12 +200,20 @@
         "category":  "座り"
     },
     {
+        "image":  "s_050",
+        "category":  "2人"
+    },
+    {
         "image":  "s_051",
         "category":  "寄りかかり"
     },
     {
         "image":  "s_052",
         "category":  "座り"
+    },
+    {
+        "image":  "s_053",
+        "category":  "上半身"
     },
     {
         "image":  "s_054",
@@ -196,6 +232,14 @@
         "category":  "座り"
     },
     {
+        "image":  "s_058",
+        "category":  "上半身"
+    },
+    {
+        "image":  "s_059",
+        "category":  "自撮り"
+    },
+    {
         "image":  "s_060",
         "category":  "歩き"
     },
@@ -206,6 +250,14 @@
     {
         "image":  "s_062",
         "category":  "座り"
+    },
+    {
+        "image":  "s_063",
+        "category":  "上半身"
+    },
+    {
+        "image":  "s_064",
+        "category":  "上半身"
     },
     {
         "image":  "s_065",
@@ -244,6 +296,10 @@
         "category":  "座り"
     },
     {
+        "image":  "s_074",
+        "category":  "タバコ"
+    },
+    {
         "image":  "s_075",
         "category":  "座り"
     },
@@ -260,6 +316,10 @@
         "category":  "上半身"
     },
     {
+        "image":  "s_079",
+        "category":  "タバコ"
+    },
+    {
         "image":  "s_080",
         "category":  "座り"
     },
@@ -268,12 +328,24 @@
         "category":  "座り"
     },
     {
+        "image":  "s_082",
+        "category":  "2人"
+    },
+    {
+        "image":  "s_083",
+        "category":  "タバコ"
+    },
+    {
         "image":  "s_084",
         "category":  "座り"
     },
     {
         "image":  "s_085",
         "category":  "立ち"
+    },
+    {
+        "image":  "s_086",
+        "category":  "タバコ"
     },
     {
         "image":  "s_087",
@@ -352,8 +424,16 @@
         "category":  "自撮り"
     },
     {
+        "image":  "s_107",
+        "category":  "上半身"
+    },
+    {
         "image":  "s_108",
         "category":  "立ち"
+    },
+    {
+        "image":  "s_110",
+        "category":  "上半身"
     },
     {
         "image":  "s_111",
@@ -382,6 +462,18 @@
     {
         "image":  "s_117",
         "category":  "座り"
+    },
+    {
+        "image":  "s_118",
+        "category":  "上半身"
+    },
+    {
+        "image":  "s_119",
+        "category":  "上半身"
+    },
+    {
+        "image":  "s_120",
+        "category":  "上半身"
     },
     {
         "image":  "s_121",
