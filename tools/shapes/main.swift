@@ -27,6 +27,12 @@ let entries = (try? JSONDecoder().decode([SampleEntry].self,
     from: Data(contentsOf: folder.appendingPathComponent("sample_poses.json")))) ?? []
 let categories = Dictionary(entries.map { ($0.image, $0.category) }, uniquingKeysWith: { a, _ in a })
 
+// 料理・ドリンクの見本写真のテーブルの縁（見本写真を見て手で指定した線。画像座標・左上原点・0...1）。
+// 自動で直線を探す方法は、テーブルと関係ない線を拾い、丸いテーブルにも直線を引いてしまったのでやめた
+let tableEdges = (try? JSONDecoder().decode([String: [[[Double]]]].self,
+    from: Data(contentsOf: URL(fileURLWithPath: "tools/shapes/table_edges.json")))) ?? [:]
+print("table edges file: \(tableEdges.count) images")
+
 var shapes: [String: PoseShape] = [:]
 var failed: [String] = []
 var previews: [(name: String, image: CGImage, analysis: PhotoAnalysis, crop: CGRect)] = []
@@ -35,9 +41,12 @@ for url in files {
     let name = url.deletingPathExtension().lastPathComponent
     let isObject = PoseTemplate.objectCategories.contains(categories[name] ?? "")
     guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
-          let analysis = isObject ? PoseImporter.analyzeObject(image) : PoseImporter.analyze(image) else {
+          var analysis = isObject ? PoseImporter.analyzeObject(image) : PoseImporter.analyze(image) else {
         failed.append(name)
         continue
+    }
+    if let edges = tableEdges[name] {
+        analysis.lines = edges.map { $0.map { CGPoint(x: $0[0], y: $0[1]) } }
     }
     // 組み込みポーズは、写真モードの標準の比率（3:4）で枠を決める（アプリの PoseLibrary と同じ）
     let crop = isObject

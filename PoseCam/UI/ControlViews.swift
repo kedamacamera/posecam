@@ -486,7 +486,7 @@ struct StrengthSlider: View {
 
 /// 構図のガイドの線の種類。
 enum GridStyle: String, CaseIterable, Identifiable {
-    case off, thirds, thirdsDiagonal, halves, halvesDiagonal, center, golden
+    case off, thirds, thirdsDiagonal, halves, halvesDiagonal, center, radial, golden, phiGrid
 
     var id: String { rawValue }
 
@@ -498,48 +498,137 @@ enum GridStyle: String, CaseIterable, Identifiable {
         case .halves: return "2分割"
         case .halvesDiagonal: return "2分割＋斜線"
         case .center: return "日の丸"
-        case .golden: return "黄金比"
+        case .radial: return "放射線"
+        case .golden: return "黄金比（螺旋）"
+        case .phiGrid: return "黄金分割"
         }
+    }
+
+    /// 線の形（size の中の座標）
+    func path(in size: CGSize) -> Path {
+        let w = size.width, h = size.height
+        var path = Path()
+        func line(_ a: CGPoint, _ b: CGPoint) { path.move(to: a); path.addLine(to: b) }
+        func vertical(_ x: CGFloat) { line(CGPoint(x: x, y: 0), CGPoint(x: x, y: h)) }
+        func horizontal(_ y: CGFloat) { line(CGPoint(x: 0, y: y), CGPoint(x: w, y: y)) }
+        func diagonals() {
+            line(.zero, CGPoint(x: w, y: h))
+            line(CGPoint(x: w, y: 0), CGPoint(x: 0, y: h))
+        }
+        switch self {
+        case .off:
+            break
+        case .thirds, .thirdsDiagonal:
+            for i in 1...2 {
+                vertical(w * CGFloat(i) / 3)
+                horizontal(h * CGFloat(i) / 3)
+            }
+            if self == .thirdsDiagonal { diagonals() }
+        case .halves, .halvesDiagonal:
+            vertical(w / 2)
+            horizontal(h / 2)
+            if self == .halvesDiagonal { diagonals() }
+        case .center:
+            let r = min(w, h) * 0.16
+            path.addEllipse(in: CGRect(x: w / 2 - r, y: h / 2 - r, width: r * 2, height: r * 2))
+            line(CGPoint(x: w / 2 - r * 0.35, y: h / 2), CGPoint(x: w / 2 + r * 0.35, y: h / 2))
+            line(CGPoint(x: w / 2, y: h / 2 - r * 0.35), CGPoint(x: w / 2, y: h / 2 + r * 0.35))
+        case .radial:
+            // 中心から四隅と各辺の 1/4・1/2・3/4 へ広がる線（奥行き・動きを出す放射線構図）
+            let c = CGPoint(x: w / 2, y: h / 2)
+            for t in [0, 0.25, 0.5, 0.75, 1] as [CGFloat] {
+                line(c, CGPoint(x: w * t, y: 0))
+                line(c, CGPoint(x: w * t, y: h))
+                if t > 0 && t < 1 {
+                    line(c, CGPoint(x: 0, y: h * t))
+                    line(c, CGPoint(x: w, y: h * t))
+                }
+            }
+        case .golden:
+            Self.addGoldenSpiral(to: &path, size: size)
+        case .phiGrid:
+            let phi: CGFloat = 0.382
+            vertical(w * phi); vertical(w * (1 - phi))
+            horizontal(h * phi); horizontal(h * (1 - phi))
+        }
+        return path
+    }
+
+    /// 黄金螺旋（フィボナッチの正方形と、それをつなぐ 4 分の 1 円）。縦長の画面では縦向きにして、画面いっぱいに広げる。
+    private static func addGoldenSpiral(to path: inout Path, size: CGSize) {
+        let phi: CGFloat = (1 + sqrt(5)) / 2
+        // 横 φ・縦 1 の黄金長方形の中で作る
+        var rect = CGRect(x: 0, y: 0, width: phi, height: 1)
+        let landscape = size.width >= size.height
+        func map(_ p: CGPoint) -> CGPoint {
+            landscape ? CGPoint(x: p.x / phi * size.width, y: p.y * size.height)
+                      : CGPoint(x: p.y * size.width, y: p.x / phi * size.height)
+        }
+        func square(_ r: CGRect) {
+            let corners = [CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.maxX, y: r.minY),
+                           CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.minX, y: r.maxY)].map(map)
+            path.move(to: corners[0])
+            for c in corners.dropFirst() { path.addLine(to: c) }
+            path.closeSubpath()
+        }
+        func arc(center: CGPoint, radius: CGFloat, from a0: CGFloat, to a1: CGFloat) {
+            for i in 0...24 {
+                let a = (a0 + (a1 - a0) * CGFloat(i) / 24) * .pi / 180
+                let p = map(CGPoint(x: center.x + radius * cos(a), y: center.y + radius * sin(a)))
+                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
+        }
+        for step in 0..<10 {
+            switch step % 4 {
+            case 0:  // 左に正方形
+                let s = rect.height
+                square(CGRect(x: rect.minX, y: rect.minY, width: s, height: s))
+                arc(center: CGPoint(x: rect.minX + s, y: rect.minY + s), radius: s, from: 180, to: 270)
+                rect = CGRect(x: rect.minX + s, y: rect.minY, width: rect.width - s, height: rect.height)
+            case 1:  // 上に正方形
+                let s = rect.width
+                square(CGRect(x: rect.minX, y: rect.minY, width: s, height: s))
+                arc(center: CGPoint(x: rect.minX, y: rect.minY + s), radius: s, from: 270, to: 360)
+                rect = CGRect(x: rect.minX, y: rect.minY + s, width: rect.width, height: rect.height - s)
+            case 2:  // 右に正方形
+                let s = rect.height
+                square(CGRect(x: rect.maxX - s, y: rect.minY, width: s, height: s))
+                arc(center: CGPoint(x: rect.maxX - s, y: rect.minY), radius: s, from: 0, to: 90)
+                rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width - s, height: rect.height)
+            default:  // 下に正方形
+                let s = rect.width
+                square(CGRect(x: rect.minX, y: rect.maxY - s, width: s, height: s))
+                arc(center: CGPoint(x: rect.maxX, y: rect.maxY - s), radius: s, from: 90, to: 180)
+                rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height - s)
+            }
+        }
+    }
+
+    /// メニューに並べる小さな図（縦長の枠と線）
+    @MainActor
+    var icon: UIImage {
+        let size = CGSize(width: 21, height: 28)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            let cg = context.cgContext
+            cg.setStrokeColor(UIColor.black.cgColor)
+            cg.setLineWidth(1.4)
+            cg.stroke(CGRect(origin: .zero, size: size).insetBy(dx: 0.7, dy: 0.7))
+            cg.setLineWidth(0.9)
+            cg.addPath(path(in: size).cgPath)
+            cg.strokePath()
+        }
+        return image.withRenderingMode(.alwaysTemplate)
     }
 }
 
-/// 構図のガイドの線。3 分割・2 分割（それぞれ対角線つきも）、日の丸（中央の円と十字）、黄金比（1 : 0.618 の分割）。
+/// 構図のガイドの線。
 struct GridOverlay: View {
     var style: GridStyle = .thirds
 
     var body: some View {
         Canvas { context, size in
-            let w = size.width, h = size.height
-            var path = Path()
-            func vertical(_ x: CGFloat) { path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: h)) }
-            func horizontal(_ y: CGFloat) { path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: w, y: y)) }
-            func diagonals() {
-                path.move(to: .zero); path.addLine(to: CGPoint(x: w, y: h))
-                path.move(to: CGPoint(x: w, y: 0)); path.addLine(to: CGPoint(x: 0, y: h))
-            }
-            switch style {
-            case .off:
-                break
-            case .thirds, .thirdsDiagonal:
-                for i in 1...2 {
-                    vertical(w * CGFloat(i) / 3)
-                    horizontal(h * CGFloat(i) / 3)
-                }
-                if style == .thirdsDiagonal { diagonals() }
-            case .halves, .halvesDiagonal:
-                vertical(w / 2)
-                horizontal(h / 2)
-                if style == .halvesDiagonal { diagonals() }
-            case .center:
-                let r = min(w, h) * 0.16
-                path.addEllipse(in: CGRect(x: w / 2 - r, y: h / 2 - r, width: r * 2, height: r * 2))
-                path.move(to: CGPoint(x: w / 2 - r * 0.35, y: h / 2)); path.addLine(to: CGPoint(x: w / 2 + r * 0.35, y: h / 2))
-                path.move(to: CGPoint(x: w / 2, y: h / 2 - r * 0.35)); path.addLine(to: CGPoint(x: w / 2, y: h / 2 + r * 0.35))
-            case .golden:
-                let phi: CGFloat = 0.382
-                vertical(w * phi); vertical(w * (1 - phi))
-                horizontal(h * phi); horizontal(h * (1 - phi))
-            }
+            let path = style.path(in: size)
             context.stroke(path, with: .color(.black.opacity(0.3)), lineWidth: 2)
             context.stroke(path, with: .color(.white.opacity(0.7)), lineWidth: 0.8)
         }
@@ -547,14 +636,22 @@ struct GridOverlay: View {
     }
 }
 
-/// 上のバーのグリッドのボタン。押すと線の種類を選べる。
+/// 上のバーのグリッドのボタン。押すと線の種類を、名前の横の図と一緒に選べる。
 struct GridMenu: View {
     @Binding var style: GridStyle
 
     var body: some View {
         Menu {
-            Picker("グリッド", selection: $style) {
-                ForEach(GridStyle.allCases) { Text($0.title).tag($0) }
+            ForEach(GridStyle.allCases) { item in
+                Button {
+                    style = item
+                } label: {
+                    Label {
+                        Text(item == style ? "\(item.title) ✓" : item.title)
+                    } icon: {
+                        Image(uiImage: item.icon)
+                    }
+                }
             }
         } label: {
             LabeledIcon(systemImage: "squareshape.split.3x3",

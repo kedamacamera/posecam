@@ -93,6 +93,7 @@ struct PhotoEditorView: View {
                 }
             }
             .padding(.bottom)
+            .background(Color.black.ignoresSafeArea())
             .navigationTitle("編集")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -106,6 +107,8 @@ struct PhotoEditorView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // 撮影画面の上に開いたとき、下の画面が透けて重なって見えないようにする
+        .presentationBackground(Color.black)
         .task { load() }
         .onChange(of: vertical) { schedulePreview() }
         .onChange(of: horizontal) { schedulePreview() }
@@ -236,7 +239,10 @@ struct Perspective {
                 ]).cropped(to: target)
             }
         }
-        let warped = image.clampedToExtent().applyingFilter("CIPerspectiveTransform", parameters: [
+        // 端の色を少し外へ延ばしてから変形する（切り抜く範囲の縁がわずかに欠けないように）。
+        // clampedToExtent のままの無限の大きさの画像を変形すると、大きさが計算できず画像が作れなかった
+        let padded = image.clampedToExtent().cropped(to: image.extent.insetBy(dx: -8, dy: -8))
+        let warped = padded.applyingFilter("CIPerspectiveTransform", parameters: [
             "inputBottomLeft": CIVector(cgPoint: corners[0]),
             "inputBottomRight": CIVector(cgPoint: corners[1]),
             "inputTopLeft": CIVector(cgPoint: corners[2]),

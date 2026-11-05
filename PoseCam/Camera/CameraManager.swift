@@ -406,6 +406,7 @@ final class CameraManager: NSObject, ObservableObject {
             self.updateConnections(position: newPosition)
             self.refreshLenses(keepingDisplayZoom: nil)
             self.setTorch(torch)
+            if self.audioInput != nil { self.selectMicrophone(for: newPosition) }
         }
         videoQueue.async { self.smoothedLegs = nil }
     }
@@ -530,6 +531,29 @@ final class CameraManager: NSObject, ObservableObject {
         audioInput = input
         if session.canAddOutput(audioOutput) {
             session.addOutput(audioOutput)
+        }
+        selectMicrophone(for: videoInput?.device.position ?? .back)
+    }
+
+    /// 内蔵マイクのうち、撮っているカメラと同じ側のものを固定で使う。
+    /// iOS に任せると録画ごとに使うマイク（前・後ろ・下）が変わることがあり、同じ場所で撮っても
+    /// 動画ごとに声の大きさが大きく違っていた。sessionQueue から呼ぶ。
+    private func selectMicrophone(for position: AVCaptureDevice.Position) {
+        let audio = AVAudioSession.sharedInstance()
+        guard let mic = audio.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
+        let wanted: AVAudioSession.Orientation = position == .front ? .front : .back
+        do {
+            try audio.setPreferredInput(mic)
+            if let source = mic.dataSources?.first(where: { $0.orientation == wanted }) {
+                // 指向性があれば前方（カメラの向き）を、なければ全方向を使う
+                if let patterns = source.supportedPolarPatterns {
+                    let pattern: AVAudioSession.PolarPattern = patterns.contains(.cardioid) ? .cardioid : .omnidirectional
+                    if patterns.contains(pattern) { try source.setPreferredPolarPattern(pattern) }
+                }
+                try mic.setPreferredDataSource(source)
+            }
+        } catch {
+            Diagnostics.log("マイク: 選べず \(error.localizedDescription)")
         }
     }
 
@@ -916,9 +940,11 @@ final class CameraManager: NSObject, ObservableObject {
             : AVCapturePhotoSettings()
         if options.flash, photoOutput.supportedFlashModes.contains(.on) {
             photoSettings.flashMode = .on
-            if options.direct, let ambient = latestSourceBox.value {
+            if options.direct, let ambient = latestSourceBox.value.flatMap(ownedCopy) {
                 // 発光する直前のコマ（フラッシュなしの明るさ）を覚えておき、写真と比べて
-                // 「フラッシュの光」と「周りの光」を分ける
+                // 「フラッシュの光」と「周りの光」を分ける。
+                // カメラのコマの入れ物はすぐ次のコマに使い回されるので、縮小した自前の画像に写しておく
+                // （写しておかないと、写真の加工のときには中身が変わっていて書き出しに失敗していた）
                 var frames = ambientFrames.value
                 frames[photoSettings.uniqueID] = (ambient, latestExifBox.value)
                 ambientFrames.value = frames
@@ -934,6 +960,16 @@ final class CameraManager: NSObject, ObservableObject {
         if signalsEnd { endSignalPhotoID.value = photoSettings.uniqueID }
         photoOutput.capturePhoto(with: photoSettings, delegate: self)
     }
+    /// カメラのコマを 1/4 に縮めて自前の画像に写す（明るさを比べるだけなので小さくてよい）
+    private func ownedCopy(_ frame: CIImage) -> CIImage? {
+        let e = frame.extent
+        let small = frame.transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
+            .transformed(by: CGAffineTransform(scaleX: 0.25, y: 0.25))
+        guard let cgImage = renderer.ciContext.createCGImage(small, from: small.extent) else { return nil }
+        // 元の大きさの座標に戻しておく（写真の加工では元のコマと同じように切り抜く）
+        return CIImage(cgImage: cgImage).transformed(by: CGAffineTransform(scaleX: 4, y: 4))
+    }
+
     private func photoFinished() {
         pendingPhotos = max(0, pendingPhotos - 1)
         isCapturing = pendingPhotos > 0
@@ -987,8 +1023,15 @@ final class CameraManager: NSObject, ObservableObject {
                 Diagnostics.log("ダイレクトフラッシュ: 露出の情報がないので通常のフラッシュで保存")
             }
         }
-        return processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
-                            ambient: flash)
+        if let result = processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
+                                     ambient: flash) {
+            return result
+        }
+        guard flash != nil else { return nil }
+        // ダイレクトフラッシュの加工で書き出せなかったときも、写真は残す（通常のフラッシュの写真として保存する）
+        Diagnostics.log("ダイレクトフラッシュ: 書き出しに失敗したので通常のフラッシュで保存")
+        report("ダイレクトフラッシュの加工に失敗したので、通常のフラッシュで保存しました")
+        return processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil)
     }
 
     /// upscaleTo: 無音撮影で、通常の写真の大きさ（縦向き）。小さければ引き伸ばす。

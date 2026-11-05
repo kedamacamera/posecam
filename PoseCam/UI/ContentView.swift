@@ -134,8 +134,11 @@ struct ContentView: View {
         .onChange(of: editPickerItem) {
             guard let item = editPickerItem else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) { editing = EditorInput(data: data) }
+                let data = try? await item.loadTransferable(type: Data.self)
                 editPickerItem = nil
+                // 写真を選ぶ画面が閉じきってから編集の画面を開く（同時に開くと画面が重なって崩れていた）
+                try? await Task.sleep(for: .milliseconds(450))
+                if let data { editing = EditorInput(data: data) }
             }
         }
         .fullScreenCover(item: $editing) { input in
@@ -214,10 +217,7 @@ struct ContentView: View {
             .opacity(camera.mode == .photo ? 1 : 0.4)
             Spacer()
             Menu {
-                Toggle("ミュート", isOn: $camera.muteShutter)
-                if !camera.canMuteShutter {
-                    Text("画質が劣化します")
-                }
+                Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が劣化します）", isOn: $camera.muteShutter)
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
                 Toggle("水平器", isOn: $showLevel)
                 Button("写真を編集（傾き補正・伸縮・肌）") { showEditPicker = true }

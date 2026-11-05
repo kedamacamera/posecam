@@ -20,6 +20,10 @@ enum Sounds {
             players[kind]?.prepareToPlay()
         }
         guard let player = players[kind] else { return }
+        // 端末の音量で大きさが変わりすぎないよう、音量が低いときは音そのものを大きくする
+        // （音量 40% 以上ならほぼ同じ大きさに聞こえる。それより下げると、さすがに小さくなる）
+        let output = AVAudioSession.sharedInstance().outputVolume
+        player.volume = min(1, 0.4 / max(output, 0.05))
         player.currentTime = 0
         player.play()
     }

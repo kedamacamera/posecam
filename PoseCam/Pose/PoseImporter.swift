@@ -113,10 +113,7 @@ enum PoseImporter {
                                                              y: -source.extent.minY))
         let outlines = PoseDetector.objectOutlines(ciImage: image)
         guard !outlines.isEmpty else { return nil }
-        var analysis = PhotoAnalysis(size: image.extent.size, joints: [:], outlines: outlines)
-        // テーブルの縁も型に描く（器の位置だけでなく、テーブルの傾き・高さも合わせられる）
-        analysis.lines = TableEdges.find(in: image, excluding: outlines)
-        return analysis
+        return PhotoAnalysis(size: image.extent.size, joints: [:], outlines: outlines)
     }
 
     /// 料理・ドリンクは写真の構図そのものが手本なので、写真の中央を画面の比率でできるだけ大きく切り抜く。

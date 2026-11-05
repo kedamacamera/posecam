@@ -7,7 +7,8 @@ import SwiftUI
 /// 写真をタップすると大きく表示し、「編集」で傾き補正・伸縮・肌の補正ができる。
 struct AlbumView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var assets: [PHAsset] = []
+    /// 端末の写真・動画（新しい順）。件数が多くても、表示するときに 1 件ずつ取り出す
+    @State private var assets: PHFetchResult<PHAsset>?
     @State private var status: PHAuthorizationStatus = .notDetermined
     @State private var viewing: AlbumPage?
     @State private var editing: EditorInput?
@@ -27,15 +28,17 @@ struct AlbumView: View {
                         }
                     }
                     .padding()
-                } else if assets.isEmpty {
+                } else if (assets?.count ?? 0) == 0 {
                     Text(status == .notDetermined ? "読み込み中…" : "写真がありません")
                         .foregroundStyle(.secondary)
                 } else {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(assets.indices, id: \.self) { index in
-                                AssetThumbnail(asset: assets[index])
-                                    .onTapGesture { viewing = AlbumPage(index: index) }
+                            ForEach(0..<(assets?.count ?? 0), id: \.self) { index in
+                                if let asset = assets?.object(at: index) {
+                                    AssetThumbnail(asset: asset)
+                                        .onTapGesture { viewing = AlbumPage(index: index) }
+                                }
                             }
                         }
                     }
@@ -67,7 +70,11 @@ struct AlbumView: View {
         .fullScreenCover(item: $viewing) { page in
             AssetPager(assets: assets, start: page.index) { data in
                 viewing = nil
-                editing = EditorInput(data: data)
+                // 写真の画面が閉じきってから編集の画面を開く
+                Task {
+                    try? await Task.sleep(for: .milliseconds(450))
+                    editing = EditorInput(data: data)
+                }
             }
         }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
@@ -79,17 +86,12 @@ struct AlbumView: View {
     private func load() async {
         status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else { return }
-        // 新しい順に、写真と動画を最大 2000 件
+        // 新しい順に、写真と動画をすべて（以前は 2000 件までで、古い写真が出なかった）
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         options.predicate = NSPredicate(format: "mediaType == %d || mediaType == %d",
                                         PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
-        options.fetchLimit = 2000
-        let result = PHAsset.fetchAssets(with: options)
-        var list: [PHAsset] = []
-        list.reserveCapacity(result.count)
-        result.enumerateObjects { asset, _, _ in list.append(asset) }
-        assets = list
+        assets = PHAsset.fetchAssets(with: options)
     }
 }
 
@@ -117,6 +119,9 @@ struct AssetThumbnail: View {
                 }
             }
             .clipped()
+            // 画像はマスより大きく描いて切り抜いているので、タップの範囲もマスに合わせる
+            // （合わせないと、マスの下の方をタップすると下の写真が選ばれていた）
+            .contentShape(Rectangle())
             .overlay(alignment: .bottomLeading) {
                 if asset.mediaType == .video {
                     Image(systemName: "play.fill")
@@ -139,8 +144,9 @@ struct AssetThumbnail: View {
 }
 
 /// 写真・動画を 1 枚ずつ左右にめくって見る。写真は「編集」で編集画面へ。
+/// 何万件もあるとめくる画面が重くなるので、開いた写真の前後 100 件ずつをめくれるようにする。
 struct AssetPager: View {
-    let assets: [PHAsset]
+    let assets: PHFetchResult<PHAsset>?
     let start: Int
     let onEdit: (Data) -> Void
 
@@ -148,12 +154,24 @@ struct AssetPager: View {
     @State private var index = 0
     @State private var isLoading = false
 
+    private var range: Range<Int> {
+        let count = assets?.count ?? 0
+        return max(0, start - 100)..<min(count, start + 101)
+    }
+
+    private func asset(_ i: Int) -> PHAsset? {
+        guard let assets, i >= 0, i < assets.count else { return nil }
+        return assets.object(at: i)
+    }
+
     var body: some View {
         NavigationStack {
             TabView(selection: $index) {
-                ForEach(assets.indices, id: \.self) { i in
-                    AssetPage(asset: assets[i], isCurrent: i == index)
-                        .tag(i)
+                ForEach(range, id: \.self) { i in
+                    if let item = asset(i) {
+                        AssetPage(asset: item, isCurrent: i == index)
+                            .tag(i)
+                    }
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -163,7 +181,7 @@ struct AssetPager: View {
                     Button("閉じる") { dismiss() }
                 }
                 ToolbarItem(placement: .principal) {
-                    if let date = assets[safe: index]?.creationDate {
+                    if let date = asset(index)?.creationDate {
                         Text(date.formatted(date: .abbreviated, time: .shortened)).font(.footnote)
                     }
                 }
@@ -174,7 +192,7 @@ struct AssetPager: View {
                         Label("写真アプリ", systemImage: "photo.on.rectangle")
                     }
                     Spacer()
-                    if assets[safe: index]?.mediaType == .image {
+                    if asset(index)?.mediaType == .image {
                         Button(isLoading ? "読み込み中…" : "編集") { edit() }
                             .disabled(isLoading)
                             .bold()
@@ -187,12 +205,12 @@ struct AssetPager: View {
     }
 
     private func edit() {
-        guard let asset = assets[safe: index] else { return }
+        guard let item = asset(index) else { return }
         isLoading = true
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.version = .current
-        PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
+        PHImageManager.default().requestImageDataAndOrientation(for: item, options: options) { data, _, _, _ in
             DispatchQueue.main.async {
                 isLoading = false
                 if let data { onEdit(data) }
@@ -227,8 +245,17 @@ struct AssetPage: View {
             if asset.mediaType == .video {
                 let options = PHVideoRequestOptions()
                 options.isNetworkAccessAllowed = true
-                PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, _ in
-                    DispatchQueue.main.async { player = item.map { AVPlayer(playerItem: $0) } }
+                options.deliveryMode = .automatic
+                PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
+                    DispatchQueue.main.async {
+                        guard let avAsset else {
+                            Diagnostics.log("アルバム: 動画を読み込めず \(String(describing: info?[PHImageErrorKey]))")
+                            return
+                        }
+                        let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: avAsset))
+                        player = newPlayer
+                        if isCurrent { newPlayer.play() }
+                    }
                 }
             } else {
                 let options = PHImageRequestOptions()
@@ -242,7 +269,10 @@ struct AssetPage: View {
                 }
             }
         }
-        .onChange(of: isCurrent) { if !isCurrent { player?.pause() } }
+        .onChange(of: isCurrent) {
+            if isCurrent { player?.play() } else { player?.pause() }
+        }
+        .onDisappear { player?.pause() }
     }
 }
 

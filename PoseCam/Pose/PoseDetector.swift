@@ -147,7 +147,18 @@ final class PoseDetector {
         }
         shape.contour = points(marks.faceContour)
         shape.mouth = points(marks.outerLips)
-        shape.nose = center(marks.nose)
+        // 正面に近いときは鼻の中心。横顔では、鼻の点のうち顔の向いている側にいちばん出ている点（鼻先）
+        // （中心のままだと頬の上に鼻が描かれていた）
+        let nosePoints = points(marks.nose) + points(marks.noseCrest)
+        if abs(yaw) >= 35, let noseCenter = center(marks.nose) {
+            // 横顔の輪郭の点のうち、鼻の高さにあるものも候補にする（鼻の点は鼻先より内側に出やすい）
+            let band = box.height * 0.12
+            let candidates = nosePoints + shape.contour.filter { abs($0.y - noseCenter.y) < band }
+            let tip = yaw > 0 ? candidates.max { $0.x < $1.x } : candidates.min { $0.x < $1.x }
+            shape.nose = tip.map { CGPoint(x: $0.x, y: noseCenter.y) }
+        } else {
+            shape.nose = center(marks.nose)
+        }
         // 横を向くと奥の目は見えないので、正面に近いとき（左右 35 度以内）だけ両目を使う
         if abs(yaw) < 35, let a = center(marks.leftEye), let b = center(marks.rightEye) {
             shape.leftEye = a.x <= b.x ? a : b
