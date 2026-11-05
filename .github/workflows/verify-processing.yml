@@ -16,6 +16,7 @@ jobs:
           mkdir -p bin
           swiftc -O -target x86_64-apple-macos14 -o bin/verify \
             PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift \
+            PoseCam/Pose/PoseImporter.swift PoseCam/Pose/PoseTemplate.swift \
             PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
             PoseCam/Processing/ProcessingSettings.swift PoseCam/Util/Locked.swift PoseCam/Processing/DirectFlash.swift PoseCam/Camera/PhotoMetadata.swift tools/verify/main.swift
           # アプリと同じ美肌のカーネルと肌のモデルを、実行ファイルの隣に置く（Bundle.main から読み込まれる）
