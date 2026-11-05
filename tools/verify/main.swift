@@ -136,6 +136,25 @@ for (name, image) in inputs {
         let face = right.composited(over: left)
         let faceScale = 1600 / (side * 2)
         savePNG(face.transformed(by: CGAffineTransform(scaleX: faceScale, y: faceScale)), "face_\(name).png")
+
+        // 赤い点を描いた画像では、項目を 1 つずつかけた結果も並べる（どの処理が何を変えたか確かめる）
+        if name.hasSuffix("_redspots") {
+            let steps: [(String, WritableKeyPath<ProcessingSettings, Double>)] = [
+                ("smoothing", \.smoothing), ("brightening", \.brightening), ("redness", \.redness),
+                ("blemish", \.blemish), ("wrinkle", \.wrinkle),
+            ]
+            var strip = left
+            for (i, step) in steps.enumerated() {
+                var single = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
+                single[keyPath: step.1] = 0.8
+                let out = processor.process(image, settings: single, hipY: nil, masks: masks)
+                strip = out.cropped(to: rect).transformed(by: toOrigin.concatenating(
+                    CGAffineTransform(translationX: side * CGFloat(i + 1), y: 0))).composited(over: strip)
+            }
+            let stripScale = 2400 / (side * 6)
+            savePNG(strip.transformed(by: CGAffineTransform(scaleX: stripScale, y: stripScale)), "steps_\(name).png")
+            report.append("steps_\(name): original, " + steps.map(\.0).joined(separator: ", "))
+        }
     }
 }
 
