@@ -47,15 +47,50 @@ func savePNG(_ image: CIImage, _ name: String) {
                                         colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
 }
 
+/// 顔に赤い点（ニキビ）と小鼻の横の赤みを描き足した画像を作る（赤み消しの確認用）。
+/// 実在の人の写真を使わずに確認できるよう、AI の見本写真に人工的に描く。
+func addRedSpots(_ image: CIImage, pose: [Joint: CGPoint]) -> CIImage {
+    guard let nose = pose[.nose], let ls = pose[.leftShoulder], let rs = pose[.rightShoulder] else { return image }
+    let w = image.extent.width, h = image.extent.height
+    let unit = abs(ls.x - rs.x) * w / 4  // だいたい顔の幅の半分
+    let center = CGPoint(x: nose.x * w, y: (1 - nose.y) * h)
+    // (横, 縦, 半径) を顔の大きさの単位で
+    let spots: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
+        (-0.55, -0.15, 0.06, 0.55), (0.6, -0.25, 0.05, 0.55), (0.45, 0.05, 0.04, 0.5),
+        (-0.2, 0.75, 0.05, 0.5), (0.1, -0.7, 0.05, 0.55),
+        (-0.22, -0.02, 0.10, 0.35), (0.22, -0.02, 0.10, 0.35),  // 小鼻の横の赤み
+    ]
+    var result = image
+    for (dx, dy, r, alpha) in spots {
+        let gradient = CIFilter(name: "CIRadialGradient", parameters: [
+            "inputCenter": CIVector(x: center.x + dx * unit, y: center.y + dy * unit),
+            "inputRadius0": r * unit * 0.3,
+            "inputRadius1": r * unit,
+            "inputColor0": CIColor(red: 0.85, green: 0.15, blue: 0.2, alpha: alpha),
+            "inputColor1": CIColor(red: 0.85, green: 0.15, blue: 0.2, alpha: 0),
+        ])!.outputImage!.cropped(to: image.extent)
+        result = gradient.composited(over: result)
+    }
+    return result
+}
+
 // MARK: - 美肌
 
 let detector = PoseDetector()
 let processor = FrameProcessor()
-report.append("skin model loaded: \(PoseDetector.hasSkinModel), bilateral kernel loaded: \(FrameProcessor.bilateralKernel != nil), dark spot kernel loaded: \(FrameProcessor.darkSpotKernel != nil)")
+report.append("skin model loaded: \(PoseDetector.hasSkinModel), bilateral kernel loaded: \(FrameProcessor.bilateralKernel != nil), dark spot kernel loaded: \(FrameProcessor.darkSpotKernel != nil), redness kernel loaded: \(FrameProcessor.rednessKernel != nil)")
 
-for path in CommandLine.arguments.dropFirst() {
-    let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-    let image = load(path)
+var inputs: [(String, CIImage)] = CommandLine.arguments.dropFirst().map {
+    (URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent, load($0))
+}
+// 2 枚目以降（上半身の写真）に赤い点を描き足したものも確かめる
+for (name, image) in inputs.dropFirst() {
+    if let pose = detector.detect(ciImage: image) {
+        inputs.append((name + "_redspots", addRedSpots(image, pose: pose)))
+    }
+}
+
+for (name, image) in inputs {
     let analysis = detector.analyze(ciImage: image, wantsMasks: true)
     guard let masks = analysis.masks else {
         report.append("\(name): masks not found")
@@ -76,14 +111,18 @@ for path in CommandLine.arguments.dropFirst() {
                          name, before, after, after - before, masks.features == nil ? "none" : "yes"))
 
     let width = image.extent.width
-    // 実際に美肌をかけた範囲（肌 × 顔のパーツの除外 × 線の保護）
-    let maskView = processor.beautyMask(image, masks: masks).applyingFilter("CIColorMatrix", parameters: [
-        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
-    ]).cropped(to: image.extent)
+    // 実際に美肌をかけた範囲（肌 × 顔のパーツの除外）と、赤み消しの範囲
+    func opaque(_ mask: CIImage) -> CIImage {
+        mask.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+            .cropped(to: image.extent)
+    }
+    let maskView = opaque(processor.beautyMask(image, masks: masks))
+    let redView = opaque(processor.rednessMask(image, masks: masks))
     let sheet = output.transformed(by: CGAffineTransform(translationX: width, y: 0))
         .composited(over: maskView.transformed(by: CGAffineTransform(translationX: width * 2, y: 0)))
+        .composited(over: redView.transformed(by: CGAffineTransform(translationX: width * 3, y: 0)))
         .composited(over: image)
-    let scale = 1600 / (width * 3)
+    let scale = 2000 / (width * 4)
     savePNG(sheet.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), "beauty_\(name).png")
 
     // 顔のまわりを拡大して、加工前（左）と加工後（右）を並べる
@@ -98,6 +137,34 @@ for path in CommandLine.arguments.dropFirst() {
         let faceScale = 1600 / (side * 2)
         savePNG(face.transformed(by: CGAffineTransform(scaleX: faceScale, y: faceScale)), "face_\(name).png")
     }
+}
+
+// MARK: - フィルター
+
+// 見本写真ごとに、全部のフィルターを横に並べる
+do {
+    var rows: [CIImage] = []
+    for (_, image) in inputs.prefix(2) {
+        let cellHeight: CGFloat = 400
+        let scale = cellHeight / image.extent.height
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let cellWidth = small.extent.width
+        var row = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0,
+                                                            width: cellWidth * CGFloat(PhotoFilter.allCases.count),
+                                                            height: cellHeight))
+        for (i, filter) in PhotoFilter.allCases.enumerated() {
+            let cell = filter.apply(to: small).transformed(by: CGAffineTransform(translationX: cellWidth * CGFloat(i), y: 0))
+            row = cell.composited(over: row)
+        }
+        rows.append(row)
+    }
+    var sheet = CIImage.empty()
+    for (i, row) in rows.enumerated() {
+        sheet = row.transformed(by: CGAffineTransform(translationX: 0, y: CGFloat(rows.count - 1 - i) * 400))
+            .composited(over: sheet)
+    }
+    savePNG(sheet.cropped(to: sheet.extent), "filters.png")
+    report.append("filters: " + PhotoFilter.allCases.map(\.displayName).joined(separator: ", "))
 }
 
 // MARK: - 一致度
@@ -124,10 +191,11 @@ if let first = CommandLine.arguments.dropFirst().first,
         ("shifted 25% right", shifted(0.25, 0)),
         ("80% size", shifted(0, 0, scale: 0.8)),
         ("left forearm rotated 60deg", rotatedArm),
+        ("upper body only (no legs)", iso.filter { ![.leftKnee, .rightKnee, .leftAnkle, .rightAnkle, .leftHip, .rightHip].contains($0.key) }),
     ]
     report.append("match test (joints: \(pose.count)):")
     for (label, detected) in cases {
-        let score = PoseMatcher.score(template: iso, detected: detected).map { String(format: "%.1f", $0) } ?? "nil"
+        let score = PoseMatcher.score(template: iso, detected: detected, aspect: aspect).map { String(format: "%.1f", $0) } ?? "nil"
         report.append("  \(label): \(score)")
     }
 }

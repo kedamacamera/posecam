@@ -53,5 +53,43 @@ float4 darkSpotRemoval(sampler src, sampler local, sampler darkest, sampler mean
     return float4(mix(color.rgb, average.rgb, weight), color.a);
 }
 
+/// 赤み消し。周りの肌より赤い所（ニキビ・小鼻の際・眉の際の赤み）だけを、周りの肌の色になじませる。
+/// 赤い色を一律に薄くする（彩度を下げる）のではないので、顔全体の血色は変わらない。
+/// skinSum: 肌だけを残した画像をぼかしたもの、skinWeight: 肌のマスクを同じだけぼかしたもの。
+/// skinSum / skinWeight が「周りの肌だけの平均の色」になる（髪・背景・唇の色は混ざらない）。
+/// 赤い所は少し暗いことが多いので、周りより暗いぶんも一緒に戻す。
+float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float strength, destination dest) {
+    float2 coord = dest.coord();
+    float4 color = src.sample(src.transform(coord));
+    float4 sum = skinSum.sample(skinSum.transform(coord));
+    float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
+    if (weightSum < 0.02) {
+        return color;
+    }
+    float3 average = sum.rgb / weightSum;
+    float3 lumaWeights = float3(0.299, 0.587, 0.114);
+
+    // 明るさと色み（赤み = R - Y、青み = B - Y）に分ける
+    float y = dot(color.rgb, lumaWeights);
+    float cr = color.r - y;
+    float cb = color.b - y;
+    float averageY = dot(average, lumaWeights);
+    float averageCr = average.r - averageY;
+    float averageCb = average.b - averageY;
+
+    // 周りより赤い（赤みが多く、青みが少ない）ほど強く効かせる。周りと同じか赤くない所は変えない
+    float excess = (cr - averageCr) - 0.5 * (cb - averageCb);
+    float weight = smoothstep(0.004, 0.04, excess) * strength;
+
+    float newCr = mix(cr, averageCr, weight);
+    float newCb = mix(cb, averageCb, weight);
+    float newY = y + max(0.0, averageY - y) * weight * 0.6;
+
+    float r = newY + newCr;
+    float b = newY + newCb;
+    float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
+    return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
+}
+
 }
 }

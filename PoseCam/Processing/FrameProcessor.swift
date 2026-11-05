@@ -31,7 +31,8 @@ final class FrameProcessor {
     private func beautify(_ image: CIImage, settings: ProcessingSettings, masks: BeautyMasks) -> CIImage {
         let extent = image.extent
         let longSide = max(extent.width, extent.height)
-        let mask = beautyMask(image, masks: masks)
+        let base = skinBase(image, masks: masks, longSide: longSide)
+        let mask = applyFeatures(base, masks.features)
         var result = image
 
         // シミ（暗い点）は広めの範囲、シワ（暗い細い線）は狭めの範囲の平均と比べて、暗い所だけ埋める
@@ -45,22 +46,18 @@ final class FrameProcessor {
                                           low: 0.005, high: 0.035, cap: 0.09)
             result = blend(removed, over: result, mask: mask, amount: 1)
         }
+        if settings.redness > 0.01 {
+            // 周りの肌より赤い所だけを、周りの肌の色になじませる。眉の際・小鼻の際も対象にする（目と唇だけ外す）
+            let redMask = applyFeatures(base, masks.redFeatures)
+            let calmed = removeRedness(result, mask: redMask, strength: settings.redness, longSide: longSide)
+            result = blend(calmed, over: result, mask: redMask, amount: 1)
+        }
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。
-            // 完全には置き換えず、元の質感を少し残す
+            // 強くしたときはほぼ置き換え、弱いときは元の質感を残す
             let smooth = bilateralSmooth(result, amount: settings.smoothing, longSide: longSide)
-            result = blend(smooth, over: result, mask: mask, amount: 0.85 * settings.smoothing)
-        }
-        if settings.redness > 0.01 {
-            // 赤を緑に少し寄せて、赤みの強い所ほど周りの肌色に近づける（全体の明るさはほぼ変えない）
-            let k = CGFloat(0.3 * settings.redness)
-            let calmed = result.applyingFilter("CIColorMatrix", parameters: [
-                "inputRVector": CIVector(x: 1 - k, y: k, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: k * 0.3, z: 1 - k * 0.3, w: 0),
-                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
-            ])
-            result = blend(calmed, over: result, mask: mask, amount: 1)
+            let a = settings.smoothing
+            result = blend(smooth, over: result, mask: mask, amount: min(1, 0.15 + 0.85 * a))
         }
         if settings.brightening > 0.01 {
             let brightened = result
@@ -77,11 +74,40 @@ final class FrameProcessor {
 
     /// 美肌をかける範囲（白）。肌の領域のうち肌の色の所だけで、目・眉・唇を除いたもの。
     /// メガネのフチ・髪の毛・眉は肌の色ではないので、肌の色の判定で外れる。
-    /// （以前ははっきりした線を別に検出して外していたが、細い毛筋で点線のむらが出たのでやめた）
     /// 確認用のツール（tools/verify）からも使う。
     func beautyMask(_ image: CIImage, masks: BeautyMasks) -> CIImage {
         let longSide = max(image.extent.width, image.extent.height)
-        return skinMask(image, masks: masks, blurRadius: longSide * 0.003)
+        return applyFeatures(skinBase(image, masks: masks, longSide: longSide), masks.features)
+    }
+
+    /// 赤み消しをかける範囲（白）。確認用のツールから使う。
+    func rednessMask(_ image: CIImage, masks: BeautyMasks) -> CIImage {
+        let longSide = max(image.extent.width, image.extent.height)
+        return applyFeatures(skinBase(image, masks: masks, longSide: longSide), masks.redFeatures)
+    }
+
+    static let rednessKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "rednessRemoval", fromMetalLibraryData: data)
+    }()
+
+    /// 周りの肌より赤い所を、周りの肌だけの平均の色に近づける（BeautyKernels.ci.metal の rednessRemoval）。
+    private func removeRedness(_ image: CIImage, mask: CIImage, strength: Double, longSide: CGFloat) -> CIImage {
+        guard let kernel = Self.rednessKernel else { return image }
+        let extent = image.extent
+        let black = CIImage(color: .black).cropped(to: extent)
+        // ニキビ数個ぶんより広い範囲の「肌だけ」の平均を取る
+        let sigma = longSide * 0.012
+        let skinOnly = image.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: black,
+            kCIInputMaskImageKey: mask,
+        ])
+        let sum = skinOnly.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        let weight = mask.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
+                                  arguments: [image, sum, weight, Float(strength)])
+        return output?.cropped(to: extent) ?? image
     }
 
     /// 自作のバイラテラルフィルタ（BeautyKernels.ci.metal）。アプリに入っていなければ nil
@@ -116,9 +142,10 @@ final class FrameProcessor {
     /// 色が近い画素どうしだけを平均して、肌をなめらかにする（境目は混ざらない・明るさは変わらない）。
     private func bilateralSmooth(_ image: CIImage, amount: Double, longSide: CGFloat) -> CIImage {
         guard let kernel = Self.bilateralKernel else { return edgePreservingSmooth(image, amount: amount) }
-        // 長辺 1920 なら 半径 5〜11 ピクセル。毛穴やむらの大きさに絞り、鼻などの陰影（もっと大きい明暗）は残す
-        let radius = longSide * CGFloat(0.0025 + 0.003 * amount)
-        let sigmaColor = 0.04 + 0.04 * amount
+        // 長辺 1280 なら 半径 4〜13 ピクセル。強くするほど広い範囲・大きい色の差までならす。
+        // 鼻などの陰影（もっと大きい明暗）は色の差が大きいので残る
+        let radius = longSide * CGFloat(0.003 + 0.007 * amount)
+        let sigmaColor = 0.04 + 0.07 * amount
         let output = kernel.apply(
             extent: image.extent,
             roiCallback: { _, rect in rect.insetBy(dx: -radius - 1, dy: -radius - 1) },
@@ -146,9 +173,11 @@ final class FrameProcessor {
         .cropped(to: extent)
     }
 
-    /// 肌の部分だけが白で、目・眉・唇は黒になるマスク。
-    /// 肌を塗り分けるモデルがあればその結果を、なければ「人物の領域 × 肌の色」を使う。
-    private func skinMask(_ image: CIImage, masks: BeautyMasks, blurRadius: CGFloat) -> CIImage {
+    /// 肌の部分だけが白のマスク（顔のパーツはまだ除いていない）。
+    /// 肌を塗り分けるモデルがあればその結果を、なければ「人物の領域」を使い、肌の色の所だけに絞る。
+    /// 境目は大きめにぼかし、加工した所としていない所の境目が見えないようにする。
+    private func skinBase(_ image: CIImage, masks: BeautyMasks, longSide: CGFloat) -> CIImage {
+        let blurRadius = longSide * 0.004
         let black = CIImage(color: .black).cropped(to: image.extent)
         let skinColor = image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
             "inputCubeDimension": Self.cubeSize,
@@ -158,21 +187,20 @@ final class FrameProcessor {
         // 肌のモデル（なければ人物の領域）は境目をぼかしてなじませる
         let region = (masks.skin ?? masks.person ?? black)
             .clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
-        // そのうえで、肌の色の所だけにくっきり絞る。モデルはメガネのフチなども「顔」に含めるが、
-        // 黒いフチ・眉・髪は肌の色ではないので外れる（ぼかした後に絞るので、はみ出さない）
-        var mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
+        // そのうえで、肌の色の所だけに絞る。モデルはメガネのフチなども「顔」に含めるが、
+        // 黒いフチ・眉・髪は肌の色ではないので外れる
+        let mask = skinColor.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: black,
             kCIInputMaskImageKey: region,
         ])
-        // 肌の色の判定は画素ごとにばらつくので、ごく軽くぼかして境目が点々にならないようにする
-        mask = mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius * 0.4).cropped(to: image.extent)
-        if let features = masks.features {
-            mask = mask.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: black,
-                kCIInputMaskImageKey: features,
-            ])
-        }
-        return mask
+        // 肌の色の判定は画素ごとにばらつくので、ぼかして境目をなだらかにする
+        return mask.clampedToExtent().applyingGaussianBlur(sigma: blurRadius).cropped(to: image.extent)
+    }
+
+    /// 顔のパーツのマスク（黒が外す所）を掛ける。
+    private func applyFeatures(_ base: CIImage, _ features: CIImage?) -> CIImage {
+        guard let features else { return base }
+        return base.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: features])
     }
 
     private func blend(_ foreground: CIImage, over background: CIImage, mask: CIImage, amount: Double) -> CIImage {
@@ -189,7 +217,8 @@ final class FrameProcessor {
         ])
     }
 
-    /// YCbCr の肌色範囲（Cb 77〜127, Cr 133〜173）を 1、外側をなだらかに 0 にするカラーキューブ。
+    /// YCbCr の肌色範囲（Cb 78〜126, Cr 134〜182）を 1、外側をなだらかに 0 にするカラーキューブ。
+    /// 赤いニキビ（Cr が高い）も肌に含め、赤み消し・美肌の範囲から漏れて目立たないようにする。
     private static func makeSkinCube(size n: Int) -> Data {
         var values = [Float](repeating: 0, count: n * n * n * 4)
         var index = 0
@@ -204,7 +233,7 @@ final class FrameProcessor {
                     let cb: Float = 128 - 0.168736 * red - 0.331264 * green + 0.5 * blue
                     let cr: Float = 128 + 0.5 * red - 0.418688 * green - 0.081312 * blue
                     // 範囲の外はなだらかに 0 にする（背景などは肌のモデルの範囲で先に除いている）
-                    let v = soft(cb, 80, 125, 10) * soft(cr, 136, 170, 10) * soft(luma, 40, 250, 20)
+                    let v = soft(cb, 78, 126, 12) * soft(cr, 134, 182, 16) * soft(luma, 40, 250, 20)
                     values[index] = v
                     values[index + 1] = v
                     values[index + 2] = v

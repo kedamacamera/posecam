@@ -9,17 +9,12 @@ struct ContentView: View {
     @State private var selectedPose: PoseTemplate?
     @State private var mirrorPose = false
     @State private var poseOpacity = 0.85
-    @State private var showSkeleton = false
     @State private var showLibrary = false
     @State private var showLicenses = false
     @State private var zoomAtGestureStart: CGFloat?
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
     private let topBarHeight: CGFloat = 50
-
-    private var isMatched: Bool {
-        (camera.matchScore ?? 0) >= CameraManager.matchThreshold
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -56,6 +51,8 @@ struct ContentView: View {
                         BurstRing(timeline: timeline)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+
+                    ShutterBlackout(trigger: camera.shutterCount)
 
                     if let countdown = camera.countdown {
                         Text("\(countdown)")
@@ -123,22 +120,17 @@ struct ContentView: View {
 
     /// 3:4・9:16 は上のバーのすぐ下から、フルは画面全体に表示する。
     private func preview(screen: CGSize, topInset: CGFloat) -> some View {
-        let aspect: CGFloat
-        switch camera.aspect {
-        case .threeFour: aspect = 3.0 / 4.0
-        case .nineSixteen: aspect = 9.0 / 16.0
-        case .full: aspect = screen.width / screen.height
-        }
+        let aspect = camera.aspect.ratio ?? screen.width / screen.height
         let height = min(screen.width / aspect, screen.height)
         let top = camera.aspect == .full ? 0 : topInset + topBarHeight
 
         return ZStack {
             CameraPreview(renderer: camera.renderer)
             if let template = camera.template {
-                PoseTemplateOverlay(template: template, matched: isMatched, opacity: poseOpacity)
+                TemplateLayer(feed: camera.poseFeed, template: template, opacity: poseOpacity)
             }
-            if showSkeleton, let detected = camera.detectedPose {
-                SkeletonOverlay(detected: detected)
+            if camera.showSkeleton {
+                SkeletonLayer(feed: camera.poseFeed)
             }
         }
         .frame(width: screen.width, height: height)
@@ -166,7 +158,7 @@ struct ContentView: View {
                 camera.flashOn.toggle()
             }
             Spacer()
-            AspectButton(aspect: camera.aspect) { camera.aspect = camera.aspect.next }
+            AspectMenu(aspect: $camera.aspect)
                 .disabled(camera.isRecording)
             Spacer()
             LabeledIconButton(systemImage: "timer",
@@ -192,7 +184,7 @@ struct ContentView: View {
                     Text("1秒ごと").tag(1.0)
                     Text("2秒ごと").tag(2.0)
                 }
-                Toggle("骨格を表示", isOn: $showSkeleton)
+                Toggle("骨格を表示", isOn: $camera.showSkeleton)
                 Button("ライセンス") { showLicenses = true }
             } label: {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
@@ -204,8 +196,8 @@ struct ContentView: View {
     /// 一致度・録画時間・連続撮影の進み具合。
     private var statusRow: some View {
         HStack {
-            if camera.template != nil, let score = camera.matchScore {
-                Badge(text: "一致度 \(Int(score))%", color: isMatched ? .green : .black.opacity(0.55))
+            if camera.template != nil {
+                MatchBadge(feed: camera.poseFeed)
             }
             Spacer()
             if let progress = camera.burstProgress {
@@ -261,6 +253,16 @@ struct ContentView: View {
                 .padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
                 .padding(.horizontal, 8)
+                // パネルは下へフリックしても閉じられる（横のスクロールとは向きで区別する）
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            let down = value.translation.height
+                            if down > 40, down > abs(value.translation.width) * 1.2 {
+                                withAnimation(.easeOut(duration: 0.18)) { self.panel = nil }
+                            }
+                        }
+                )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 

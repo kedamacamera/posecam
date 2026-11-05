@@ -185,8 +185,9 @@ enum PoseDrawing {
     }
 }
 
-/// プレビューに重ねる型（人の形の輪郭）。検出結果とは別のビューにして、骨格が動くたびに描き直さないようにする。
-struct PoseTemplateOverlay: View {
+/// プレビューに重ねる型（人の形の輪郭）。型・一致したか・濃さが変わったときだけ描き直す（Equatable）。
+/// 影（shadow）は毎回画面外に描き直すので重い。代わりに暗い太線を下に敷いて見やすくする。
+struct PoseTemplateOverlay: View, Equatable {
     let template: PoseTemplate
     let matched: Bool
     /// 0...1
@@ -196,27 +197,53 @@ struct PoseTemplateOverlay: View {
         Canvas { context, size in
             var layer = context
             layer.opacity = opacity
-            layer.drawLayer { inner in
-                PoseDrawing.drawTemplate(template, in: inner,
-                                         transform: { PoseSpace.toView($0, size: size) },
-                                         color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0.12)
-            }
+            let transform = { PoseSpace.toView($0, size: size) }
+            PoseDrawing.drawTemplate(template, in: layer, transform: transform,
+                                     color: .black.opacity(0.35), lineWidth: 5, fillOpacity: 0)
+            PoseDrawing.drawTemplate(template, in: layer, transform: transform,
+                                     color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0.12)
         }
-        .shadow(color: .black.opacity(0.35), radius: 2)
         .allowsHitTesting(false)
     }
 }
 
-/// 検出した骨格（細い線）。
-struct SkeletonOverlay: View {
-    let detected: [Joint: CGPoint]
+/// 一致度に応じて型の色を変える。一致度が変わっても、色が変わらなければ型は描き直さない。
+struct TemplateLayer: View {
+    @ObservedObject var feed: PoseFeed
+    let template: PoseTemplate
+    let opacity: Double
 
     var body: some View {
-        Canvas { context, size in
-            let points = detected.mapValues { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
-            PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
+        PoseTemplateOverlay(template: template,
+                            matched: (feed.score ?? 0) >= CameraManager.matchThreshold,
+                            opacity: opacity)
+            .equatable()
+    }
+}
+
+/// 検出した骨格（細い線）。
+struct SkeletonLayer: View {
+    @ObservedObject var feed: PoseFeed
+
+    var body: some View {
+        if let detected = feed.detected {
+            Canvas { context, size in
+                let points = detected.mapValues { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+                PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
+            }
+            .allowsHitTesting(false)
         }
-        .allowsHitTesting(false)
+    }
+}
+
+/// 一致度の表示。
+struct MatchBadge: View {
+    @ObservedObject var feed: PoseFeed
+
+    var body: some View {
+        let score = feed.score ?? 0
+        Badge(text: "一致度 \(Int(score))%",
+              color: score >= CameraManager.matchThreshold ? .green : .black.opacity(0.55))
     }
 }
 

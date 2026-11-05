@@ -13,15 +13,30 @@ enum CaptureMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum AspectOption: String, CaseIterable {
+enum AspectOption: String, CaseIterable, Identifiable {
+    case square = "1:1"
     case threeFour = "3:4"
     case nineSixteen = "9:16"
     case full = "フル"
 
-    var next: AspectOption {
-        let all = Self.allCases
-        return all[(all.firstIndex(of: self)! + 1) % all.count]
+    var id: String { rawValue }
+
+    /// 横 / 縦。フルは画面の比率なので nil
+    var ratio: CGFloat? {
+        switch self {
+        case .square: return 1
+        case .threeFour: return 3.0 / 4.0
+        case .nineSixteen: return 9.0 / 16.0
+        case .full: return nil
+        }
     }
+}
+
+/// 骨格の検出結果と一致度。1 秒に十数回変わるので、カメラ全体（CameraManager）とは分けて、
+/// これを使う小さなビューだけが描き直されるようにする（画面全体を描き直すと重くなる）。
+final class PoseFeed: ObservableObject {
+    @Published fileprivate(set) var detected: [Joint: CGPoint]?
+    @Published fileprivate(set) var score: Double?
 }
 
 /// レンズ切り替えボタン 1 つぶん。displayFactor は標準カメラと同じ表示倍率（0.5 / 1 / 2 / 5 など）。
@@ -63,8 +78,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var recordingSeconds = 0
     @Published private(set) var isCapturing = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
-    @Published private(set) var detectedPose: [Joint: CGPoint]?
-    @Published private(set) var matchScore: Double?
+    let poseFeed = PoseFeed()
+    /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
+    @Published private(set) var shutterCount = 0
     @Published private(set) var lastThumbnail: UIImage?
     @Published private(set) var cameraAuthorized = true
     @Published private(set) var statusMessage: String?
@@ -89,7 +105,12 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var flashOn = false {
         didSet { applyTorch() }
     }
-    @Published var autoShutter = false
+    @Published var autoShutter = false {
+        didSet { updatePoseNeeded() }
+    }
+    @Published var showSkeleton = false {
+        didSet { updatePoseNeeded() }
+    }
     @Published var timerSeconds = 0
     @Published var burstCount = 1
     /// 連続撮影の間隔（秒）
@@ -101,7 +122,10 @@ final class CameraManager: NSObject, ObservableObject {
         didSet { updateTargetAspect() }
     }
     @Published var settings = ProcessingSettings() {
-        didSet { updateSettingsBox() }
+        didSet {
+            updateSettingsBox()
+            updatePoseNeeded()
+        }
     }
     /// 比較ボタンを押している間だけ、加工をすべて外したプレビューにする（撮影結果には影響しない）
     @Published var showOriginal = false {
@@ -110,7 +134,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var template: PoseTemplate? {
         didSet {
             templateBox.value = template
-            if template == nil { matchScore = nil }
+            if template == nil { poseFeed.score = nil }
+            updatePoseNeeded()
         }
     }
 
@@ -120,7 +145,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let sessionQueue = DispatchQueue(label: "posecam.session")
     private let videoQueue = DispatchQueue(label: "posecam.video", qos: .userInitiated)
     private let detectionQueue = DispatchQueue(label: "posecam.detection", qos: .userInitiated)
-    private let photoQueue = DispatchQueue(label: "posecam.photo", qos: .userInitiated)
+    /// 撮影後の加工・保存はプレビューより優先度を下げ、撮影中に画面がカクつかないようにする
+    private let photoQueue = DispatchQueue(label: "posecam.photo", qos: .utility)
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -134,6 +160,10 @@ final class CameraManager: NSObject, ObservableObject {
     private let aspectBox = Locked<CGFloat>(3.0 / 4.0)
     private let modeBox = Locked(CaptureMode.photo)
     private let isDetecting = Locked(false)
+    /// 骨格の検出が要るか（型・骨格の表示・自動撮影・脚長のどれかを使っているときだけ検出する）
+    private let poseNeeded = Locked(false)
+    /// 無音撮影に使う、加工前の最新のコマ。シャッターの瞬間にすぐ取り出せるよう、映像のキューを待たずに読める箱に入れる
+    private let latestSourceBox = Locked<CIImage?>(nil)
 
     // sessionQueue 専用
     private var videoInput: AVCaptureDeviceInput?
@@ -142,6 +172,8 @@ final class CameraManager: NSObject, ObservableObject {
     /// 表示倍率 1x に当たるデバイスの videoZoomFactor（超広角を含むカメラでは 2.0 など）
     private var zoomBase: CGFloat = 1
     private var lensObservation: NSKeyValueObservation?
+    /// セルフタイマー中に背面のライトを弱く点けているか
+    private var timerLightOn = false
 
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
@@ -150,9 +182,12 @@ final class CameraManager: NSObject, ObservableObject {
     private var wantsRecording = false
     private var recorder: VideoRecorder?
     private var lastRecordedFrame: CIImage?
-    /// 無音撮影に使う、加工前の最新のコマ
-    private var latestSourceFrame: CIImage?
     private var frameCount = 0
+    /// 撮影モードの切り替え直後に捨てるコマの数（倍率が戻る前のコマを見せない）
+    private var framesToSkip = 0
+    /// 判定（Vision）用に縮小したコマを入れる入れ物
+    private var visionPool: CVPixelBufferPool?
+    private var visionPoolSize: CGSize = .zero
 
     // メインスレッド専用
     private var screenAspect: CGFloat = 9.0 / 19.5
@@ -221,19 +256,8 @@ final class CameraManager: NSObject, ObservableObject {
 
         let preset = newMode == .photo ? photoModePreset : .hd1920x1080
         let reconfigure = {
-            self.sessionQueue.async {
-                self.session.beginConfiguration()
-                self.session.sessionPreset = self.session.canSetSessionPreset(preset) ? preset : .photo
-                if newMode == .video {
-                    self.attachAudio()
-                } else {
-                    self.detachAudio()
-                }
-                self.session.commitConfiguration()
-                self.updateConnections(position: position)
-                self.refreshLenses(keepingDisplayZoom: zoom)
-                self.setTorch(torch)
-            }
+            self.changeSession(preset: preset, audio: newMode == .video, position: position,
+                               zoom: zoom, torch: torch)
         }
 
         if newMode == .video && AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -250,15 +274,34 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func applyPreset(_ preset: AVCaptureSession.Preset) {
         guard !isRecording, !isSequenceRunning else { return }
-        let position = self.position
-        let zoom = displayZoom
+        changeSession(preset: preset, audio: nil, position: position, zoom: displayZoom, torch: nil)
+    }
+
+    /// セッションの画質（プリセット）を変える。変えるとデバイスの倍率が 1（超広角）に戻ってしまうので、
+    /// 構成の中で倍率も設定し、倍率が戻るまでのコマは画面に出さない（最後のコマを表示したままにする）。
+    /// audio: マイクをつなぐか（nil は変えない）、torch: ライト（nil は変えない）
+    private func changeSession(preset: AVCaptureSession.Preset, audio: Bool?, position: AVCaptureDevice.Position,
+                               zoom: CGFloat, torch: Bool?) {
+        renderer.setFrozen(true)
         sessionQueue.async {
-            guard self.isConfigured else { return }
+            guard self.isConfigured else {
+                self.renderer.setFrozen(false)
+                return
+            }
             self.session.beginConfiguration()
             self.session.sessionPreset = self.session.canSetSessionPreset(preset) ? preset : .photo
+            if let audio {
+                if audio { self.attachAudio() } else { self.detachAudio() }
+            }
+            if let device = self.videoInput?.device {
+                self.setDeviceZoom(zoom * self.zoomBase, device: device, animated: false)
+            }
             self.session.commitConfiguration()
             self.updateConnections(position: position)
             self.refreshLenses(keepingDisplayZoom: zoom)
+            if let torch { self.setTorch(torch) }
+            // 倍率を設定した後のコマが届くまで、数コマ待ってから表示を再開する
+            self.videoQueue.async { self.framesToSkip = 3 }
         }
     }
 
@@ -385,6 +428,23 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {}
     }
 
+    /// セルフタイマー中の合図のライト。背面のライトをいちばん弱い明るさで点け、シャッターの瞬間に消す。
+    /// 画面が見えない背面側からでも、いつシャッターが切れたか分かるようにする。sessionQueue から呼ぶ。
+    private func setTimerLight(_ on: Bool) {
+        guard let device = videoInput?.device, device.hasTorch, device.position == .back else { return }
+        guard on != timerLightOn else { return }
+        do {
+            try device.lockForConfiguration()
+            if on {
+                try device.setTorchModeOn(level: 0.01)
+            } else {
+                device.torchMode = .off
+            }
+            device.unlockForConfiguration()
+            timerLightOn = on
+        } catch {}
+    }
+
     // MARK: - 比率
 
     private func updateSettingsBox() {
@@ -398,10 +458,15 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func updateTargetAspect() {
-        switch aspect {
-        case .threeFour: aspectBox.value = 3.0 / 4.0
-        case .nineSixteen: aspectBox.value = 9.0 / 16.0
-        case .full: aspectBox.value = screenAspect
+        aspectBox.value = aspect.ratio ?? screenAspect
+    }
+
+    private func updatePoseNeeded() {
+        let needed = template != nil || showSkeleton || autoShutter || settings.legLength > 0.01
+        poseNeeded.value = needed
+        if !needed {
+            poseFeed.detected = nil
+            poseFeed.score = nil
         }
     }
 
@@ -531,16 +596,33 @@ final class CameraManager: NSObject, ObservableObject {
             ? BurstTimeline(firstShot: Date().addingTimeInterval(Double(delay)), interval: burstInterval, total: total)
             : nil
 
+        // セルフタイマーのときは、待っている間だけ背面のライトを弱く点ける（シャッターの瞬間に消す）
+        let usesTimerLight = delay > 0
+        let interval = burstInterval
+        if usesTimerLight {
+            sessionQueue.async { self.setTimerLight(true) }
+        }
+
         var shot = 0
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: sessionQueue)
-        timer.schedule(deadline: .now() + .seconds(delay), repeating: burstInterval, leeway: .milliseconds(1))
+        timer.schedule(deadline: .now() + .seconds(delay), repeating: interval, leeway: .milliseconds(1))
         timer.setEventHandler { [weak self, weak timer] in
             guard let self else { return }
             shot += 1
+            // フラッシュを使うときも、ライトを消してから通常どおり発光させる
+            if usesTimerLight { self.setTimerLight(false) }
             self.performCapture(options)
-            if shot >= total { timer?.cancel() }
             let current = shot
+            if current >= total {
+                timer?.cancel()
+            } else if usesTimerLight {
+                // 連続撮影では、次のシャッターまでの間また点ける（消えた瞬間が 1 枚ごとの合図になる）
+                self.sessionQueue.asyncAfter(deadline: .now() + min(0.4, interval / 2)) { [weak timer] in
+                    if let timer, !timer.isCancelled { self.setTimerLight(true) }
+                }
+            }
             DispatchQueue.main.async {
+                self.shutterCount += 1
                 self.pendingPhotos += 1
                 self.isCapturing = true
                 if total > 1 { self.burstProgress = "\(current)/\(total)" }
@@ -595,6 +677,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func cancelSequence() {
         burstTimeline = nil
         shotTimer?.cancel()
+        sessionQueue.async { self.setTimerLight(false) }
         shotTimer = nil
         countdownTimer?.cancel()
         countdownTimer = nil
@@ -648,19 +731,18 @@ final class CameraManager: NSObject, ObservableObject {
     private func captureSilently() {
         let settings = settingsBox.value
         let aspect = aspectBox.value
-        videoQueue.async {
-            guard let frame = self.latestSourceFrame else {
-                DispatchQueue.main.async { self.photoFinished() }
+        // シャッターの瞬間のコマをすぐに取り出す（映像の処理が終わるのを待たない）
+        guard let frame = latestSourceBox.value else {
+            DispatchQueue.main.async { self.photoFinished() }
+            return
+        }
+        photoQueue.async {
+            defer { DispatchQueue.main.async { self.photoFinished() } }
+            guard let result = self.processStill(frame, settings: settings, aspect: aspect) else {
+                self.report("写真の処理に失敗しました")
                 return
             }
-            self.photoQueue.async {
-                defer { DispatchQueue.main.async { self.photoFinished() } }
-                guard let result = self.processStill(frame, settings: settings, aspect: aspect) else {
-                    self.report("写真の処理に失敗しました")
-                    return
-                }
-                self.save(result)
-            }
+            self.save(result)
         }
     }
 
@@ -801,27 +883,32 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - 検出・自動シャッター
 
     /// videoQueue から呼ぶ。前回の検出が終わっていて、前回から一定時間たっていれば検出する。
-    private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, geometry: FrameGeometry) {
+    /// pixelBuffer は切り抜き・縮小済みのコマ（aspect はその縦横比）。
+    private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, aspect: CGFloat) {
         let now = CACurrentMediaTime()
-        guard now - lastDetectionTime > 0.07, !isDetecting.value else { return }
+        guard now - lastDetectionTime > 0.08, !isDetecting.value else { return }
         lastDetectionTime = now
         isDetecting.value = true
 
         detectionQueue.async {
             // 骨格（ポーズの一致度・脚長用）だけ。美肌のマスクは毎コマ映像の処理の中で求める
-            let result = self.detector.analyze(pixelBuffer: pixelBuffer, wantsMasks: false)
-            let pose = result.pose?.mapValues { geometry.convert($0) }
+            let pose = self.detector.pose(pixelBuffer: pixelBuffer)
             self.poseBox.value = pose
             var score: Double?
-            if let pose, let template = self.templateBox.value {
-                let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: geometry.aspect) }
-                score = PoseMatcher.score(template: template.joints, detected: isotropic)
+            if let template = self.templateBox.value {
+                // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
+                score = pose.map { pose in
+                    let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
+                    return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect) ?? 0
+                } ?? 0
             }
             self.isDetecting.value = false
 
             DispatchQueue.main.async {
-                self.detectedPose = pose
-                self.matchScore = self.template == nil ? nil : score
+                guard self.poseNeeded.value else { return }
+                if self.poseFeed.detected != pose { self.poseFeed.detected = pose }
+                let rounded = self.template == nil ? nil : score.map { $0.rounded() }
+                if self.poseFeed.score != rounded { self.poseFeed.score = rounded }
                 self.evaluateAutoShutter()
             }
         }
@@ -830,7 +917,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 一致度がしきい値を 0.8 秒保ったら自動で撮影する。連写しないよう 3 秒あける。
     private func evaluateAutoShutter() {
         guard autoShutter, mode == .photo, !isSequenceRunning,
-              let score = matchScore, score >= Self.matchThreshold else {
+              let score = poseFeed.score, score >= Self.matchThreshold else {
             matchStartedAt = nil
             return
         }
@@ -887,26 +974,75 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         if frameCount == 30 { Diagnostics.markHealthy() }
 
         let source = CIImage(cvPixelBuffer: pixelBuffer)
-        latestSourceFrame = source
-        // 録画中は途中で大きさが変わらないよう比率を固定する（UI 側でも比率ボタンを無効にしている）
-        let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value, maxLongSide: 1920)
+        latestSourceBox.value = source
+
+        // 撮影モードの切り替え直後は、倍率が戻るまで数コマ捨てる（最後のコマを表示したまま）
+        if framesToSkip > 0 {
+            framesToSkip -= 1
+            if framesToSkip == 0 { renderer.setFrozen(false) }
+            return
+        }
+
+        // 写真モードのプレビューは画質を落として軽くする（撮った写真は別に高画質で処理する）。
+        // 動画・スナップはこのコマがそのまま保存されるので 1080p のまま
+        let isPhoto = modeBox.value == .photo
+        let geometry = FrameGeometry(sourceSize: source.extent.size, aspect: aspectBox.value,
+                                     maxLongSide: isPhoto ? 1280 : 1920)
         let settings = settingsBox.value
         let wantsMasks = settings.needsSkinMask
-        analyzeIfIdle(pixelBuffer, geometry: geometry)
+        let wantsPose = poseNeeded.value
 
         let image = geometry.apply(source)
         publishFrameSizeIfNeeded(image.extent.size)
 
+        // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）
+        var visionBuffer: CVPixelBuffer?
+        if wantsMasks || wantsPose {
+            visionBuffer = makeVisionBuffer(image)
+        }
+        if wantsPose, let visionBuffer {
+            analyzeIfIdle(visionBuffer, aspect: geometry.aspect)
+        }
+
         // 美肌のマスクは、このコマ自身から求める。前のコマのマスクを使うと、カメラや顔が動いたときに
         // 加工の位置が遅れてずれる。間に合わないコマは捨てられる（alwaysDiscardsLateVideoFrames）
         var masks: BeautyMasks?
-        if wantsMasks {
-            masks = detector.beautyMasks(pixelBuffer: pixelBuffer)?.map { geometry.apply($0) }
+        if wantsMasks, let visionBuffer {
+            masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size)
         }
         let hipY = settings.legLength > 0.01 ? updatedHipY() : nil
         let processed = processor.process(image, settings: settings, hipY: hipY, masks: masks)
         renderer.display(processed)
         handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+    }
+
+    /// 判定用に、長辺 960 ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。
+    private func makeVisionBuffer(_ image: CIImage) -> CVPixelBuffer? {
+        let extent = image.extent
+        let scale = min(1, 960 / max(extent.width, extent.height))
+        let size = CGSize(width: (extent.width * scale).rounded(), height: (extent.height * scale).rounded())
+        if visionPool == nil || visionPoolSize != size {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: Int(size.width),
+                kCVPixelBufferHeightKey as String: Int(size.height),
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            ]
+            var pool: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
+            visionPool = pool
+            visionPoolSize = size
+        }
+        guard let visionPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, visionPool, &buffer)
+        guard let buffer else { return nil }
+        let small = image
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: size.width / extent.width, y: size.height / extent.height))
+        renderer.ciContext.render(small, to: buffer, bounds: CGRect(origin: .zero, size: size),
+                                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return buffer
     }
 }
 

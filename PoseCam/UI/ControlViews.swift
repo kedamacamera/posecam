@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreImage
 
 // MARK: - 上部のバー
 
@@ -36,13 +37,18 @@ struct LabeledIcon: View {
     }
 }
 
-/// 比率ボタン。アイコンの代わりに「3:4」などの文字を枠で囲んで表示する。
-struct AspectButton: View {
-    let aspect: AspectOption
-    let action: () -> Void
+/// 比率ボタン。タップすると比率を選ぶメニューを出す。アイコンの代わりに「3:4」などの文字を枠で囲んで表示する。
+struct AspectMenu: View {
+    @Binding var aspect: AspectOption
 
     var body: some View {
-        Button(action: action) {
+        Menu {
+            Picker("比率", selection: $aspect) {
+                ForEach(AspectOption.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+        } label: {
             VStack(spacing: 2) {
                 Text(aspect.rawValue)
                     .font(.system(size: 11, weight: .bold))
@@ -57,6 +63,22 @@ struct AspectButton: View {
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.5), radius: 2)
         }
+    }
+}
+
+/// シャッターが切れた瞬間に画面を一瞬暗くして、すぐ戻す（無音でも撮れたことが分かるように）。
+struct ShutterBlackout: View {
+    let trigger: Int
+    @State private var opacity = 0.0
+
+    var body: some View {
+        Color.black
+            .opacity(opacity)
+            .allowsHitTesting(false)
+            .onChange(of: trigger) {
+                opacity = 0.85
+                withAnimation(.easeOut(duration: 0.3)) { opacity = 0 }
+            }
     }
 }
 
@@ -227,8 +249,6 @@ struct LensBar: View {
                         )
                 }
             }
-            .padding(4)
-            .background(Capsule().fill(Color.black.opacity(0.25)))
         }
     }
 
@@ -371,10 +391,17 @@ struct FilterStrip: View {
                 ForEach(PhotoFilter.allCases) { filter in
                     Button { selection = filter } label: {
                         VStack(spacing: 6) {
-                            Circle()
-                                .fill(filter.swatch)
-                                .frame(width: 52, height: 52)
-                                .overlay(Circle().stroke(selection == filter ? Color.yellow : .clear, lineWidth: 3))
+                            Group {
+                                if let image = FilterThumbnails.image(for: filter) {
+                                    Image(uiImage: image).resizable().scaledToFill()
+                                } else {
+                                    Color.gray
+                                }
+                            }
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10)
+                                .stroke(selection == filter ? Color.yellow : .clear, lineWidth: 3))
                             Text(filter.displayName)
                                 .font(.caption2)
                                 .foregroundStyle(selection == filter ? Color.yellow : .white)
@@ -387,24 +414,33 @@ struct FilterStrip: View {
     }
 }
 
-private extension PhotoFilter {
-    var swatch: LinearGradient {
-        let colors: [Color]
-        switch self {
-        case .none: colors = [.gray, .white]
-        case .natural: colors = [.green, .yellow]
-        case .warm: colors = [.orange, .yellow]
-        case .cool: colors = [.blue, .cyan]
-        case .pink: colors = [.pink, .white]
-        case .film: colors = [.brown, .teal]
-        case .chrome: colors = [.red, .blue]
-        case .fade: colors = [.gray.opacity(0.6), .white.opacity(0.8)]
-        case .instant: colors = [.orange, .mint]
-        case .sepia: colors = [.brown, .orange.opacity(0.6)]
-        case .mono: colors = [.black, .white]
-        case .noir: colors = [.black, .gray]
-        }
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+/// フィルターの見本（同梱の見本写真の上半身に、そのフィルターをかけた小さな画像）。メインスレッドから使う。
+enum FilterThumbnails {
+    private static let context = CIContext()
+    private static var cache: [PhotoFilter: UIImage] = [:]
+
+    private static let source: CIImage? = {
+        guard let url = Bundle.main.url(forResource: "pose_00", withExtension: "jpg"),
+              let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
+        let e = image.extent
+        // 上半身あたりを正方形に切り抜いて、112 ピクセルに縮める
+        let side = e.width * 0.8
+        let crop = CGRect(x: e.minX + (e.width - side) / 2, y: e.maxY - side - e.height * 0.04,
+                          width: side, height: side)
+        let scale = 112 / side
+        return image.cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    }()
+
+    static func image(for filter: PhotoFilter) -> UIImage? {
+        if let cached = cache[filter] { return cached }
+        guard let source else { return nil }
+        let output = filter.apply(to: source)
+        guard let cgImage = context.createCGImage(output, from: source.extent) else { return nil }
+        let image = UIImage(cgImage: cgImage)
+        cache[filter] = image
+        return image
     }
 }
 
@@ -651,41 +687,66 @@ struct Badge: View {
 // MARK: - 連続撮影
 
 /// 次のシャッターまでの残り時間を、減っていく円で表す。円がなくなった瞬間にシャッターが切れる。
-/// 真ん中は「何枚目を撮るところか / 全部で何枚か」。
+/// 円は 12 時の位置から時計回りに減っていく。真ん中は「次に撮るのが何枚目か / 全部で何枚か」。
+/// 1 枚ごとに「満タンから 0 まで一定の速さで減る」アニメーションを 1 回だけ指示し、
+/// 毎コマの計算は画面側（Core Animation）に任せて、カクつかないようにする。
 struct BurstRing: View {
     let timeline: BurstTimeline
 
-    var body: some View {
-        TimelineView(.animation) { context in
-            let elapsed = context.date.timeIntervalSince(timeline.firstShot)
-            // タイマーのカウントダウン中（1 枚目より前）は数字の表示に任せる
-            if elapsed >= 0 {
-                let taken = min(Int(elapsed / timeline.interval) + 1, timeline.total)
-                let remaining = 1 - (elapsed - Double(taken - 1) * timeline.interval) / timeline.interval
-                ring(next: taken + 1, remaining: taken >= timeline.total ? 0 : max(0, remaining))
-            }
-        }
-        .allowsHitTesting(false)
-    }
+    @State private var remaining = 1.0
+    @State private var next = 2
+    @State private var visible = false
 
-    private func ring(next: Int, remaining: Double) -> some View {
+    var body: some View {
         ZStack {
-            Circle()
-                .stroke(Color.white.opacity(0.25), lineWidth: 8)
-            Circle()
-                .trim(from: 0, to: remaining)
-                .stroke(Color.yellow, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 2) {
-                Text("\(min(next, timeline.total))")
-                    .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
-                Text("/ \(timeline.total)枚")
-                    .font(.system(size: 13, weight: .semibold))
+            if visible {
+                Circle()
+                    .fill(Color.black.opacity(0.35))
+                Circle()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 8)
+                // 時計回りに減らすため、終わり側（12 時）を固定して始まり側を動かす
+                Circle()
+                    .trim(from: 1 - remaining, to: 1)
+                    .stroke(Color.yellow, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                VStack(spacing: 2) {
+                    Text("\(min(next, timeline.total))")
+                        .font(.system(size: 40, weight: .bold, design: .rounded).monospacedDigit())
+                    Text("/ \(timeline.total)枚")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
             }
-            .foregroundStyle(.white)
         }
         .frame(width: 120, height: 120)
-        .shadow(color: .black.opacity(0.5), radius: 4)
+        .allowsHitTesting(false)
+        .task(id: timeline) { await run() }
+    }
+
+    private func run() async {
+        // タイマーのカウントダウン中（1 枚目より前）は数字の表示に任せる
+        await sleep(until: timeline.firstShot)
+        for shot in 1..<timeline.total {
+            guard !Task.isCancelled else { return }
+            let nextShot = timeline.firstShot.addingTimeInterval(Double(shot) * timeline.interval)
+            var reset = Transaction()
+            reset.disablesAnimations = true
+            withTransaction(reset) {
+                visible = true
+                next = shot + 1
+                remaining = 1
+            }
+            // 満タンに戻した状態を一度画面に出してから、減らすアニメーションを始める
+            try? await Task.sleep(nanoseconds: 16_000_000)
+            withAnimation(.linear(duration: max(0.05, nextShot.timeIntervalSinceNow))) { remaining = 0 }
+            await sleep(until: nextShot)
+        }
+        visible = false
+    }
+
+    private func sleep(until date: Date) async {
+        let seconds = date.timeIntervalSinceNow
+        if seconds > 0 { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
     }
 }
 

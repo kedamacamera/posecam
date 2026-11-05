@@ -8,14 +8,17 @@ struct BeautyMasks {
     var skin: CIImage?
     /// 人物の領域（白）。モデルがないときは、これと肌の色の判定を組み合わせる
     var person: CIImage?
-    /// 目・眉・唇を黒、それ以外を白にしたマスク。顔が見つからなければ nil
+    /// 目・眉・唇を黒、鼻すじを灰色、それ以外を白にしたマスク（なめらかにする処理を外す所）。顔が見つからなければ nil
     var features: CIImage?
+    /// 目・唇だけを黒にしたマスク（赤み消しを外す所）。眉や小鼻の際の赤みは消したいので外さない
+    var redFeatures: CIImage?
 
     /// 大きさの確認に使う
     var extent: CGRect? { (skin ?? person)?.extent }
 
     func map(_ transform: (CIImage) -> CIImage) -> BeautyMasks {
-        BeautyMasks(skin: skin.map(transform), person: person.map(transform), features: features.map(transform))
+        BeautyMasks(skin: skin.map(transform), person: person.map(transform),
+                    features: features.map(transform), redFeatures: redFeatures.map(transform))
     }
 }
 
@@ -30,19 +33,18 @@ final class PoseDetector {
 
     private let minimumConfidence: Float = 0.3
 
-    /// プレビュー用。マスクは速度優先の品質で求める。
-    func analyze(pixelBuffer: CVPixelBuffer, wantsMasks: Bool) -> Result {
-        let size = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+    /// プレビュー用。骨格だけを求める。pixelBuffer は切り抜き・縮小済みのコマで、座標もそのコマが基準。
+    func pose(pixelBuffer: CVPixelBuffer) -> [Joint: CGPoint]? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        return perform(handler, imageSize: size, maskQuality: wantsMasks ? .balanced : nil)
+        return perform(handler, imageSize: .zero, maskQuality: nil).pose
     }
 
     /// プレビューの毎コマ用。美肌のマスクだけを、そのコマ自身から求める（骨格は求めない）。
     /// 別のコマのマスクを当てると、カメラを動かしたときに加工の位置が顔から遅れてずれるため。
-    func beautyMasks(pixelBuffer: CVPixelBuffer) -> BeautyMasks? {
-        let size = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+    /// pixelBuffer は判定用に縮小したコマ。マスクは outputSize（実際に加工する画像の大きさ）に引き伸ばして返す。
+    func beautyMasks(pixelBuffer: CVPixelBuffer, outputSize: CGSize) -> BeautyMasks? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        return perform(handler, imageSize: size, maskQuality: .balanced, includePose: false).masks
+        return perform(handler, imageSize: outputSize, maskQuality: .balanced, includePose: false).masks
     }
 
     /// 写真用。マスクは精度優先で求める。
@@ -118,7 +120,8 @@ final class PoseDetector {
             result.masks = BeautyMasks(
                 skin: skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
                 person: personBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
-                features: Self.featureMask(faces, imageSize: imageSize))
+                features: Self.featureMask(faces, imageSize: imageSize, forRedness: false),
+                redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true))
         }
         return result
     }
@@ -138,9 +141,11 @@ final class PoseDetector {
                                                 y: size.height / image.extent.height))
     }
 
-    /// 目・眉・唇を太めに塗りつぶしたマスク（黒が美肌をかけない部分）。
-    /// 精度は要らないので 1/4 の大きさで描いてから引き伸ばす。
-    private static func featureMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
+    /// 加工を外す顔のパーツのマスク（黒が外す部分）。精度は要らないので 1/4 の大きさで描いてから引き伸ばす。
+    /// forRedness が false（なめらかにする処理用）: 目・眉・唇を塗りつぶし、鼻すじ・小鼻の線は強さを半分にする。
+    /// forRedness が true（赤み消し用）: 目と唇だけを外す。眉の際・小鼻の際の赤みも周りの肌になじませるため。
+    /// どちらも境目は大きめにぼかし、加工した所としていない所の境目が見えないようにする。
+    private static func featureMask(_ faces: [VNFaceObservation], imageSize: CGSize, forRedness: Bool) -> CIImage? {
         let scale: CGFloat = 0.25
         let width = max(Int(imageSize.width * scale), 1)
         let height = max(Int(imageSize.height * scale), 1)
@@ -152,15 +157,19 @@ final class PoseDetector {
         context.setFillColor(gray: 1, alpha: 1)
         context.fill(CGRect(origin: .zero, size: size))
         context.setFillColor(gray: 0, alpha: 1)
-        context.setStrokeColor(gray: 0, alpha: 1)
         context.setLineJoin(.round)
         context.setLineCap(.round)
 
+        var largestFace: CGFloat = 0
         for face in faces {
             guard let marks = face.landmarks else { continue }
             let faceWidth = face.boundingBox.width * size.width
-            let regions = [marks.leftEye, marks.rightEye, marks.leftEyebrow, marks.rightEyebrow,
-                           marks.outerLips, marks.leftPupil, marks.rightPupil].compactMap { $0 }
+            largestFace = max(largestFace, faceWidth)
+            let regions = forRedness
+                ? [marks.leftEye, marks.rightEye, marks.outerLips].compactMap { $0 }
+                : [marks.leftEye, marks.rightEye, marks.leftEyebrow, marks.rightEyebrow,
+                   marks.outerLips, marks.leftPupil, marks.rightPupil].compactMap { $0 }
+            context.setStrokeColor(gray: 0, alpha: 1)
             for region in regions {
                 // pointsInImage は左下原点で、CGContext と同じ向き
                 let points = region.pointsInImage(imageSize: size)
@@ -168,24 +177,27 @@ final class PoseDetector {
                 context.beginPath()
                 context.addLines(between: points)
                 context.closePath()
-                context.setLineWidth(faceWidth * 0.05)
+                context.setLineWidth(faceWidth * 0.035)
                 context.drawPath(using: .fillStroke)
             }
-            // 鼻すじと小鼻は線だけを外す（鼻全体を外すと毛穴が残るので、立体感の出る輪郭だけ守る）
+            guard !forRedness else { continue }
+            // 鼻すじと小鼻は、なめらかにする強さを半分にするだけ（全部外すと毛穴や赤みが筋になって残る）
+            context.setStrokeColor(gray: 0.5, alpha: 1)
             for region in [marks.noseCrest, marks.nose].compactMap({ $0 }) {
                 let points = region.pointsInImage(imageSize: size)
                 guard points.count > 1 else { continue }
                 context.beginPath()
                 context.addLines(between: points)
-                context.setLineWidth(faceWidth * 0.03)
+                context.setLineWidth(faceWidth * 0.025)
                 context.strokePath()
             }
         }
         guard let cgImage = context.makeImage() else { return nil }
         let mask = scaled(CIImage(cgImage: cgImage), to: imageSize)
-        // 境目がくっきりしすぎないようにぼかす
+        // 境目がくっきりしないよう、顔の大きさに合わせてぼかす
+        let sigma = max(imageSize.width * 0.004, largestFace / scale * 0.02)
         return mask.clampedToExtent()
-            .applyingGaussianBlur(sigma: imageSize.width * 0.006)
+            .applyingGaussianBlur(sigma: sigma)
             .cropped(to: CGRect(origin: .zero, size: imageSize))
     }
 
