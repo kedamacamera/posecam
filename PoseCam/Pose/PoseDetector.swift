@@ -33,10 +33,73 @@ final class PoseDetector {
 
     private let minimumConfidence: Float = 0.3
 
-    /// プレビュー用。骨格だけを求める。pixelBuffer は切り抜き・縮小済みのコマで、座標もそのコマが基準。
-    func pose(pixelBuffer: CVPixelBuffer) -> [Joint: CGPoint]? {
+    /// 一致度の判定に使う、人の形のマス目（上の行から順、true が人）。
+    struct Silhouette {
+        let width: Int
+        let height: Int
+        let cells: [Bool]
+    }
+
+    /// プレビュー用。骨格と、人の形（silhouetteWidth 列のマス目）を求める。
+    /// pixelBuffer は切り抜き・縮小済みのコマで、座標もそのコマが基準。
+    func poseAndSilhouette(pixelBuffer: CVPixelBuffer, silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        return perform(handler, imageSize: .zero, maskQuality: nil).pose
+        let aspect = CGFloat(CVPixelBufferGetWidth(pixelBuffer)) / CGFloat(CVPixelBufferGetHeight(pixelBuffer))
+        return poseAndSilhouette(handler, aspect: aspect, silhouetteWidth: silhouetteWidth)
+    }
+
+    /// 確認用のツールから使う（写真から）。
+    func poseAndSilhouette(ciImage: CIImage, silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
+        let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
+        return poseAndSilhouette(handler, aspect: ciImage.extent.width / ciImage.extent.height,
+                                 silhouetteWidth: silhouetteWidth)
+    }
+
+    private func poseAndSilhouette(_ handler: VNImageRequestHandler, aspect: CGFloat,
+                                   silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
+        let poseRequest = VNDetectHumanBodyPoseRequest()
+        let segmentation = VNGeneratePersonSegmentationRequest()
+        // 人の形は大まかでよいので、いちばん速い品質で求める
+        segmentation.qualityLevel = .fast
+        segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        var requests: [VNRequest] = [poseRequest]
+        if silhouetteWidth != nil { requests.append(segmentation) }
+        do {
+            try handler.perform(requests)
+        } catch {
+            return (nil, nil)
+        }
+        var pose: [Joint: CGPoint]?
+        if let observations = poseRequest.results {
+            let best = observations.map(points(from:)).max { $0.count < $1.count }
+            if let best, best.count >= 3 { pose = best }
+        }
+        var silhouette: Silhouette?
+        if let width = silhouetteWidth, let mask = segmentation.results?.first?.pixelBuffer {
+            silhouette = Self.cells(of: mask, width: width, height: max(1, Int((CGFloat(width) / aspect).rounded())))
+        }
+        return (pose, silhouette)
+    }
+
+    /// 人の領域のマスクを、width × height のマス目に縮める（各マスの中心の値で判定）。
+    private static func cells(of mask: CVPixelBuffer, width: Int, height: Int) -> Silhouette {
+        CVPixelBufferLockBaseAddress(mask, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+        let maskWidth = CVPixelBufferGetWidth(mask)
+        let maskHeight = CVPixelBufferGetHeight(mask)
+        let rowBytes = CVPixelBufferGetBytesPerRow(mask)
+        guard let base = CVPixelBufferGetBaseAddress(mask)?.assumingMemoryBound(to: UInt8.self) else {
+            return Silhouette(width: width, height: height, cells: [Bool](repeating: false, count: width * height))
+        }
+        var cells = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            let my = min(maskHeight - 1, Int((Double(y) + 0.5) / Double(height) * Double(maskHeight)))
+            for x in 0..<width {
+                let mx = min(maskWidth - 1, Int((Double(x) + 0.5) / Double(width) * Double(maskWidth)))
+                cells[y * width + x] = base[my * rowBytes + mx] > 127
+            }
+        }
+        return Silhouette(width: width, height: height, cells: cells)
     }
 
     /// プレビューの毎コマ用。美肌のマスクだけを、そのコマ自身から求める（骨格は求めない）。

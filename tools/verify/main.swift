@@ -253,6 +253,45 @@ if let first = CommandLine.arguments.dropFirst().first,
     }
 }
 
+// MARK: - 人の形の重なりによる一致度
+
+/// 写真の人物の輪郭を型にして、同じ写真・ずらした型・顔のアップで採点する
+func silhouetteTests(_ label: String, _ image: CIImage) {
+    let aspect = image.extent.width / image.extent.height
+    let outlines = PoseDetector.personOutlines(ciImage: image).map { outline in
+        outline.map { PoseSpace.toIsotropic($0, aspect: aspect) }
+    }
+    let result = detector.poseAndSilhouette(ciImage: image, silhouetteWidth: 48)
+    guard !outlines.isEmpty, let silhouette = result.silhouette else {
+        report.append("silhouette \(label): no outline or silhouette")
+        return
+    }
+    let jointCount = result.pose?.count ?? 0
+    func scoreFor(_ transformed: [[CGPoint]]) -> String {
+        let cells = PoseMatcher.rasterize(transformed, aspect: aspect, width: silhouette.width, height: silhouette.height)
+        let value = PoseMatcher.silhouetteScore(template: cells, detected: silhouette.cells)
+        return value.map { String(format: "%.1f", $0) } ?? "nil"
+    }
+    func moved(_ dx: CGFloat, _ scale: CGFloat = 1) -> [[CGPoint]] {
+        outlines.map { $0.map { CGPoint(x: $0.x * scale + dx, y: ($0.y - 0.5) * scale + 0.5) } }
+    }
+    report.append("silhouette \(label) (body joints found: \(jointCount), grid \(silhouette.width)x\(silhouette.height)):")
+    report.append("  same: \(scoreFor(outlines))")
+    report.append("  shifted 10% right: \(scoreFor(moved(0.1)))")
+    report.append("  shifted 25% right: \(scoreFor(moved(0.25)))")
+    report.append("  80% size: \(scoreFor(moved(0, 0.8)))")
+}
+
+if inputs.count > 1 {
+    silhouetteTests("full body", inputs[0].1)
+    // 顔のアップ（上半身の写真の上 45% を切り抜く）。体の関節は取れにくいが、人の形は取れる
+    let upper = inputs[1].1
+    let e = upper.extent
+    let crop = CGRect(x: 0, y: e.height * 0.55, width: e.width, height: e.height * 0.45)
+    let face = upper.cropped(to: crop).transformed(by: CGAffineTransform(translationX: 0, y: -crop.minY))
+    silhouetteTests("face close-up", face)
+}
+
 let text = report.joined(separator: "\n")
 print(text)
 try? text.write(to: outDir.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)

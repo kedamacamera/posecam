@@ -175,6 +175,10 @@ final class CameraManager: NSObject, ObservableObject {
     /// セルフタイマー中に背面のライトを弱く点けているか
     private var timerLightOn = false
 
+    // detectionQueue 専用
+    /// 型の輪郭を一致度用のマス目に塗ったもの（型と比率が変わったときだけ作り直す）
+    private var templateCells: (key: String, cells: [Bool])?
+
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
     private var smoothedHipY: CGFloat?
@@ -892,15 +896,34 @@ final class CameraManager: NSObject, ObservableObject {
 
         detectionQueue.async {
             // 骨格（ポーズの一致度・脚長用）だけ。美肌のマスクは毎コマ映像の処理の中で求める
-            let pose = self.detector.pose(pixelBuffer: pixelBuffer)
+            let template = self.templateBox.value
+            let outlines = template?.allOutlines ?? []
+            // 一致度は「関節の位置と向き」と「人の形の重なり」の両方で見る。
+            // 顔のアップなど体の関節が取れないときも、人の形は取れるので採点できる
+            let gridWidth = 48
+            let result = self.detector.poseAndSilhouette(pixelBuffer: pixelBuffer,
+                                                         silhouetteWidth: outlines.isEmpty ? nil : gridWidth)
+            let pose = result.pose
             self.poseBox.value = pose
             var score: Double?
-            if let template = self.templateBox.value {
-                // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
-                score = pose.map { pose in
+            if let template {
+                let jointScore = pose.flatMap { pose -> Double? in
                     let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
-                    return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect) ?? 0
-                } ?? 0
+                    return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect)
+                }
+                var silhouetteScore: Double?
+                if let silhouette = result.silhouette {
+                    let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
+                    if self.templateCells?.key != key {
+                        self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
+                                                                         width: silhouette.width,
+                                                                         height: silhouette.height))
+                    }
+                    silhouetteScore = PoseMatcher.silhouetteScore(template: self.templateCells!.cells,
+                                                                  detected: silhouette.cells)
+                }
+                // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
+                score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore)
             }
             self.isDetecting.value = false
 
