@@ -162,11 +162,16 @@ final class FrameProcessor {
                             longSide: longSide, debug: true)
     }
 
-    /// 青ひげ隠しの範囲（白）。確認用のツールから使う。
+    /// 青ひげ隠しを実際に混ぜる範囲（白）。確認用のツールから使う（beautify と同じ作り方）。
     func beardMask(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
-        let longSide = max(image.extent.width, image.extent.height)
-        return masks.beard?.applyingFilter("CIMultiplyCompositing", parameters: [
-            kCIInputBackgroundImageKey: skinBase(image, masks: masks, longSide: longSide)])
+        guard let beard = masks.beard else { return nil }
+        let extent = image.extent
+        let longSide = max(extent.width, extent.height)
+        let base = skinBase(image, masks: masks, longSide: longSide)
+        let skinRegion = Self.gray(masks.skin ?? masks.person ?? base)
+            .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
+        return beard.applyingFilter("CIMultiplyCompositing", parameters: [
+            kCIInputBackgroundImageKey: Self.boosted(skinRegion)])
     }
 
     /// 美肌をかける範囲（白）。肌の領域のうち肌の色の所だけで、目・眉・唇を除いたもの。
