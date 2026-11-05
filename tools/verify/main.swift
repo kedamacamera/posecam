@@ -231,7 +231,7 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
     }
     let scale = 2400 / (side * 6)
     savePNG(strip.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), "beard_\(name).png")
-    if let beard = processor.beardMask(image, masks: masks) {
+    if let beard = masks.beard {
         func chroma(_ img: CIImage) -> String {
             let v = meanColor(img, mask: beard)
             return String(format: "Y %.3f Cb %+.3f Cr %+.3f", v.y, v.cb, v.cr)
