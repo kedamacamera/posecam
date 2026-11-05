@@ -198,13 +198,42 @@ enum PoseMatcher {
         return result
     }
 
-    /// 関節と人の形の点数をまとめる。両方あれば半分ずつ、片方しかなければそれだけで決める。
-    static func combine(joints: Double?, silhouette: Double?) -> Double {
-        switch (joints, silhouette) {
-        case let (j?, s?): return j * 0.5 + s * 0.5
-        case let (j?, nil): return j
-        case let (nil, s?): return s
-        case (nil, nil): return 0
+    // MARK: - 顔
+
+    /// 顔の位置・大きさ・傾きの一致度（0〜100）。どちらも等方座標。
+    /// - 位置: 両目の真ん中のずれ。顔の幅の 15% までは満点、80% ずれると 0 点
+    ///   （全身の写真で顔が小さいときは、画面の高さの 8% を顔の幅とみなして厳しくなりすぎないようにする）
+    /// - 大きさ: 両目の間の長さの比。1.1 倍までは満点、1.65 倍（または 0.6 倍）で 0 点
+    /// - 傾き: 両目を結ぶ線の角度の差。5 度までは満点、30 度で 0 点
+    static func faceScore(template t: FaceShape, detected d: FaceShape) -> Double {
+        func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
+        func ramp(_ value: Double, _ slack: Double, _ zero: Double) -> Double {
+            max(0, min(1, 1 - (value - slack) / (zero - slack)))
         }
+        let tEyes = hypot(Double(t.rightEye.x - t.leftEye.x), Double(t.rightEye.y - t.leftEye.y))
+        let dEyes = hypot(Double(d.rightEye.x - d.leftEye.x), Double(d.rightEye.y - d.leftEye.y))
+        guard tEyes > 1e-4, dEyes > 1e-4 else { return 0 }
+        let tMid = mid(t.leftEye, t.rightEye), dMid = mid(d.leftEye, d.rightEye)
+        let faceWidth = max(Double(t.width), 0.08)
+        let position = ramp(hypot(Double(tMid.x - dMid.x), Double(tMid.y - dMid.y)) / faceWidth, 0.15, 0.8)
+        let size = ramp(abs(log(dEyes / tEyes)), log(1.1), log(1.65))
+        let tAngle = atan2(Double(t.rightEye.y - t.leftEye.y), Double(t.rightEye.x - t.leftEye.x))
+        let dAngle = atan2(Double(d.rightEye.y - d.leftEye.y), Double(d.rightEye.x - d.leftEye.x))
+        let angle = ramp(abs(tAngle - dAngle) * 180 / .pi, 5, 30)
+        return position * size * angle * 100
+    }
+
+    /// 関節・人の形・顔の点数をまとめる。あるものだけで平均する。
+    /// 顔は、型の顔が大きいほど（顔のアップほど）重く見る（顔の幅が画面の高さの 25% 以上で、ほかの 2 倍）。
+    static func combine(joints: Double?, silhouette: Double?, face: Double? = nil, faceWidth: CGFloat = 0) -> Double {
+        var total = 0.0, weight = 0.0
+        if let joints { total += joints; weight += 1 }
+        if let silhouette { total += silhouette; weight += 1 }
+        if let face {
+            let w = 0.5 + 1.5 * min(1, Double(faceWidth) / 0.25)
+            total += face * w
+            weight += w
+        }
+        return weight > 0 ? total / weight : 0
     }
 }

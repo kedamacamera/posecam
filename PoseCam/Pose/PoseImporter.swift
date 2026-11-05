@@ -4,6 +4,36 @@ import Foundation
 
 // iPhone 専用の部品（UIKit）を使わないので、Mac の確認・事前計算ツール（tools/）からも使える。
 
+/// 顔のパーツ（顔の輪郭・両目・鼻・口）。座標系は使う所に合わせる（画像座標か等方座標）。
+/// 目は「画像の左側の目」「右側の目」で持つ（本人の左右ではない）。左右反転・インカメラの鏡像でも扱いやすい。
+struct FaceShape: Codable, Equatable {
+    /// あごのライン（片方の耳の辺りから、あごを通って反対側まで）
+    var contour: [CGPoint]
+    var leftEye: CGPoint
+    var rightEye: CGPoint
+    var nose: CGPoint
+    /// 唇の外側の輪郭
+    var mouth: [CGPoint]
+
+    func map(_ transform: (CGPoint) -> CGPoint) -> FaceShape {
+        FaceShape(contour: contour.map(transform), leftEye: transform(leftEye), rightEye: transform(rightEye),
+                  nose: transform(nose), mouth: mouth.map(transform))
+    }
+
+    /// 等方座標で左右反転したもの（左右の目も入れ替える）
+    func mirrored() -> FaceShape {
+        let flip = { (p: CGPoint) in CGPoint(x: -p.x, y: p.y) }
+        return FaceShape(contour: contour.map(flip), leftEye: flip(rightEye), rightEye: flip(leftEye),
+                         nose: flip(nose), mouth: mouth.map(flip))
+    }
+
+    /// 顔の幅（輪郭の左右の端の間）
+    var width: CGFloat {
+        let xs = contour.map(\.x)
+        return (xs.max() ?? 0) - (xs.min() ?? 0)
+    }
+}
+
 /// 写真から取り出した型の形（等方座標）。
 struct PoseShape: Codable {
     var points: [String: CGPoint]
@@ -11,6 +41,8 @@ struct PoseShape: Codable {
     var outline: [CGPoint]?
     /// 2 人以上写っているときの、ほかの人の輪郭
     var extraOutlines: [[CGPoint]]?
+    /// いちばん大きく写っている顔のパーツ
+    var face: FaceShape?
 }
 
 /// 写真を解析した結果。座標は写真の画像座標（左上原点・0...1）。
@@ -20,6 +52,8 @@ struct PhotoAnalysis {
     let joints: [Joint: CGPoint]
     /// 人物の輪郭。大きい順
     let outlines: [[CGPoint]]
+    /// いちばん大きく写っている顔のパーツ（画像座標）
+    var face: FaceShape?
 
     /// 写っている人物全員の範囲（ピクセル）。輪郭があれば輪郭、なければ関節から求める
     var personBounds: CGRect {
@@ -45,7 +79,8 @@ enum PoseImporter {
         let outlines = PoseDetector.personOutlines(ciImage: image)
         // 輪郭が取れれば、足などの関節が検出できなくても型にできる
         guard !outlines.isEmpty || joints.count >= 6 else { return nil }
-        return PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines)
+        return PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines,
+                             face: PoseDetector.faceShape(ciImage: image))
     }
 
     /// 料理・ドリンクの写真から、主な被写体（お皿・グラス・手）の輪郭を取り出す。
@@ -97,7 +132,8 @@ enum PoseImporter {
         return PoseShape(
             points: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, convert($0.value)) }),
             outline: outlines.first,
-            extraOutlines: outlines.count > 1 ? Array(outlines.dropFirst()) : nil)
+            extraOutlines: outlines.count > 1 ? Array(outlines.dropFirst()) : nil,
+            face: analysis.face?.map(convert))
     }
 
     static func makeTemplate(name: String, shape: PoseShape) -> PoseTemplate {
@@ -105,6 +141,7 @@ enum PoseImporter {
                                     isUserCreated: true, recommendedZoom: 1, outline: shape.outline)
         template.points = shape.points
         template.extraOutlines = shape.extraOutlines
+        template.face = shape.face
         return template
     }
 }

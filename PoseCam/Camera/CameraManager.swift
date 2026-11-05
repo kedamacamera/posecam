@@ -36,6 +36,8 @@ enum AspectOption: String, CaseIterable, Identifiable {
 /// これを使う小さなビューだけが描き直されるようにする（画面全体を描き直すと重くなる）。
 final class PoseFeed: ObservableObject {
     @Published fileprivate(set) var detected: [Joint: CGPoint]?
+    /// 検出した顔のパーツ（画像座標）。骨格の表示に使う
+    @Published fileprivate(set) var face: FaceShape?
     @Published fileprivate(set) var score: Double?
 }
 
@@ -117,7 +119,10 @@ final class CameraManager: NSObject, ObservableObject {
         didSet { updatePoseNeeded() }
     }
     @Published var showSkeleton = false {
-        didSet { updatePoseNeeded() }
+        didSet {
+            showSkeletonBox.value = showSkeleton
+            updatePoseNeeded()
+        }
     }
     @Published var timerSeconds = 0
     @Published var burstCount = 1
@@ -169,6 +174,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let isDetecting = Locked(false)
     /// 骨格の検出が要るか（型・骨格の表示・自動撮影・脚長のどれかを使っているときだけ検出する）
     private let poseNeeded = Locked(false)
+    private let showSkeletonBox = Locked(false)
     /// 無音撮影に使う、加工前の最新のコマ。シャッターの瞬間にすぐ取り出せるよう、映像のキューを待たずに読める箱に入れる
     private let latestSourceBox = Locked<CIImage?>(nil)
     /// 最新のコマの撮影情報（Exif: 絞り・シャッター速度・ISO・レンズ名）。無音撮影の写真とダイレクトフラッシュに使う
@@ -600,6 +606,7 @@ final class CameraManager: NSObject, ObservableObject {
         poseNeeded.value = needed
         if !needed {
             poseFeed.detected = nil
+            poseFeed.face = nil
             poseFeed.score = nil
         }
     }
@@ -1097,8 +1104,12 @@ final class CameraManager: NSObject, ObservableObject {
             // 一致度は「関節の位置と向き」と「人の形の重なり」の両方で見る。
             // 顔のアップなど体の関節が取れないときも、人の形は取れるので採点できる
             let gridWidth = 48
+            // 顔のパーツは、型に顔があるとき（顔の位置の一致度）と骨格を表示するときだけ求める
+            let wantsFace = template?.face != nil || self.showSkeletonBox.value
             let result = self.detector.poseAndSilhouette(pixelBuffer: pixelBuffer,
-                                                         silhouetteWidth: outlines.isEmpty ? nil : gridWidth)
+                                                         silhouetteWidth: outlines.isEmpty ? nil : gridWidth,
+                                                         face: wantsFace)
+            let face = result.face
             let pose = result.pose
             self.poseBox.value = pose
             var score: Double?
@@ -1119,14 +1130,25 @@ final class CameraManager: NSObject, ObservableObject {
                                                                   detected: silhouette.cells,
                                                                   width: silhouette.width)
                 }
+                // 顔の位置・大きさ・傾き（型と映っている人の両方に顔があるときだけ）
+                var faceScore: Double?
+                if let templateFace = template.face, let face {
+                    faceScore = PoseMatcher.faceScore(template: templateFace,
+                                                      detected: face.map { PoseSpace.toIsotropic($0, aspect: aspect) })
+                } else if template.face != nil, template.face!.width > 0.15 {
+                    // 顔のアップの型なのに顔が映っていなければ 0 点として数える
+                    faceScore = 0
+                }
                 // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
-                score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore)
+                score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore, face: faceScore,
+                                            faceWidth: template.face?.width ?? 0)
             }
             self.isDetecting.value = false
 
             DispatchQueue.main.async {
                 guard self.poseNeeded.value else { return }
                 if self.poseFeed.detected != pose { self.poseFeed.detected = pose }
+                if self.poseFeed.face != face { self.poseFeed.face = face }
                 let rounded = self.template == nil ? nil : score.map { $0.rounded() }
                 if self.poseFeed.score != rounded { self.poseFeed.score = rounded }
                 self.evaluateAutoShutter()

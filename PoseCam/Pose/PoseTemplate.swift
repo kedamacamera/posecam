@@ -21,6 +21,8 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var extraOutlines: [[CGPoint]]?
     /// 組み込みポーズの見本写真（アプリに同梱した JPEG の名前）。サムネイルに使う
     var imageName: String?
+    /// 顔のパーツ（等方座標）。顔の位置・大きさ・傾きの一致度と、型の顔の表示に使う
+    var face: FaceShape?
 
     init(id: String = UUID().uuidString, name: String, category: String,
          joints: [Joint: CGPoint], isUserCreated: Bool, recommendedZoom: Double? = nil,
@@ -54,6 +56,7 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
                             outline: outline?.map { CGPoint(x: -$0.x, y: $0.y) }, imageName: imageName)
         var result = mirroredTemplate
         result.extraOutlines = extraOutlines?.map { $0.map { CGPoint(x: -$0.x, y: $0.y) } }
+        result.face = face?.mirrored()
         return result
     }
 

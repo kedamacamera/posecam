@@ -155,6 +155,31 @@ enum PoseDrawing {
         return CGPoint(x: b.x + (b.x - a.x) / d * length, y: b.y + (b.y - a.y) / d * length)
     }
 
+    /// 顔のボーン（あごのライン・両目・鼻・口）。transform は顔の座標から描画先の座標への変換。
+    static func drawFace(_ face: FaceShape, in context: GraphicsContext, transform: (CGPoint) -> CGPoint,
+                         color: Color, lineWidth: CGFloat) {
+        let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+        var jaw = Path()
+        jaw.addLines(face.contour.map(transform))
+        context.stroke(jaw, with: .color(color), style: style)
+        var mouth = Path()
+        mouth.addLines(face.mouth.map(transform))
+        mouth.closeSubpath()
+        context.stroke(mouth, with: .color(color), style: style)
+        // 両目を結ぶ線と、目の間から鼻への線（顔の向き・傾きが分かるように）
+        let left = transform(face.leftEye), right = transform(face.rightEye), nose = transform(face.nose)
+        var axis = Path()
+        axis.move(to: left)
+        axis.addLine(to: right)
+        axis.move(to: CGPoint(x: (left.x + right.x) / 2, y: (left.y + right.y) / 2))
+        axis.addLine(to: nose)
+        context.stroke(axis, with: .color(color.opacity(0.7)), style: StrokeStyle(lineWidth: lineWidth * 0.7, lineCap: .round))
+        let r = lineWidth * 1.6
+        for p in [left, right] {
+            context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
+        }
+    }
+
     static func drawSkeleton(_ points: [Joint: CGPoint], in context: GraphicsContext, color: Color) {
         let style = StrokeStyle(lineWidth: 3, lineCap: .round)
         for (a, b) in Joint.bones {
@@ -202,6 +227,12 @@ struct PoseTemplateOverlay: View, Equatable {
                                      color: .black.opacity(0.35), lineWidth: 5, fillOpacity: 0)
             PoseDrawing.drawTemplate(template, in: layer, transform: transform,
                                      color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0.12)
+            // 顔のボーン（目・鼻・口・あご）も重ねて、顔の位置と大きさを合わせやすくする
+            if let face = template.face {
+                PoseDrawing.drawFace(face, in: layer, transform: transform, color: .black.opacity(0.35), lineWidth: 3.5)
+                PoseDrawing.drawFace(face, in: layer, transform: transform,
+                                     color: matched ? .green : .white, lineWidth: 2)
+            }
         }
         .allowsHitTesting(false)
     }
@@ -226,10 +257,15 @@ struct SkeletonLayer: View {
     @ObservedObject var feed: PoseFeed
 
     var body: some View {
-        if let detected = feed.detected {
+        if feed.detected != nil || feed.face != nil {
             Canvas { context, size in
-                let points = detected.mapValues { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
-                PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
+                let toView = { (p: CGPoint) in CGPoint(x: p.x * size.width, y: p.y * size.height) }
+                if let detected = feed.detected {
+                    PoseDrawing.drawSkeleton(detected.mapValues(toView), in: context, color: .cyan.opacity(0.8))
+                }
+                if let face = feed.face {
+                    PoseDrawing.drawFace(face, in: context, transform: toView, color: .cyan.opacity(0.8), lineWidth: 2)
+                }
             }
             .allowsHitTesting(false)
         }

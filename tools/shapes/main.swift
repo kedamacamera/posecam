@@ -99,6 +99,21 @@ for sheetIndex in stride(from: 0, to: previews.count, by: perSheet) {
             canvas.addLine(to: point(pb))
             canvas.strokePath()
         }
+        // 顔のボーン（緑）
+        if let face = item.analysis.face {
+            canvas.setStrokeColor(CGColor(red: 0.2, green: 1, blue: 0.3, alpha: 1))
+            canvas.beginPath()
+            canvas.addLines(between: face.contour.map(point))
+            canvas.strokePath()
+            canvas.beginPath()
+            canvas.addLines(between: face.mouth.map(point))
+            canvas.closePath()
+            canvas.strokePath()
+            for eye in [face.leftEye, face.rightEye] {
+                let c = point(eye)
+                canvas.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
+            }
+        }
         // 撮影画面に重なる枠（3:4）
         let size = item.analysis.size
         let crop = item.crop

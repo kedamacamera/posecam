@@ -99,6 +99,7 @@ final class PoseLibrary: ObservableObject {
             builtInPoses[index].points = shape.points
             builtInPoses[index].outline = shape.outline
             builtInPoses[index].extraOutlines = shape.extraOutlines
+            builtInPoses[index].face = shape.face
         }
     }
 
@@ -108,7 +109,7 @@ final class PoseLibrary: ObservableObject {
     private func prepareBuiltInShapes() {
         let poses = builtInPoses
         // 型の作り方を変えたら名前を変えて、古い結果を使わないようにする
-        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v2.json")
+        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v3.json")
 
         DispatchQueue.global(qos: .utility).async {
             var cache = (try? JSONDecoder().decode([String: PoseShape].self,
@@ -139,6 +140,7 @@ final class PoseLibrary: ObservableObject {
                     updated[index].points = shape.points
                     updated[index].outline = shape.outline
                     updated[index].extraOutlines = shape.extraOutlines
+                    updated[index].face = shape.face
                 }
             }
 

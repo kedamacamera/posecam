@@ -50,32 +50,41 @@ final class PoseDetector {
 
     /// プレビュー用。骨格と、人の形（silhouetteWidth 列のマス目）を求める。
     /// pixelBuffer は切り抜き・縮小済みのコマで、座標もそのコマが基準。
-    func poseAndSilhouette(pixelBuffer: CVPixelBuffer, silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
+    /// 骨格・人の形・顔のパーツ（画像座標）。
+    struct Live {
+        var pose: [Joint: CGPoint]?
+        var silhouette: Silhouette?
+        var face: FaceShape?
+    }
+
+    func poseAndSilhouette(pixelBuffer: CVPixelBuffer, silhouetteWidth: Int?, face: Bool = false) -> Live {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         let aspect = CGFloat(CVPixelBufferGetWidth(pixelBuffer)) / CGFloat(CVPixelBufferGetHeight(pixelBuffer))
-        return poseAndSilhouette(handler, aspect: aspect, silhouetteWidth: silhouetteWidth)
+        return poseAndSilhouette(handler, aspect: aspect, silhouetteWidth: silhouetteWidth, face: face)
     }
 
     /// 確認用のツールから使う（写真から）。
-    func poseAndSilhouette(ciImage: CIImage, silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
+    func poseAndSilhouette(ciImage: CIImage, silhouetteWidth: Int?, face: Bool = false) -> Live {
         let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
         return poseAndSilhouette(handler, aspect: ciImage.extent.width / ciImage.extent.height,
-                                 silhouetteWidth: silhouetteWidth)
+                                 silhouetteWidth: silhouetteWidth, face: face)
     }
 
     private func poseAndSilhouette(_ handler: VNImageRequestHandler, aspect: CGFloat,
-                                   silhouetteWidth: Int?) -> (pose: [Joint: CGPoint]?, silhouette: Silhouette?) {
+                                   silhouetteWidth: Int?, face wantsFace: Bool) -> Live {
         let poseRequest = VNDetectHumanBodyPoseRequest()
         let segmentation = VNGeneratePersonSegmentationRequest()
         // 人の形は大まかでよいので、いちばん速い品質で求める
         segmentation.qualityLevel = .fast
         segmentation.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        let faceRequest = VNDetectFaceLandmarksRequest()
         var requests: [VNRequest] = [poseRequest]
         if silhouetteWidth != nil { requests.append(segmentation) }
+        if wantsFace { requests.append(faceRequest) }
         do {
             try handler.perform(requests)
         } catch {
-            return (nil, nil)
+            return Live()
         }
         var pose: [Joint: CGPoint]?
         if let observations = poseRequest.results {
@@ -86,7 +95,36 @@ final class PoseDetector {
         if let width = silhouetteWidth, let mask = segmentation.results?.first?.pixelBuffer {
             silhouette = Self.cells(of: mask, width: width, height: max(1, Int((CGFloat(width) / aspect).rounded())))
         }
-        return (pose, silhouette)
+        let face = wantsFace ? Self.faceShape(from: faceRequest.results ?? []) : nil
+        return Live(pose: pose, silhouette: silhouette, face: face)
+    }
+
+    /// 写真のいちばん大きい顔のパーツ（画像座標）。型を作るときに使う。
+    static func faceShape(ciImage: CIImage) -> FaceShape? {
+        let request = VNDetectFaceLandmarksRequest()
+        try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request])
+        return faceShape(from: request.results ?? [])
+    }
+
+    /// いちばん大きい顔のパーツを、画像座標（左上原点・0...1）で返す。
+    static func faceShape(from faces: [VNFaceObservation]) -> FaceShape? {
+        guard let face = faces.max(by: { $0.boundingBox.width < $1.boundingBox.width }),
+              let marks = face.landmarks,
+              let contour = marks.faceContour, let leftEye = marks.leftEye, let rightEye = marks.rightEye,
+              let nose = marks.nose, let lips = marks.outerLips else { return nil }
+        // imageSize を 1x1 にすると、画像全体に対する 0...1 の座標（左下原点）になる
+        let unit = CGSize(width: 1, height: 1)
+        func points(_ region: VNFaceLandmarkRegion2D) -> [CGPoint] {
+            region.pointsInImage(imageSize: unit).map { CGPoint(x: $0.x, y: 1 - $0.y) }
+        }
+        func center(_ region: VNFaceLandmarkRegion2D) -> CGPoint {
+            let p = points(region)
+            return CGPoint(x: p.map(\.x).reduce(0, +) / CGFloat(max(p.count, 1)),
+                           y: p.map(\.y).reduce(0, +) / CGFloat(max(p.count, 1)))
+        }
+        let a = center(leftEye), b = center(rightEye)
+        return FaceShape(contour: points(contour), leftEye: a.x <= b.x ? a : b, rightEye: a.x <= b.x ? b : a,
+                         nose: center(nose), mouth: points(lips))
     }
 
     /// 人の領域のマスクを、width × height のマス目に縮める（各マスの中心の値で判定）。

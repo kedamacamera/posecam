@@ -446,6 +446,25 @@ func silhouetteTests(_ label: String, _ image: CIImage) {
     report.append("  template 10% higher: \(scoreFor(moved(0, dy: -0.1)))")
     report.append("  template 25% higher: \(scoreFor(moved(0, dy: -0.25)))")
     report.append("  template 140% size: \(scoreFor(moved(0, 1.4)))")
+
+    // 顔の位置・大きさ・傾きの一致度
+    let live = detector.poseAndSilhouette(ciImage: image, silhouetteWidth: nil, face: true)
+    guard let face = live.face?.map({ PoseSpace.toIsotropic($0, aspect: aspect) }) else {
+        report.append("  face: not found")
+        return
+    }
+    func faceFor(dx: CGFloat = 0, dy: CGFloat = 0, scale: CGFloat = 1, degrees: CGFloat = 0) -> String {
+        let c = CGPoint(x: (face.leftEye.x + face.rightEye.x) / 2, y: (face.leftEye.y + face.rightEye.y) / 2)
+        let a = degrees * .pi / 180
+        let moved = face.map { p -> CGPoint in
+            let x = (p.x - c.x) * scale, y = (p.y - c.y) * scale
+            return CGPoint(x: c.x + x * cos(a) - y * sin(a) + dx, y: c.y + x * sin(a) + y * cos(a) + dy)
+        }
+        return String(format: "%.1f", PoseMatcher.faceScore(template: moved, detected: face))
+    }
+    report.append(String(format: "  face (width %.2f): same %@, 5%% right %@, 10%% higher %@, 25%% higher %@, 130%% size %@, tilted 15deg %@",
+                         face.width, faceFor(), faceFor(dx: 0.05), faceFor(dy: -0.1), faceFor(dy: -0.25),
+                         faceFor(scale: 1.3), faceFor(degrees: 15)))
 }
 
 if inputs.count > 1 {
