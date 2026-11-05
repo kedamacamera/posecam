@@ -324,20 +324,34 @@ struct ContentView: View {
                 ShutterButton(mode: camera.mode,
                               isRecording: camera.isRecording,
                               isBusy: camera.isCapturing || camera.isSequenceRunning,
-                              progress: Double(camera.recordingSeconds) / Double(CameraManager.snapMaxSeconds)) {
-                    camera.shutterPressed()
-                }
+                              progress: Double(camera.recordingSeconds) / Double(CameraManager.snapMaxSeconds),
+                              action: { camera.shutterPressed() },
+                              onLongPressStart: { camera.startQuickVideo() },
+                              onLongPressEnd: { camera.stopQuickVideo() })
                 Spacer()
-                Button {
-                    camera.flipCamera()
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .frame(width: 48, height: 48)
-                        .background(Circle().fill(Color.white.opacity(0.18)))
+                if camera.isRecording && !camera.isQuickVideo {
+                    // 録画中は、カメラの切り替えの代わりに静止画のシャッター（録画中のコマを写真にする）
+                    Button {
+                        camera.captureStillWhileRecording()
+                    } label: {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 38, height: 38)
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2).padding(-4))
+                            .frame(width: 48, height: 48)
+                    }
+                } else {
+                    Button {
+                        camera.flipCamera()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath.camera")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                            .frame(width: 48, height: 48)
+                            .background(Circle().fill(Color.white.opacity(0.18)))
+                    }
+                    .disabled(camera.isRecording || camera.isSequenceRunning)
                 }
-                .disabled(camera.isRecording || camera.isSequenceRunning)
             }
             .padding(.horizontal, 30)
 

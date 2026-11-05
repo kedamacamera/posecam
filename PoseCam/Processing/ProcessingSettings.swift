@@ -1,7 +1,7 @@
 /// プレビュー・写真・動画に共通でかける加工の設定。値はすべて 0...1。
 struct ProcessingSettings: Equatable {
     var filter: PhotoFilter = .none
-    /// フィルターの濃さ。0.7 がそれぞれのフィルターの標準の濃さで、1 で少しやりすぎなくらい
+    /// フィルターの濃さ（0...2）。1 がそれぞれのフィルターの標準の濃さで、2 でその 2 倍
     var filterStrength: Double = PhotoFilter.standardStrength
     var smoothing: Double = 0.4
     var brightening: Double = 0.2

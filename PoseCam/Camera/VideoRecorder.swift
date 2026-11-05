@@ -1,7 +1,7 @@
 import AVFoundation
 import CoreImage
 
-/// 加工済みフレームと音声を .mov に書き出す。呼び出しはすべて同じキュー（映像キュー）から行う。
+/// 加工済みフレームと音声を .mov に書き出す。呼び出しはすべて同じキュー（録画のキュー）から行う。
 final class VideoRecorder {
     enum RecorderError: Error {
         case cannotAddInput
@@ -28,8 +28,6 @@ final class VideoRecorder {
     private let videoInput: AVAssetWriterInput
     private let audioInput: AVAssetWriterInput?
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
-    private let context: CIContext
-    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private var sessionStarted = false
     /// 書き込めたコマの数（失敗の理由を知らせるのに使う）
     private(set) var framesWritten = 0
@@ -41,8 +39,7 @@ final class VideoRecorder {
     var hasAudioTrack: Bool { audioInput != nil }
 
     /// codec は HEVC が使えなければ H.264 で作り直す（CameraManager 側）
-    init(url: URL, size: CGSize, audioSettings: [String: Any]?, context: CIContext,
-         codec: AVVideoCodecType = .hevc) throws {
+    init(url: URL, size: CGSize, audioSettings: [String: Any]?, codec: AVVideoCodecType = .hevc) throws {
         let width = Int(size.width) / 2 * 2
         let height = Int(size.height) / 2 * 2
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -85,10 +82,10 @@ final class VideoRecorder {
         self.videoInput = videoInput
         self.audioInput = audioInput
         self.adaptor = adaptor
-        self.context = context
     }
 
-    func appendVideo(_ image: CIImage, at time: CMTime) {
+    /// buffer は加工済みのコマを描いた入れ物（大きさは書き出しと同じ）
+    func appendVideo(_ buffer: CVPixelBuffer, at time: CMTime) {
         guard writer.status == .writing else {
             noteFailure()
             return
@@ -97,12 +94,7 @@ final class VideoRecorder {
             writer.startSession(atSourceTime: time)
             sessionStarted = true
         }
-        guard videoInput.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
-        var buffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
-        guard let buffer else { return }
-        let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-        context.render(image, to: buffer, bounds: bounds, colorSpace: colorSpace)
+        guard videoInput.isReadyForMoreMediaData else { return }
         if adaptor.append(buffer, withPresentationTime: time) {
             framesWritten += 1
         } else {

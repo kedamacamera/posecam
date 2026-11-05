@@ -12,8 +12,9 @@ import simd
 enum PhotoFilter: String, CaseIterable, Identifiable {
     case none, natural, vivid, cineFilm, film, warmFilm, coolFilm, clear, food, cafe, vintage, bleach, mono, noir, colorKeep
 
-    /// それぞれのフィルターの標準の濃さ（スライダーの 70%）。100% にすると少しやりすぎなくらいになる
-    static let standardStrength = 0.7
+    /// それぞれのフィルターの標準の濃さ（スライダーの 100%）。200% まで濃くできる
+    static let standardStrength = 1.0
+    static let maxStrength = 2.0
 
     var id: String { rawValue }
 
@@ -41,7 +42,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
     var needsPersonMask: Bool { self == .colorKeep }
 
     /// 人物だけ色を残し、それ以外を白黒にする。person は人物を白にしたマスク（画像と同じ大きさ）。
-    /// 白黒の濃さは「モノクロ」と同じ（標準の 70% で完全な白黒、それより下げると背景に色が少し残る）
+    /// 白黒の濃さは「モノクロ」と同じ（標準の 100% で完全な白黒、それより下げると背景に色が少し残る）
     static func colorKeep(_ image: CIImage, person: CIImage, strength: Double) -> CIImage {
         let extent = image.extent
         let mono = PhotoFilter.mono.apply(to: image, strength: strength)
@@ -122,7 +123,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    /// strength: 0...1。standardStrength（0.7）でそれぞれのルックの標準の濃さ、1 でその 1.43 倍
+    /// strength: 0...2。standardStrength（1）でそれぞれのルックの標準の濃さ、2 でその 2 倍
     func apply(to image: CIImage, strength: Double = PhotoFilter.standardStrength) -> CIImage {
         guard let data = cube(strength: strength) else { return image }
         return image.applyingFilter("CIColorCubeWithColorSpace", parameters: [
@@ -139,7 +140,7 @@ enum PhotoFilter: String, CaseIterable, Identifiable {
 
     private func cube(strength: Double) -> Data? {
         guard let look else { return nil }
-        let step = Int((min(max(strength, 0), 1) * 50).rounded())
+        let step = Int((min(max(strength, 0), Self.maxStrength) * 50).rounded())
         guard step > 0 else { return nil }
         let key = "\(rawValue)-\(step)"
         if let data = Self.cache.value[key] { return data }

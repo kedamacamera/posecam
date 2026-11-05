@@ -85,6 +85,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     /// 停止した後、書き出し・保存がまだ終わっていない動画の数（裏で保存を続け、その間も次を撮れる）
     @Published private(set) var savingVideos = 0
+    /// 写真モードでシャッターを長押しして撮っている短い動画
+    @Published private(set) var isQuickVideo = false
     @Published private(set) var recordingSeconds = 0
     @Published private(set) var isCapturing = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
@@ -165,6 +167,10 @@ final class CameraManager: NSObject, ObservableObject {
     private let detectionQueue = DispatchQueue(label: "posecam.detection", qos: .userInitiated)
     /// 撮影後の加工・保存はプレビューより優先度を下げ、撮影中に画面がカクつかないようにする
     private let photoQueue = DispatchQueue(label: "posecam.photo", qos: .utility)
+    /// 録画の書き込み（動画ファイルの作成・コマと音声の追加・仕上げ）とマイクの音声。
+    /// 映像のキューと分けて、書き出しの開始・仕上げに時間がかかっても、プレビューと音声の受け取りが止まらないようにする
+    /// （以前は同じキューで、録画を繰り返すと十数秒止まり、音声も取りこぼしていた）
+    private let recordingQueue = DispatchQueue(label: "posecam.recording", qos: .userInitiated)
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -210,11 +216,26 @@ final class CameraManager: NSObject, ObservableObject {
 
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
+    private var lastSlowFrameLog: CFTimeInterval = 0
     private var smoothedLegs: LegLayout?
     private var lastFrameSize: CGSize = .zero
-    private var wantsRecording = false
+    /// 録画の書き込み先にするコマの入れ物（加工済みのコマをここに描いてから、書き込みのキューへ渡す）
+    private var recordPool: CVPixelBufferPool?
+    private var recordPoolSize: CGSize = .zero
+
+    // 映像のキューと録画のキューの両方から読む
+    /// いま書き込み中の録画の番号（nil は書き込まない）
+    private let recordingTake = Locked<Int?>(nil)
+    /// その録画に音声を入れるか
+    private let recordingAudio = Locked(false)
+    /// 書き込みのキューに渡して、まだ書いていないコマの数（多すぎるときはコマを捨てる）
+    private let pendingRecordFrames = Locked(0)
+
+    // recordingQueue 専用
     private var recorder: VideoRecorder?
-    private var lastRecordedFrame: CIImage?
+    private var recorderTake: Int?
+    private var lastRecordedBuffer: CVPixelBuffer?
+    private var droppedRecordFrames = 0
     private var frameCount = 0
     /// 撮影モードの切り替え直後に捨てるコマの数（倍率が戻る前のコマを見せない）
     private var framesToSkip = 0
@@ -230,6 +251,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var matchStartedAt: Date?
     private var lastAutoShotAt = Date.distantPast
     private var pendingPhotos = 0
+    private var takeCounter = 0
 
     // MARK: - セッション
 
@@ -270,7 +292,7 @@ final class CameraManager: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
-        audioOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        audioOutput.setSampleBufferDelegate(self, queue: recordingQueue)
         session.commitConfiguration()
 
         updateConnections(position: .back)
@@ -900,7 +922,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// 無音撮影。最新の映像のコマ（加工前・フル解像度）を写真と同じ手順で加工して保存する。
-    private func captureSilently() {
+    private func captureSilently(upscale: Bool = true) {
         let settings = settingsBox.value
         let aspect = aspectBox.value
         // シャッターの瞬間のコマをすぐに取り出す（映像の処理が終わるのを待たない）
@@ -911,7 +933,7 @@ final class CameraManager: NSObject, ObservableObject {
         let exif = latestExifBox.value
         let position = videoInput?.device.position ?? .back
         // 通常の写真と同じ画素数になるよう、裏で引き伸ばす
-        let targetSize = photoSizeBox.value[position]
+        let targetSize = upscale ? photoSizeBox.value[position] : nil
         photoQueue.async {
             defer { DispatchQueue.main.async { self.photoFinished() } }
             let metadata = PhotoMetadata.forVideoFrame(exif: exif, position: position)
@@ -1009,26 +1031,58 @@ final class CameraManager: NSObject, ObservableObject {
         if isSequenceRunning { cancelSequence() }
     }
 
-    private func startRecording() {
-        guard mode != .photo, !isRecording else { return }
+    /// 写真モードでシャッターを 1 秒長押ししたとき。離すまで（最長 10 秒）動画を撮る
+    func startQuickVideo() {
+        guard mode == .photo, !isRecording, !isSequenceRunning else { return }
+        startRecording(quick: true)
+    }
+
+    func stopQuickVideo() {
+        if isQuickVideo { stopRecording() }
+    }
+
+    /// 録画中に静止画を撮る（標準のカメラと同じく、録画中のコマをそのまま写真にする。音は鳴らさない）
+    func captureStillWhileRecording() {
+        guard isRecording else { return }
+        shutterCount += 1
+        pendingPhotos += 1
+        isCapturing = true
+        captureSilently(upscale: false)
+    }
+
+    private func startRecording(quick: Bool = false) {
+        guard mode != .photo || quick, !isRecording else { return }
         isRecording = true
+        isQuickVideo = quick
         recordingSeconds = 0
+        takeCounter += 1
+        let take = takeCounter
+        let withAudio = mode == .video || quick
+        recordingAudio.value = withAudio
+        if quick {
+            // 写真モードはマイクをつないでいないので、長押しの動画のときだけつなぐ
+            sessionQueue.async {
+                self.session.beginConfiguration()
+                self.attachAudio()
+                self.session.commitConfiguration()
+            }
+        }
         // 無音の設定では開始・停止の音を鳴らさない（鳴らすと、その音が動画に入る）
         let mute = muteShutter
         if !mute { AudioServicesPlaySystemSound(1117) }
         recordTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.recordingSeconds += 1
-            if self.mode == .snap && self.recordingSeconds >= Self.snapMaxSeconds {
+            if (self.mode == .snap || self.isQuickVideo) && self.recordingSeconds >= Self.snapMaxSeconds {
                 self.stopRecording()
             }
         }
         let route = AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portType.rawValue }
-        Diagnostics.log("録画: 開始の操作（マイク \(route.joined(separator: ",")), 音声の入力 \(mode == .video ? "あり" : "なし")）")
+        Diagnostics.log("録画: 開始の操作 #\(take)（マイク \(route.joined(separator: ",")), 音声 \(withAudio ? "あり" : "なし")）")
         // 開始音が録音に入らないよう、少し待ってから書き込みを始める
         DispatchQueue.main.asyncAfter(deadline: .now() + (mute ? 0.05 : 0.45)) {
-            guard self.isRecording else { return }
-            self.videoQueue.async { self.wantsRecording = true }
+            guard self.isRecording, self.takeCounter == take else { return }
+            self.recordingTake.value = take
         }
     }
 
@@ -1038,9 +1092,13 @@ final class CameraManager: NSObject, ObservableObject {
     private func stopRecording() {
         guard isRecording else { return }
         isRecording = false
+        let quick = isQuickVideo
+        isQuickVideo = false
         recordTimer?.invalidate()
         recordTimer = nil
-        let isSnap = mode == .snap
+        recordingTake.value = nil
+        let take = takeCounter
+        let isSnap = mode == .snap && !quick
         if !muteShutter { AudioServicesPlaySystemSound(1118) }
 
         savingVideos += 1
@@ -1052,23 +1110,28 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        videoQueue.async {
-            self.wantsRecording = false
-            guard let recorder = self.recorder else {
-                // 録画中に映像のコマが 1 つも届かなかった（以前は何も表示せずに終わっていた）
-                Diagnostics.log("録画: コマが届かず録画できず（受信 \(self.frameCount) コマ目）")
+        // 書き込みのキューで止める。それまでに渡したコマはすべて書いてから止まる（キューは順番どおり）
+        recordingQueue.async {
+            guard let recorder = self.recorder, self.recorderTake == take else {
+                // 録画中に映像のコマが 1 つも届かなかった
+                Diagnostics.log("録画: #\(take) コマが届かず録画できず（受信 \(self.frameCount) コマ目）")
                 self.report("録画できませんでした（カメラの映像が届いていません）")
                 finished()
                 return
             }
             // 次の録画は新しい書き出し先で始まる。この録画の書き出しは、そのまま裏で続く
             self.recorder = nil
-            let thumbnail = self.lastRecordedFrame.flatMap { self.makeThumbnail($0) }
-            self.lastRecordedFrame = nil
+            self.recorderTake = nil
+            let thumbnail = self.lastRecordedBuffer.flatMap { self.makeThumbnail(CIImage(cvPixelBuffer: $0)) }
+            self.lastRecordedBuffer = nil
+            if self.droppedRecordFrames > 0 {
+                Diagnostics.log("録画: #\(take) 書き込みが追いつかず捨てたコマ \(self.droppedRecordFrames)")
+                self.droppedRecordFrames = 0
+            }
 
             recorder.finish { outcome in
                 guard let url = outcome.url else {
-                    Diagnostics.log("録画: 書き出し失敗 \(outcome.failure ?? "")")
+                    Diagnostics.log("録画: #\(take) 書き出し失敗 \(outcome.failure ?? "")")
                     self.report("動画の書き出しに失敗しました: \(outcome.failure ?? "理由不明")")
                     finished()
                     return
@@ -1080,30 +1143,85 @@ final class CameraManager: NSObject, ObservableObject {
                 }
                 MediaSaver.saveVideo(at: url) { ok, reason in
                     if ok {
-                        Diagnostics.log("録画: 保存完了\(outcome.partial ? "（途中まで）" : "")")
+                        Diagnostics.log("録画: #\(take) 保存完了\(outcome.partial ? "（途中まで）" : "")")
                         DispatchQueue.main.async { self.lastThumbnail = thumbnail }
                         if outcome.partial {
                             self.report("動画の最後の部分を書き出せなかったので、途中まで保存しました")
                         }
                     } else {
-                        Diagnostics.log("録画: 保存失敗 \(reason ?? "")")
+                        Diagnostics.log("録画: #\(take) 保存失敗 \(reason ?? "")")
                         self.report("動画を保存できませんでした: \(reason ?? "写真へのアクセス許可を確認してください")")
                     }
                     finished()
                 }
             }
         }
+
+        if quick {
+            // 長押しの動画が終わったら、写真モードのマイクを外す（マイク使用中の表示を消す）
+            sessionQueue.async {
+                guard self.modeBox.value == .photo else { return }
+                self.session.beginConfiguration()
+                self.detachAudio()
+                self.session.commitConfiguration()
+            }
+        }
+    }
+
+    /// videoQueue から呼ぶ。加工済みのコマを書き込み用の入れ物に描いて、書き込みのキューへ渡す。
+    private func handleRecording(_ image: CIImage, at time: CMTime) {
+        guard let take = recordingTake.value else { return }
+        // 書き込みが詰まっているときは、プレビューを止めないようにコマを捨てる
+        guard pendingRecordFrames.value < 8 else {
+            recordingQueue.async { self.droppedRecordFrames += 1 }
+            return
+        }
+        guard let buffer = makeRecordBuffer(image) else { return }
+        pendingRecordFrames.value += 1
+        recordingQueue.async {
+            self.pendingRecordFrames.value -= 1
+            self.appendRecordFrame(buffer, at: time, take: take)
+        }
     }
 
     /// videoQueue から呼ぶ。
-    private func handleRecording(_ image: CIImage, at time: CMTime) {
-        guard wantsRecording else { return }
-        if recorder == nil {
+    private func makeRecordBuffer(_ image: CIImage) -> CVPixelBuffer? {
+        let extent = image.extent
+        let size = CGSize(width: CGFloat(Int(extent.width) / 2 * 2), height: CGFloat(Int(extent.height) / 2 * 2))
+        if recordPool == nil || recordPoolSize != size {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: Int(size.width),
+                kCVPixelBufferHeightKey as String: Int(size.height),
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            ]
+            var pool: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
+            recordPool = pool
+            recordPoolSize = size
+        }
+        guard let recordPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, recordPool, &buffer)
+        guard let buffer else { return nil }
+        let normalized = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+        renderer.ciContext.render(normalized, to: buffer, bounds: CGRect(origin: .zero, size: size),
+                                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return buffer
+    }
+
+    /// recordingQueue から呼ぶ。最初のコマで書き出し先を作る。
+    private func appendRecordFrame(_ buffer: CVPixelBuffer, at time: CMTime, take: Int) {
+        if recorderTake != take {
+            // すでに止めた録画のコマは捨てる
+            guard recordingTake.value == take else { return }
+            let started = CACurrentMediaTime()
+            let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
             var audioSettings: [String: Any]?
-            if modeBox.value == .video {
+            if recordingAudio.value {
                 // マイクがつながっていれば、カメラの勧める設定を使う。取れなければ AAC で書く
                 audioSettings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
                 if audioSettings == nil {
@@ -1112,27 +1230,28 @@ final class CameraManager: NSObject, ObservableObject {
                 }
             }
             do {
-                recorder = try VideoRecorder(url: url, size: image.extent.size,
-                                             audioSettings: audioSettings, context: renderer.ciContext)
+                recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings)
             } catch {
                 // HEVC で始められない機種・状態では H.264 で作り直す
                 Diagnostics.log("録画: HEVC で開始できず \(error.localizedDescription)")
                 try? FileManager.default.removeItem(at: url)
                 do {
-                    recorder = try VideoRecorder(url: url, size: image.extent.size, audioSettings: audioSettings,
-                                                 context: renderer.ciContext, codec: .h264)
+                    recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings, codec: .h264)
                 } catch {
-                    wantsRecording = false
                     Diagnostics.log("録画: 開始できず \(error.localizedDescription)")
                     report("録画を開始できませんでした: \(error.localizedDescription)")
+                    recordingTake.value = nil
                     DispatchQueue.main.async { self.stopRecording() }
                     return
                 }
             }
-            Diagnostics.log("録画: 開始 \(Int(image.extent.width))x\(Int(image.extent.height))")
+            recorderTake = take
+            droppedRecordFrames = 0
+            let seconds = CACurrentMediaTime() - started
+            Diagnostics.log("録画: #\(take) 開始 \(Int(size.width))x\(Int(size.height))\(seconds > 0.3 ? String(format: "（準備に %.1f 秒）", seconds) : "")")
         }
-        recorder?.appendVideo(image, at: time)
-        lastRecordedFrame = image
+        recorder?.appendVideo(buffer, at: time)
+        lastRecordedBuffer = buffer
     }
 
     // MARK: - 検出・自動シャッター
@@ -1274,10 +1393,13 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         if output === audioOutput {
+            // 音声は録画のキュー（recordingQueue）で届く
             recorder?.appendAudio(sampleBuffer)
             return
         }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let frameStarted = CACurrentMediaTime()
+        defer { noteSlowFrame(since: frameStarted) }
 
         // 最初の 1 コマだけ記録し、1 秒ほど動いたら正常とみなす
         frameCount += 1
@@ -1288,8 +1410,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 
         let source = CIImage(cvPixelBuffer: pixelBuffer)
         latestSourceBox.value = source
-        if modeBox.value == .photo,
-           let exif = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil)
+        if let exif = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil)
             as? [String: Any] {
             latestExifBox.value = exif
         }
@@ -1333,6 +1454,15 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         let processed = processor.process(image, settings: settings, legs: legs, masks: masks)
         renderer.display(processed)
         handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+    }
+
+    /// 1 コマの処理に 0.5 秒以上かかったら記録する（5 秒に 1 回まで）。videoQueue から呼ぶ。
+    private func noteSlowFrame(since start: CFTimeInterval) {
+        let now = CACurrentMediaTime()
+        let seconds = now - start
+        guard seconds > 0.5, now - lastSlowFrameLog > 5 else { return }
+        lastSlowFrameLog = now
+        Diagnostics.log(String(format: "映像: 1 コマの処理に %.1f 秒かかった", seconds))
     }
 
     /// 判定用に、長辺 960 ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。

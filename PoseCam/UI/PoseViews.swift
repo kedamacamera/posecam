@@ -237,6 +237,7 @@ enum PoseDrawing {
 }
 
 /// プレビューに重ねる型（人の形の輪郭）。型・一致したか・濃さが変わったときだけ描き直す（Equatable）。
+/// 線の内側は塗らない（肌の加工の効き具合が見えにくくなるため）。
 /// 影（shadow）は毎回画面外に描き直すので重い。代わりに暗い太線を下に敷いて見やすくする。
 struct PoseTemplateOverlay: View, Equatable {
     let template: PoseTemplate
@@ -252,7 +253,7 @@ struct PoseTemplateOverlay: View, Equatable {
             PoseDrawing.drawTemplate(template, in: layer, transform: transform,
                                      color: .black.opacity(0.35), lineWidth: 5, fillOpacity: 0)
             PoseDrawing.drawTemplate(template, in: layer, transform: transform,
-                                     color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0.12)
+                                     color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0)
             // 顔のボーン（目・鼻・口・あご）も重ねて、顔の位置と大きさを合わせやすくする
             if let face = template.face {
                 PoseDrawing.drawFace(face, in: layer, transform: transform, color: .black.opacity(0.35), lineWidth: 3.5)

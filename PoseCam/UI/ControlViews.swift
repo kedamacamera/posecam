@@ -388,7 +388,7 @@ struct FilterStrip: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            StrengthSlider(value: $strength, standard: PhotoFilter.standardStrength)
+            StrengthSlider(value: $strength, standard: PhotoFilter.standardStrength, maximum: PhotoFilter.maxStrength)
                 .padding(.horizontal)
                 .opacity(selection == .none ? 0.35 : 1)
                 .disabled(selection == .none)
@@ -435,12 +435,13 @@ struct FilterStrip: View {
     }
 }
 
-/// フィルターの濃さ。標準（70%）の所に点があり、近くまで動かすと磁石のように吸い付く（軽い振動つき）。
-/// 100% はわざと少しやりすぎなくらいの濃さ。
+/// フィルターの濃さ。標準（100%）の所に点があり、近くまで動かすと磁石のように吸い付く（軽い振動つき）。
+/// 最大（200%）は標準の 2 倍の濃さ。
 struct StrengthSlider: View {
     @Binding var value: Double
     let standard: Double
-    /// この範囲まで近づいたら標準に吸い付く
+    let maximum: Double
+    /// この範囲（全体に対する割合）まで近づいたら標準に吸い付く
     private let snapRange = 0.04
 
     var body: some View {
@@ -451,23 +452,23 @@ struct StrengthSlider: View {
                 let width = geo.size.width
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.3)).frame(height: 4)
-                    Capsule().fill(Color.yellow).frame(width: width * value, height: 4)
+                    Capsule().fill(Color.yellow).frame(width: width * value / maximum, height: 4)
                     // 標準の位置の点
                     Circle()
                         .fill(abs(value - standard) < 0.001 ? Color.yellow : .white)
                         .frame(width: 7, height: 7)
-                        .offset(x: width * standard - 3.5)
+                        .offset(x: width * standard / maximum - 3.5)
                     Circle()
                         .fill(Color.white)
                         .frame(width: 20, height: 20)
                         .shadow(color: .black.opacity(0.4), radius: 2)
-                        .offset(x: width * value - 10)
+                        .offset(x: width * value / maximum - 10)
                 }
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
-                    var next = min(max(drag.location.x / width, 0), 1)
-                    if abs(next - standard) < snapRange { next = standard }
+                    var next = min(max(drag.location.x / width, 0), 1) * maximum
+                    if abs(next - standard) < snapRange * maximum { next = standard }
                     if next == standard && value != standard {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
@@ -477,7 +478,7 @@ struct StrengthSlider: View {
             .frame(height: 24)
             Text("\(Int((value * 100).rounded()))")
                 .font(.caption.monospacedDigit())
-                .frame(width: 28, alignment: .trailing)
+                .frame(width: 34, alignment: .trailing)
         }
         .foregroundStyle(.white)
     }
@@ -503,28 +504,43 @@ struct GridOverlay: View {
     }
 }
 
-/// フィルターの見本（同梱の見本写真の上半身に、そのフィルターをかけた小さな画像）。メインスレッドから使う。
+/// フィルターの見本（同梱の見本写真に、そのフィルターをかけた小さな画像）。メインスレッドから使う。
+/// 人向けのフィルターは人物の上半身、料理向け（フード）・カフェ向け（カフェ）は料理・ドリンクの見本写真で見せる。
 enum FilterThumbnails {
     private static let context = CIContext()
     private static var cache: [PhotoFilter: UIImage] = [:]
+    private static var sources: [String: CIImage] = [:]
 
-    private static let source: CIImage? = {
-        guard let url = Bundle.main.url(forResource: "pose_00", withExtension: "jpg"),
+    /// そのフィルターで撮るものの見本写真
+    private static func source(for filter: PhotoFilter) -> CIImage? {
+        switch filter {
+        case .food: return square(named: "s_145", top: 0.3)      // フレンチトースト
+        case .cafe: return square(named: "s_135", top: 0.25)     // 抹茶ラテ
+        default: return square(named: "pose_00", top: 0.04, width: 0.8)
+        }
+    }
+
+    /// 見本写真を正方形に切り抜いて 112 ピクセルに縮める。top: 上から切り抜き始める位置（高さに対する割合）、
+    /// width: 切り抜く幅（横幅に対する割合）
+    private static func square(named name: String, top: CGFloat, width: CGFloat = 1) -> CIImage? {
+        if let cached = sources[name] { return cached }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
               let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
         let e = image.extent
-        // 上半身あたりを正方形に切り抜いて、112 ピクセルに縮める
-        let side = e.width * 0.8
-        let crop = CGRect(x: e.minX + (e.width - side) / 2, y: e.maxY - side - e.height * 0.04,
-                          width: side, height: side)
+        let side = min(e.width * width, e.height)
+        let y = max(e.minY, e.maxY - side - e.height * top)
+        let crop = CGRect(x: e.minX + (e.width - side) / 2, y: y, width: side, height: side)
         let scale = 112 / side
-        return image.cropped(to: crop)
+        let result = image.cropped(to: crop)
             .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-    }()
+        sources[name] = result
+        return result
+    }
 
     static func image(for filter: PhotoFilter) -> UIImage? {
         if let cached = cache[filter] { return cached }
-        guard let source else { return nil }
+        guard let source = source(for: filter) else { return nil }
         var output = filter.apply(to: source)
         if filter.needsPersonMask,
            let person = PoseDetector().analyze(ciImage: source, wantsMasks: false, wantsPerson: true).masks?.person {
@@ -693,49 +709,95 @@ struct ModePicker: View {
     }
 }
 
+/// シャッター。写真モードでは 1 秒長押しすると動画を撮り始め、離すと止まる（最長 10 秒）。
 struct ShutterButton: View {
     let mode: CaptureMode
     let isRecording: Bool
     let isBusy: Bool
-    /// スナップ撮影の進み具合（0...1）
+    /// スナップ・長押しの動画の進み具合（0...1）
     let progress: Double
     let action: () -> Void
+    var onLongPressStart: (() -> Void)? = nil
+    var onLongPressEnd: (() -> Void)? = nil
+
+    @State private var isPressing = false
+    @State private var longPressFired = false
+    @State private var pendingLongPress: DispatchWorkItem?
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
+        ZStack {
+            Circle()
+                .stroke(Color.white, lineWidth: 4)
+                .frame(width: 74, height: 74)
+            if (mode == .snap || mode == .photo) && isRecording {
                 Circle()
-                    .stroke(Color.white, lineWidth: 4)
+                    .trim(from: 0, to: progress)
+                    .stroke(mode == .photo ? Color.red : Color.yellow,
+                            style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
                     .frame(width: 74, height: 74)
-                if mode == .snap && isRecording {
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(Color.yellow, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 74, height: 74)
-                }
-                switch mode {
-                case .photo:
-                    Circle()
-                        .fill(Color.white.opacity(isBusy ? 0.6 : 1))
-                        .frame(width: 60, height: 60)
-                case .video:
-                    RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
+            }
+            switch mode {
+            case .photo:
+                if isRecording {
+                    RoundedRectangle(cornerRadius: 6)
                         .fill(Color.red)
-                        .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
-                case .snap:
-                    RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
-                        .fill(Color.yellow)
-                        .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
-                        .overlay {
-                            if !isRecording {
-                                Image(systemName: "sparkles").foregroundStyle(.black)
-                            }
-                        }
+                        .frame(width: 30, height: 30)
+                } else {
+                    Circle()
+                        .fill(Color.white.opacity(isBusy || isPressing ? 0.6 : 1))
+                        .frame(width: 60, height: 60)
                 }
+            case .video:
+                RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
+                    .fill(Color.red)
+                    .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+            case .snap:
+                RoundedRectangle(cornerRadius: isRecording ? 6 : 30)
+                    .fill(Color.yellow)
+                    .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+                    .overlay {
+                        if !isRecording {
+                            Image(systemName: "sparkles").foregroundStyle(.black)
+                        }
+                    }
             }
         }
+        .frame(width: 80, height: 80)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in pressBegan() }
+                .onEnded { _ in pressEnded() }
+        )
         .animation(.easeInOut(duration: 0.2), value: isRecording)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+    }
+
+    private func pressBegan() {
+        guard !isPressing else { return }
+        isPressing = true
+        longPressFired = false
+        guard mode == .photo, !isBusy, !isRecording, let onLongPressStart else { return }
+        let item = DispatchWorkItem {
+            longPressFired = true
+            onLongPressStart()
+        }
+        pendingLongPress = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: item)
+    }
+
+    private func pressEnded() {
+        isPressing = false
+        pendingLongPress?.cancel()
+        pendingLongPress = nil
+        if longPressFired {
+            longPressFired = false
+            onLongPressEnd?()
+        } else {
+            action()
+        }
     }
 }
 
