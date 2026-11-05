@@ -34,6 +34,15 @@ final class VideoRecorder {
     /// 書き込めた音声・書き込めなかった音声のかたまりの数（マイクが録れているかの確認用）
     private var audioWritten = 0
     private var audioDropped = 0
+    /// 届いた音声のかたまりの数（書き込み前に捨てたものも含む）と、録画の開始より前の時刻だったもの
+    private var audioReceived = 0
+    private var audioBeforeStart = 0
+    /// 書き込んだ音声の大きさ（マイクの音が本当に入っているかの確認用。0...1 の振幅）
+    private var audioPeak: Float = 0
+    private var audioSquareSum: Double = 0
+    private var audioSampleCount = 0
+    private var audioFormat = ""
+    private var startTime = CMTime.invalid
     private var failureReason: String?
 
     var hasAudioTrack: Bool { audioInput != nil }
@@ -93,6 +102,7 @@ final class VideoRecorder {
         if !sessionStarted {
             writer.startSession(atSourceTime: time)
             sessionStarted = true
+            startTime = time
         }
         guard videoInput.isReadyForMoreMediaData else { return }
         if adaptor.append(buffer, withPresentationTime: time) {
@@ -103,12 +113,59 @@ final class VideoRecorder {
     }
 
     func appendAudio(_ sampleBuffer: CMSampleBuffer) {
+        audioReceived += 1
         guard sessionStarted, writer.status == .writing, let audioInput else { return }
+        // 録画の開始（最初のコマ）より前に録れた音は入れない（開始音が入らないように）
+        if CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sampleBuffer), startTime) < 0 {
+            audioBeforeStart += 1
+            return
+        }
         guard audioInput.isReadyForMoreMediaData, audioInput.append(sampleBuffer) else {
             audioDropped += 1
             return
         }
         audioWritten += 1
+        measureLevel(sampleBuffer)
+    }
+
+    /// 音声の振幅の最大と平均（RMS）を測る。16 ビット整数と 32 ビット浮動小数の PCM に対応
+    private func measureLevel(_ sampleBuffer: CMSampleBuffer) {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee else { return }
+        let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+        if audioFormat.isEmpty {
+            audioFormat = "\(Int(asbd.mSampleRate))Hz \(asbd.mChannelsPerFrame)ch \(asbd.mBitsPerChannel)bit\(isFloat ? " float" : "")"
+        }
+        var blockBuffer: CMBlockBuffer?
+        var list = AudioBufferList()
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: &list,
+            bufferListSize: MemoryLayout<AudioBufferList>.size, blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil, flags: 0, blockBufferOut: &blockBuffer)
+        guard status == noErr, let data = list.mBuffers.mData else { return }
+        let bytes = Int(list.mBuffers.mDataByteSize)
+        if isFloat && asbd.mBitsPerChannel == 32 {
+            let samples = data.bindMemory(to: Float.self, capacity: bytes / 4)
+            for i in 0..<(bytes / 4) {
+                let v = samples[i]
+                audioPeak = max(audioPeak, abs(v))
+                audioSquareSum += Double(v * v)
+            }
+            audioSampleCount += bytes / 4
+        } else if asbd.mBitsPerChannel == 16 {
+            let samples = data.bindMemory(to: Int16.self, capacity: bytes / 2)
+            for i in 0..<(bytes / 2) {
+                let v = Float(samples[i]) / 32768
+                audioPeak = max(audioPeak, abs(v))
+                audioSquareSum += Double(v * v)
+            }
+            audioSampleCount += bytes / 2
+        }
+    }
+
+    /// 振幅（0...1）をデシベル（dBFS）に。無音は -120
+    private static func decibels(_ amplitude: Double) -> String {
+        String(format: "%.0f", amplitude > 0 ? max(-120, 20 * log10(amplitude)) : -120)
     }
 
     private func noteFailure() {
@@ -121,7 +178,14 @@ final class VideoRecorder {
     /// 書き出しが終わったら結果を返す。仕上げに失敗しても、コマを書けていればファイルは残して返す
     /// （1 秒ごとに区切って書いているので、途中までは再生できる）。
     func finish(_ completion: @escaping (Outcome) -> Void) {
-        Diagnostics.log("録画: 音声 \(audioInput == nil ? "トラックなし" : "\(audioWritten) 個 書き込み・\(audioDropped) 個 取りこぼし")")
+        if audioInput == nil {
+            Diagnostics.log("録画: 音声トラックなし（届いた音声 \(audioReceived) 個）")
+        } else {
+            let rms = audioSampleCount > 0 ? (audioSquareSum / Double(audioSampleCount)).squareRoot() : 0
+            // 話し声ならふつう最大 -20 dBFS 前後、平均 -40 dBFS 前後。-90 より小さければほぼ無音
+            Diagnostics.log("録画: 音声 届いた \(audioReceived)・書き込み \(audioWritten)・開始前 \(audioBeforeStart)・取りこぼし \(audioDropped)、"
+                + "大きさ 最大 \(Self.decibels(Double(audioPeak))) dB・平均 \(Self.decibels(rms)) dB（\(audioFormat)）")
+        }
         guard sessionStarted, framesWritten > 0 else {
             noteFailure()
             writer.cancelWriting()

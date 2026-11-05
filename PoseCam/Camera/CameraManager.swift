@@ -1077,8 +1077,11 @@ final class CameraManager: NSObject, ObservableObject {
                 self.stopRecording()
             }
         }
-        let route = AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portType.rawValue }
-        Diagnostics.log("録画: 開始の操作 #\(take)（マイク \(route.joined(separator: ",")), 音声 \(withAudio ? "あり" : "なし")）")
+        let audio = AVAudioSession.sharedInstance()
+        let route = audio.currentRoute.inputs.map { "\($0.portType.rawValue)/\($0.selectedDataSource?.dataSourceName ?? "-")" }
+        Diagnostics.log("録画: 開始の操作 #\(take)（マイク \(route.joined(separator: ",")), 音声 \(withAudio ? "あり" : "なし"), "
+            + "\(audio.category.rawValue)/\(audio.mode.rawValue), 入力の音量 \(String(format: "%.2f", audio.inputGain)), "
+            + "マイクの許可 \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)）")
         // 開始音が録音に入らないよう、少し待ってから書き込みを始める
         DispatchQueue.main.asyncAfter(deadline: .now() + (mute ? 0.05 : 0.45)) {
             guard self.isRecording, self.takeCounter == take else { return }
