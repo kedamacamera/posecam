@@ -48,8 +48,9 @@ struct PhotoEditorView: View {
     @State private var pan: CGSize = .zero
     @State private var panAtStart: CGSize = .zero
 
-    private static let context = CIContext()
-    private static let processor = FrameProcessor()
+    // 画像の処理は裏のスレッドで行うので、画面（メインスレッド）に縛らない
+    nonisolated(unsafe) private static let context = CIContext()
+    nonisolated(unsafe) private static let processor = FrameProcessor()
 
     var body: some View {
         NavigationStack {
@@ -188,7 +189,7 @@ struct PhotoEditorView: View {
     }
 
     /// 美肌・スタイル・フィルター・脚長をかける（撮影したときと同じ処理）
-    private static func applyEffects(_ image: CIImage, settings: ProcessingSettings,
+    nonisolated private static func applyEffects(_ image: CIImage, settings: ProcessingSettings,
                                      analysis: PoseDetector.Result?) -> CIImage {
         guard settings.needsMasks || settings.filter != .none || settings.legLength > 0.01 else { return image }
         let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis?.pose, manual: nil) : nil
