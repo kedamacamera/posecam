@@ -134,6 +134,12 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float nearCb = near.b - nearY, nearCr = near.r - nearY;
     float averageCb = average.b - averageY, averageCr = average.r - averageY;
 
+    // 比べる肌の色みは、その場所の暗さにそろえる（リニアの色空間では、同じ肌でも暗い所ほど色みの差も小さい）。
+    // そろえないと、影や髪（もみあげ）のような暗い所を明るい肌の色みへ寄せてしまい、赤茶色の斑点になっていた
+    float ratioY = nearY / max(averageY, 0.001);
+    float shade = clamp(ratioY, 0.0, 1.0);
+    averageCb *= shade;
+    averageCr *= shade;
     // 青い（Cb が高い・Cr が低い）ほど、暗いほど強く効かせる
     float bluish = (nearCb - averageCb) + 0.5 * (averageCr - nearCr);
     float darker = averageY - nearY;
@@ -143,7 +149,6 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 頬・額より口元が少し暗いのは自然な陰影なので、比で判定する（差で判定すると口元全体が外れていた）
     // 比はリニアの値なので、0.35 は画面の値では 6 割ほどの明るさにあたる。以前はこれより暗い所を外していたため、
     // 影になる口ひげ・下唇の真下・あご下の剃り跡が消えなかった。今は画面の値で 4 割ほど（リニアで 0.15）まで効かせる
-    float ratioY = nearY / max(averageY, 0.001);
     float darkGuard = smoothstep(0.08, 0.15, ratioY);
     float w = amount * darkGuard * strength;
     if (debug > 0.5) {

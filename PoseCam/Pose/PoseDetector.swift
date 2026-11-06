@@ -456,7 +456,7 @@ final class PoseDetector {
                 // 一部しか消えなかった。輪郭の線を太くなぞって、縁の外側まで広げる
                 context.setStrokeColor(gray: 1, alpha: 1)
                 // あご下の剃り跡まで届くよう、縁の外側へ顔の幅の 1 割ほど広げる
-                context.setLineWidth(faceWidth * 0.2)
+                context.setLineWidth(faceWidth * 0.17)
                 context.setLineJoin(.round)
                 context.setLineCap(.round)
                 context.beginPath()
