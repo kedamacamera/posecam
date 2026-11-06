@@ -43,7 +43,8 @@ enum DirectFlash {
     }()
 
     /// 割合を求める縮小率
-    private static let factor: CGFloat = 0.125
+    /// 1/8 では人物の周りに明るい縁（幅が縮めた 1 画素ぶん）が出ていたので、1/4 にして縁を細くする
+    private static let factor: CGFloat = 0.25
 
     /// photo と ambient は同じ大きさ・同じ切り抜きで、原点は (0, 0)。exposureRatio は（写真の露出）/（コマの露出）。
     static func apply(photo: CIImage, ambient: CIImage, exposureRatio: Double, ambientGain: Double = 0.125) -> CIImage {
@@ -107,7 +108,7 @@ enum DirectFlash {
             .cropped(to: extent)
     }
 
-    /// 1/8 に縮めた画像（原点 (0, 0)）
+    /// factor に縮めた画像（原点 (0, 0)）
     private static func shrink(_ image: CIImage) -> CIImage {
         let e = image.extent
         let size = CGRect(x: 0, y: 0, width: (e.width * factor).rounded(), height: (e.height * factor).rounded())
