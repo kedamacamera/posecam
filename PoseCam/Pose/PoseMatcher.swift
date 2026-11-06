@@ -38,6 +38,61 @@ enum PoseMatcher {
         return scores.compactMap { $0 }.max()
     }
 
+    // MARK: - 2 人以上
+
+    /// 型の人（行）と映っている人（列）の点数の表から、点数の合計がいちばん高い組み合わせを返す。
+    /// 結果は型の人ごとの列の番号（映っている人が足りなければ nil）。人数は数人なので全部試す
+    static func bestAssignment(_ table: [[Double?]]) -> [Int?] {
+        let columns = table.first?.count ?? 0
+        var best: [Int?] = Array(repeating: nil, count: table.count), bestTotal = -1.0
+        var current: [Int?] = [], used = Set<Int>()
+        func search(_ row: Int, _ total: Double) {
+            if row == table.count {
+                if total > bestTotal { bestTotal = total; best = current }
+                return
+            }
+            for column in 0..<columns where !used.contains(column) {
+                used.insert(column); current.append(column)
+                search(row + 1, total + (table[row][column] ?? 0))
+                used.remove(column); current.removeLast()
+            }
+            current.append(nil)
+            search(row + 1, total)
+            current.removeLast()
+        }
+        search(0, 0)
+        return best
+    }
+
+    /// 2 人以上の型の関節の一致度。型の人と映っている人を、一致度の合計がいちばん高くなるように組み合わせ、
+    /// 型の人ごとの一致度を平均する（映っていない人・比べられない人は 0 点）。どの人も比べられなければ nil。
+    static func score(people: [[Joint: CGPoint]], detected: [[Joint: CGPoint]], aspect: CGFloat? = nil) -> Double? {
+        let table = people.map { person in detected.map { score(template: person, detected: $0, aspect: aspect) } }
+        let assignment = bestAssignment(table)
+        let scores = assignment.enumerated().map { row, column in column.flatMap { table[row][$0] } }
+        guard scores.contains(where: { $0 != nil }) else { return nil }
+        return scores.map { $0 ?? 0 }.reduce(0, +) / Double(max(people.count, 1))
+    }
+
+    /// 2 人以上の型の顔の一致度。型の顔と映っている顔を一致度の合計が高くなるように組み合わせて平均する。
+    /// 顔が映っていない型の人は、1 人の型と同じ扱い（顔のアップの型なら 0 点、人が映っていれば 50 点）
+    static func faceScore(templates: [FaceShape], detected: [FaceShape], personFound: Bool) -> Double? {
+        guard !templates.isEmpty else { return nil }
+        let table = templates.map { t in detected.map { Optional(faceScore(template: t, detected: $0)) } }
+        let assignment = bestAssignment(table)
+        var scores: [Double] = []
+        for (row, column) in assignment.enumerated() {
+            if let column, let value = table[row][column] {
+                scores.append(value)
+            } else if templates[row].width > 0.15 {
+                scores.append(0)
+            } else if personFound {
+                scores.append(50)
+            }
+        }
+        return scores.isEmpty ? nil : scores.reduce(0, +) / Double(scores.count)
+    }
+
     private static func evaluate(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint], aspect: CGFloat?) -> Double? {
         // 画面内に見えているはずの型の関節（上半身だけの型なら、画面外の脚は数えない）
         let expected = template.filter { _, p in

@@ -57,6 +57,10 @@ final class PoseDetector {
         var pose: [Joint: CGPoint]?
         var silhouette: Silhouette?
         var face: FaceShape?
+        /// 映っている人全員の骨格（関節の多い順。2 人以上の型の一致度に使う）
+        var poses: [[Joint: CGPoint]] = []
+        /// 映っている顔全部（大きい順）
+        var faces: [FaceShape] = []
     }
 
     func poseAndSilhouette(pixelBuffer: CVPixelBuffer, silhouetteWidth: Int?, face: Bool = false) -> Live {
@@ -91,17 +95,14 @@ final class PoseDetector {
         } catch {
             return Live()
         }
-        var pose: [Joint: CGPoint]?
-        if let observations = poseRequest.results {
-            let best = observations.map(points(from:)).max { $0.count < $1.count }
-            if let best, best.count >= 3 { pose = best }
-        }
+        let poses = (poseRequest.results ?? []).map(points(from:)).filter { $0.count >= 3 }
+            .sorted { $0.count > $1.count }
         var silhouette: Silhouette?
         if let width = silhouetteWidth, let mask = segmentation.results?.first?.pixelBuffer {
             silhouette = Self.cells(of: mask, width: width, height: max(1, Int((CGFloat(width) / aspect).rounded())))
         }
-        let face = wantsFace ? Self.faceShape(from: faceRequest.results ?? [], angles: angleRequest.results ?? []) : nil
-        return Live(pose: pose, silhouette: silhouette, face: face)
+        let faces = wantsFace ? Self.faceShapes(from: faceRequest.results ?? [], angles: angleRequest.results ?? []) : []
+        return Live(pose: poses.first, silhouette: silhouette, face: faces.first, poses: poses, faces: faces)
     }
 
     /// 写真のいちばん大きい顔のパーツ（画像座標）。型を作るときに使う。
@@ -110,6 +111,21 @@ final class PoseDetector {
         let angles = angleRequest()
         try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request, angles])
         return faceShape(from: request.results ?? [], angles: angles.results ?? [])
+    }
+
+    /// 写真の顔すべて（大きい順・画像座標）。2 人以上の型を作るときに使う。
+    static func faceShapes(ciImage: CIImage) -> [FaceShape] {
+        let request = VNDetectFaceLandmarksRequest()
+        let angles = angleRequest()
+        try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request, angles])
+        return faceShapes(from: request.results ?? [], angles: angles.results ?? [])
+    }
+
+    /// 写真に写っている人全員の骨格（関節が 4 つ以上の人・関節の多い順・画像座標）。
+    func detectPeople(ciImage: CIImage) -> [[Joint: CGPoint]] {
+        let request = VNDetectHumanBodyPoseRequest()
+        try? VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:]).perform([request])
+        return (request.results ?? []).map(points(from:)).filter { $0.count >= 4 }.sorted { $0.count > $1.count }
     }
 
     /// 顔の向きを連続した角度で返す、顔の枠の検出（iOS 15 以降のリビジョン 3）
@@ -123,9 +139,17 @@ final class PoseDetector {
     /// 横顔などでパーツが取れなくても、枠と向き（iOS 15 以降の顔検出は向きを連続した値で返す）があれば返す。
     /// faces: ランドマーク検出の結果、angles: 顔の枠の検出の結果（向きはこちらから取る）
     static func faceShape(from faces: [VNFaceObservation], angles: [VNFaceObservation] = []) -> FaceShape? {
+        faceShapes(from: faces, angles: angles).first
+    }
+
+    /// 顔すべてを大きい順に返す（先頭は faceShape と同じ顔）。
+    static func faceShapes(from faces: [VNFaceObservation], angles: [VNFaceObservation] = []) -> [FaceShape] {
         // パーツの取れた顔を優先し、なければ枠だけの顔でもよい
-        guard let face = (faces.isEmpty ? angles : faces).max(by: { $0.boundingBox.height < $1.boundingBox.height })
-        else { return nil }
+        (faces.isEmpty ? angles : faces).sorted { $0.boundingBox.height > $1.boundingBox.height }
+            .map { shape(of: $0, angles: angles) }
+    }
+
+    private static func shape(of face: VNFaceObservation, angles: [VNFaceObservation]) -> FaceShape {
         let box = face.boundingBox  // 左下原点
         // 同じ顔（枠の中心がいちばん近いもの）の、連続した角度を使う
         let angleSource = angles.min {

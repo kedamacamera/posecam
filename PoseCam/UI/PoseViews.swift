@@ -307,7 +307,8 @@ struct PoseTemplateOverlay: View, Equatable {
             PoseDrawing.drawTemplate(template, in: layer, transform: transform,
                                      color: matched ? .green : .white, lineWidth: 3, fillOpacity: 0)
             // 顔のボーン（目・鼻・口・あご）も重ねて、顔の位置と大きさを合わせやすくする
-            if let face = template.face {
+            // 2 人以上の型は、全員の顔を描く
+            for face in template.people.compactMap(\.face) {
                 PoseDrawing.drawFace(face, in: layer, transform: transform, color: .black.opacity(0.35), lineWidth: 3.5)
                 PoseDrawing.drawFace(face, in: layer, transform: transform,
                                      color: matched ? .green : .white, lineWidth: 2)
@@ -342,10 +343,12 @@ struct SkeletonLayer: View {
             Canvas { context, size in
                 let toView = { (p: CGPoint) in CGPoint(x: p.x * size.width, y: p.y * size.height) }
                 let guide = template.map { $0.joints.mapValues { PoseSpace.toView($0, size: size) } } ?? [:]
-                if !guide.isEmpty {
+                // 2 人以上の型は、全員の骨格を点線で描く
+                let guides = template?.people.map { $0.joints.mapValues { PoseSpace.toView($0, size: size) } } ?? []
+                for person in guides {
                     let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [6, 6])
                     for (a, b) in Joint.bones {
-                        guard let pa = guide[a], let pb = guide[b] else { continue }
+                        guard let pa = person[a], let pb = person[b] else { continue }
                         var path = Path()
                         path.move(to: pa)
                         path.addLine(to: pb)
@@ -363,6 +366,13 @@ struct SkeletonLayer: View {
                     }
                 }
                 if let face = feed.face {
+                    PoseDrawing.drawFace(face, in: context, transform: toView, color: .cyan.opacity(0.8), lineWidth: 2)
+                }
+                // 2 人以上の型のとき、2 人目以降に映っている人
+                for other in feed.others {
+                    PoseDrawing.drawSkeleton(other.mapValues(toView), in: context, color: .cyan.opacity(0.8))
+                }
+                for face in feed.otherFaces {
                     PoseDrawing.drawFace(face, in: context, transform: toView, color: .cyan.opacity(0.8), lineWidth: 2)
                 }
             }

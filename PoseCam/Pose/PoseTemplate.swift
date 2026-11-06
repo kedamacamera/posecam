@@ -25,6 +25,13 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var face: FaceShape?
     /// 料理・ドリンクの型のテーブルの縁（等方座標の開いた線）
     var lines: [[CGPoint]]?
+    /// 2 人以上のポーズの、2 人目以降の骨格と顔（等方座標）
+    var extraPeople: [PersonShape]?
+
+    /// 型の人全員（1 人目は points と face）
+    var people: [PersonShape] {
+        [PersonShape(points: points, face: face)] + (extraPeople ?? [])
+    }
 
     init(id: String = UUID().uuidString, name: String, category: String,
          joints: [Joint: CGPoint], isUserCreated: Bool, recommendedZoom: Double? = nil,
@@ -60,6 +67,11 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         result.extraOutlines = extraOutlines?.map { $0.map { CGPoint(x: -$0.x, y: $0.y) } }
         result.face = face?.mirrored()
         result.lines = lines?.map { $0.map { CGPoint(x: -$0.x, y: $0.y) } }
+        result.extraPeople = extraPeople?.map { person in
+            PersonShape(joints: Dictionary(uniqueKeysWithValues: person.joints.map {
+                ($0.key.mirrored, CGPoint(x: -$0.value.x, y: $0.value.y))
+            }), face: person.face?.mirrored())
+        }
         return result
     }
 
@@ -80,6 +92,11 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
             result.face = shape
         }
         result.lines = lines?.map { $0.map(f) }
+        result.extraPeople = extraPeople?.map { person in
+            var mapped = person.map(f)
+            mapped.face?.height *= k
+            return mapped
+        }
         return result
     }
 

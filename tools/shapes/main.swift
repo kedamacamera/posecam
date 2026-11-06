@@ -50,6 +50,8 @@ struct AnalysisRecord: Encodable {
     let lines: [[CGPoint]]
     /// 自動で決めた枠（ピクセル。x, y, 幅, 高さ）
     let crop: [Double]
+    /// 2 人以上写っているときの、2 人目以降の関節と顔
+    let others: [PersonShape]
 }
 var records: [String: AnalysisRecord] = [:]
 var previews: [(name: String, image: CGImage, analysis: PhotoAnalysis, crop: CGRect)] = []
@@ -75,7 +77,8 @@ for url in files {
         category: categories[name] ?? "", isObject: isObject,
         joints: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, $0.value) }),
         outlines: analysis.outlines, face: analysis.face, lines: analysis.lines,
-        crop: [crop.minX, crop.minY, crop.width, crop.height].map { Double($0) })
+        crop: [crop.minX, crop.minY, crop.width, crop.height].map { Double($0) },
+        others: analysis.others)
 
     let scale = 200 / image.extent.width
     let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -89,6 +92,8 @@ encoder.outputFormatting = [.sortedKeys]
 try encoder.encode(shapes).write(to: outDir.appendingPathComponent("builtin_shapes.json"))
 try encoder.encode(records).write(to: outDir.appendingPathComponent("builtin_analysis.json"))
 print("shapes: \(shapes.count), failed: \(failed.count) \(failed)")
+print("people: " + records.filter { !$0.value.others.isEmpty }
+    .map { "\($0.key)=\(1 + $0.value.others.count)" }.sorted().joined(separator: " "))
 print("table edges: " + shapes.filter { $0.value.lines != nil }.map { "\($0.key)=\($0.value.lines!.count)" }.sorted().joined(separator: " "))
 
 // MARK: - 確認用の一覧画像
@@ -139,6 +144,18 @@ for sheetIndex in stride(from: 0, to: previews.count, by: perSheet) {
             canvas.move(to: point(pa))
             canvas.addLine(to: point(pb))
             canvas.strokePath()
+        }
+        // 2 人目以降の骨格（ピンク）
+        canvas.setStrokeColor(CGColor(red: 1, green: 0.35, blue: 0.8, alpha: 1))
+        for other in item.analysis.others {
+            let joints = other.joints
+            for (a, b) in Joint.bones {
+                guard let pa = joints[a], let pb = joints[b] else { continue }
+                canvas.beginPath()
+                canvas.move(to: point(pa))
+                canvas.addLine(to: point(pb))
+                canvas.strokePath()
+            }
         }
         // 顔のボーン（緑）
         if let face = item.analysis.face {

@@ -54,6 +54,30 @@ struct FaceShape: Codable, Equatable {
     var width: CGFloat { height * 0.8 }
 }
 
+/// 2 人以上のポーズの、2 人目以降の人の骨格と顔（座標系は使う所に合わせる）。
+struct PersonShape: Codable, Equatable {
+    var points: [String: CGPoint]
+    var face: FaceShape?
+
+    var joints: [Joint: CGPoint] {
+        Dictionary(uniqueKeysWithValues: points.compactMap { key, value in Joint(rawValue: key).map { ($0, value) } })
+    }
+
+    init(joints: [Joint: CGPoint], face: FaceShape?) {
+        points = Dictionary(uniqueKeysWithValues: joints.map { ($0.key.rawValue, $0.value) })
+        self.face = face
+    }
+
+    func map(_ transform: (CGPoint) -> CGPoint) -> PersonShape {
+        PersonShape(points: points.mapValues(transform), face: face?.map(transform))
+    }
+
+    init(points: [String: CGPoint], face: FaceShape?) {
+        self.points = points
+        self.face = face
+    }
+}
+
 /// 写真から取り出した型の形（等方座標）。
 struct PoseShape: Codable {
     var points: [String: CGPoint]
@@ -65,6 +89,8 @@ struct PoseShape: Codable {
     var face: FaceShape?
     /// 料理・ドリンクの写真のテーブルの縁（開いた線）
     var lines: [[CGPoint]]?
+    /// 2 人以上のポーズの、2 人目以降の骨格と顔
+    var extraPeople: [PersonShape]?
 }
 
 /// 写真を解析した結果。座標は写真の画像座標（左上原点・0...1）。
@@ -79,6 +105,8 @@ struct PhotoAnalysis {
     var face: FaceShape?
     /// テーブルの縁（画像座標の [始点, 終点]）
     var lines: [[CGPoint]] = []
+    /// 2 人以上写っているときの、2 人目以降の骨格と顔（画像座標）
+    var others: [PersonShape] = []
 
     /// 写っている人物全員の範囲（ピクセル）。輪郭があれば輪郭、なければ関節から求める
     var personBounds: CGRect {
@@ -100,12 +128,44 @@ enum PoseImporter {
     static func analyze(_ source: CIImage) -> PhotoAnalysis? {
         let image = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
                                                              y: -source.extent.minY))
-        let joints = PoseDetector().detect(ciImage: image) ?? [:]
+        let people = PoseDetector().detectPeople(ciImage: image)
+        let joints = people.first ?? [:]
         let outlines = PoseDetector.personOutlines(ciImage: image)
         // 輪郭が取れれば、足などの関節が検出できなくても型にできる
         guard !outlines.isEmpty || joints.count >= 6 else { return nil }
-        return PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines,
-                             face: PoseDetector.faceShape(ciImage: image))
+        let faces = PoseDetector.faceShapes(ciImage: image)
+        var analysis = PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines, face: faces.first)
+        analysis.others = otherPeople(people, faces: faces, outlines: outlines.count)
+        return analysis
+    }
+
+    /// 2 人目以降の人。後ろに小さく写った人を拾わないよう、人の輪郭が 2 つ以上あるときだけ、
+    /// 1 人目の体の大きさ（関節の上下の幅）の 40% 以上の人を、輪郭の数 − 1 人まで使う。
+    /// 顔は、1 人目の顔（いちばん大きい顔）以外で、その人の頭（鼻・耳・首）にいちばん近いものを付ける
+    static func otherPeople(_ people: [[Joint: CGPoint]], faces: [FaceShape], outlines: Int) -> [PersonShape] {
+        guard outlines > 1, let first = people.first else { return [] }
+        func height(_ joints: [Joint: CGPoint]) -> CGFloat {
+            let ys = joints.values.map(\.y)
+            return (ys.max() ?? 0) - (ys.min() ?? 0)
+        }
+        let minimum = height(first) * 0.4
+        var remaining = Array(faces.dropFirst())
+        var result: [PersonShape] = []
+        for joints in people.dropFirst() where joints.count >= 6 && height(joints) >= minimum {
+            guard result.count < outlines - 1 else { break }
+            let head = [Joint.nose, .leftEar, .rightEar].compactMap { joints[$0] }
+            let anchor = head.isEmpty ? joints[.neck] : CGPoint(x: head.map(\.x).reduce(0, +) / CGFloat(head.count),
+                                                                 y: head.map(\.y).reduce(0, +) / CGFloat(head.count))
+            var face: FaceShape?
+            if let anchor, let index = remaining.indices.min(by: {
+                hypot(remaining[$0].center.x - anchor.x, remaining[$0].center.y - anchor.y)
+                    < hypot(remaining[$1].center.x - anchor.x, remaining[$1].center.y - anchor.y)
+            }), hypot(remaining[index].center.x - anchor.x, remaining[index].center.y - anchor.y) < remaining[index].height * 1.5 {
+                face = remaining.remove(at: index)
+            }
+            result.append(PersonShape(joints: joints, face: face))
+        }
+        return result
     }
 
     /// 料理・ドリンクの写真から、主な被写体（お皿・グラス・手）の輪郭を取り出す。
@@ -154,7 +214,12 @@ enum PoseImporter {
             return CGPoint(x: (x - 0.5) * aspect, y: y)
         }
         let outlines = analysis.outlines.map { $0.map(convert) }
-        return PoseShape(
+        func convertFace(_ face: FaceShape) -> FaceShape {
+            var converted = face.map(convert)
+            converted.height = face.height * analysis.size.height / crop.height
+            return converted
+        }
+        var shape = PoseShape(
             points: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, convert($0.value)) }),
             outline: outlines.first,
             extraOutlines: outlines.count > 1 ? Array(outlines.dropFirst()) : nil,
@@ -166,6 +231,12 @@ enum PoseImporter {
                 return converted
             },
             lines: analysis.lines.isEmpty ? nil : analysis.lines.map { $0.map(convert) })
+        if !analysis.others.isEmpty {
+            shape.extraPeople = analysis.others.map {
+                PersonShape(points: $0.points.mapValues(convert), face: $0.face.map(convertFace))
+            }
+        }
+        return shape
     }
 
     static func makeTemplate(name: String, shape: PoseShape) -> PoseTemplate {
@@ -175,6 +246,7 @@ enum PoseImporter {
         template.extraOutlines = shape.extraOutlines
         template.face = shape.face
         template.lines = shape.lines
+        template.extraPeople = shape.extraPeople
         return template
     }
 }

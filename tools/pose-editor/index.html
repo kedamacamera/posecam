@@ -122,6 +122,11 @@
     </div>
   </div>
   <div>
+    <h3>人</h3>
+    <div class="row" id="person-tools"></div>
+    <div class="status">2 人以上写っている写真は、人ごとに関節と顔を入れます。写真の上で別の人の関節を押しても切り替わります。</div>
+  </div>
+  <div>
     <h3>関節</h3>
     <div class="row" id="joint-tools"></div>
   </div>
@@ -169,6 +174,8 @@ const BONES = [["neck", "leftEar"], ["neck", "rightEar"], ["leftEar", "rightEar"
   ["leftShoulder", "leftHip"], ["rightShoulder", "rightHip"], ["leftHip", "rightHip"], ["leftHip", "leftKnee"],
   ["leftKnee", "leftAnkle"], ["rightHip", "rightKnee"], ["rightKnee", "rightAnkle"]];
 const ASPECT = 3 / 4;
+// 人ごとの骨の色（1 人目は水色、2 人目はピンク、3 人目は黄緑）
+const PERSON_COLORS = ["rgba(0,220,255,.9)", "rgba(255,95,210,.9)", "rgba(160,255,90,.9)", "rgba(255,170,60,.9)"];
 
 const $ = (id) => document.getElementById(id);
 const main = $("main"), mctx = main.getContext("2d");
@@ -186,8 +193,21 @@ const undoStack = [];
 
 function record() { return analysis[current]; }
 function edit() { return edits[current] || {}; }
-function joints() { return edit().joints || record().joints || {}; }
-function face() { const e = edit(); return "face" in e ? e.face : (record().face || null); }
+// 2 人以上の写真では人ごとに骨格と顔がある。person は選んでいる人（0 が 1 人目。1 人目は joints・face、
+// 2 人目以降は others の [{points, face}]）
+let person = 0;
+function others() { const e = edit(); return "others" in e ? e.others : (record().others || []); }
+function personCount() { return 1 + others().length; }
+function personJoints(i) {
+  if (i === 0) return edit().joints || record().joints || {};
+  const o = others()[i - 1]; return (o && o.points) || {};
+}
+function personFace(i) {
+  if (i === 0) { const e = edit(); return "face" in e ? e.face : (record().face || null); }
+  const o = others()[i - 1]; return (o && o.face) || null;
+}
+function joints() { return personJoints(person); }
+function face() { return personFace(person); }
 function crop() { return edit().crop || record().crop; }
 function size() { return record().size; }
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -207,9 +227,20 @@ function removeEdit(key) {
   if (Object.keys(edits[current]).length === 0) delete edits[current];
   changed();
 }
+function editableOthers() {
+  if (!edits[current] || !("others" in edits[current])) setEdit("others", clone(record().others || []));
+  return edits[current].others;
+}
 function editableJoints() {
+  if (person > 0) { const o = editableOthers()[person - 1]; o.points = o.points || {}; return o.points; }
   if (!edits[current] || !edits[current].joints) setEdit("joints", clone(record().joints || {}));
   return edits[current].joints;
+}
+function setFace(value) {
+  if (person === 0) { setEdit("face", value); return; }
+  const o = editableOthers()[person - 1];
+  if (value) o.face = value; else delete o.face;
+  changed();
 }
 function changed() {
   updateState();
@@ -337,12 +368,42 @@ function draw() {
 
   drawOutlines(ctx, toCanvas, "rgba(255,255,255,.7)", 1.2, "rgba(255,255,255,.05)");
 
+  if (person >= personCount()) person = 0;
+  // 選んでいない人は薄く描く（関節を押すとその人に切り替わる）
+  for (let i = 0; i < personCount(); i++) {
+    if (i === person) continue;
+    const pj = personJoints(i);
+    ctx.globalAlpha = 0.55; ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.strokeStyle = PERSON_COLORS[i % PERSON_COLORS.length];
+    for (const [p, q] of BONES) {
+      if (!pj[p] || !pj[q]) continue;
+      const u = toCanvas(pj[p]), v = toCanvas(pj[q]);
+      ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+    }
+    if (mode === "bones") for (const name of Object.keys(pj)) {
+      const c = toCanvas(pj[name]); ctx.beginPath(); ctx.arc(c[0], c[1], 4.5, 0, 7); ctx.fillStyle = jointColor(name); ctx.fill();
+    }
+    drawFace(ctx, personFace(i), toCanvas, "#4dff7a", 1.5);
+    const pf = personFace(i), anchor = pj.neck || pj.nose || (pf && pf.center);
+    if (anchor && personCount() > 1) {
+      const c = toCanvas(anchor); ctx.font = "bold 13px sans-serif"; ctx.fillStyle = "#fff";
+      ctx.fillText(`${i + 1}人目`, c[0] + 8, c[1] - 14);
+    }
+    ctx.globalAlpha = 1;
+  }
   const js = joints();
   ctx.lineWidth = 3; ctx.lineCap = "round";
   for (const [p, q] of BONES) {
     if (!js[p] || !js[q]) continue;
     const u = toCanvas(js[p]), v = toCanvas(js[q]);
-    ctx.strokeStyle = "rgba(0,220,255,.9)"; ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+    ctx.strokeStyle = PERSON_COLORS[person % PERSON_COLORS.length]; ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+  }
+  if (personCount() > 1) {
+    const pf = face(), anchor = js.neck || js.nose || (pf && pf.center);
+    if (anchor) {
+      const c = toCanvas(anchor); ctx.font = "bold 14px sans-serif";
+      ctx.fillStyle = "#000"; ctx.fillText(`${person + 1}人目（選択中）`, c[0] + 9, c[1] - 13);
+      ctx.fillStyle = "#ffd23f"; ctx.fillText(`${person + 1}人目（選択中）`, c[0] + 8, c[1] - 14);
+    }
   }
   const f = face();
   drawFace(ctx, f, toCanvas, "#4dff7a", 2);
@@ -392,17 +453,19 @@ function drawPreview() {
     ctx.globalAlpha = 0.85; ctx.drawImage(image, o[0], o[1], e[0] - o[0], e[1] - o[1]); ctx.globalAlpha = 1;
   }
   if ($("pv-outline").checked) drawOutlines(ctx, map, "rgba(255,255,255,.95)", 4, "rgba(255,255,255,.15)");
-  if ($("pv-bones").checked) {
-    const js = joints();
-    ctx.setLineDash([12, 8]); ctx.lineWidth = 4; ctx.strokeStyle = "rgba(255,255,255,.9)";
-    for (const [p, q] of BONES) {
-      if (!js[p] || !js[q]) continue;
-      const u = map(js[p]), v = map(js[q]);
-      ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+  for (let i = 0; i < personCount(); i++) {
+    if ($("pv-bones").checked) {
+      const js = personJoints(i);
+      ctx.setLineDash([12, 8]); ctx.lineWidth = 4; ctx.strokeStyle = "rgba(255,255,255,.9)";
+      for (const [p, q] of BONES) {
+        if (!js[p] || !js[q]) continue;
+        const u = map(js[p]), v = map(js[q]);
+        ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
-    ctx.setLineDash([]);
+    if ($("pv-face").checked) drawFace(ctx, personFace(i), map, "rgba(255,255,255,.95)", 3.5);
   }
-  if ($("pv-face").checked) drawFace(ctx, face(), map, "rgba(255,255,255,.95)", 3.5);
 }
 
 function cropCorners() {
@@ -433,7 +496,19 @@ function hit(x, y) {
     const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
     if (d <= bestD) { best = name; bestD = d; }
   }
-  return best ? { kind: "joint", name: best } : null;
+  if (best) return { kind: "joint", name: best };
+  // 選んでいない人の関節・顔の中心
+  for (let i = 0; i < personCount(); i++) {
+    if (i === person) continue;
+    const pf = personFace(i);
+    if (pf && near(toCanvas(pf.center), 13)) return { kind: "faceCenter", person: i };
+    for (const [name, p] of Object.entries(personJoints(i))) {
+      const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
+      if (d <= bestD) { best = name; bestD = d; }
+    }
+    if (best) return { kind: "joint", name: best, person: i };
+  }
+  return null;
 }
 
 function local(e) { const r = main.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
@@ -477,6 +552,7 @@ main.addEventListener("pointerdown", (e) => {
   // 消しゴム側（buttons の 32）で関節に触れたら消す
   if (e.pointerType === "pen" && (e.buttons & 32)) {
     const h = hit(x, y);
+    if (h && h.person !== undefined) { person = h.person; selected = null; }
     if (h && h.kind === "joint") {
       pushUndo(); delete editableJoints()[h.name];
       if (selected === h.name) selected = null;
@@ -488,6 +564,7 @@ main.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || (e.buttons & 2) || spaceDown) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
   const h = hit(x, y);
   if (!h) { selected = null; drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; draw(); updateTools(); return; }
+  if (h.person !== undefined) { person = h.person; selected = null; }
   pushUndo();
   if (h.kind === "joint") {
     selected = h.name;
@@ -531,13 +608,13 @@ main.addEventListener("pointermove", (e) => {
     editableJoints()[drag.name] = toPhoto(x + drag.dx, y + drag.dy);
   } else if (drag.kind === "faceCenter") {
     const c = toCanvas(drag.start.center);
-    setEdit("face", transformFace(drag.start, toPhoto(c[0] + x - drag.x, c[1] + y - drag.y), 1, 0));
+    setFace(transformFace(drag.start, toPhoto(c[0] + x - drag.x, c[1] + y - drag.y), 1, 0));
   } else if (drag.kind === "ring") {
     const c = toCanvas(drag.start.center), r0 = ringPoint(drag.start);
     const v0 = [r0[0] - c[0], r0[1] - c[1]], v1 = [v0[0] + x - drag.x, v0[1] + y - drag.y];
     const s = Math.max(0.3, Math.min(3, Math.hypot(v1[0], v1[1]) / Math.max(Math.hypot(v0[0], v0[1]), 1)));
     const rot = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]);
-    setEdit("face", transformFace(drag.start, drag.start.center, s, rot));
+    setFace(transformFace(drag.start, drag.start.center, s, rot));
   } else if (drag.kind === "crop") {
     const [cx, cy, cw, ch] = drag.start;
     setEdit("crop", [cx + (x - drag.x) / view.s, cy + (y - drag.y) / view.s, cw, ch]);
@@ -631,7 +708,7 @@ $("ok-button").onclick = toggleOk;
 $("stage-ok").onclick = toggleOk;
 
 function select(name) {
-  current = name; selected = null; hover = null;
+  current = name; selected = null; hover = null; person = 0;
   const it = items.find((i) => i.name === name);
   $("title").textContent = it ? `${it.label}（${it.name}）` : name;
   image = images[name];
@@ -656,6 +733,37 @@ function updateTools() {
   const jt = $("joint-tools"); jt.innerHTML = "";
   const ft = $("face-tools"); ft.innerHTML = "";
   if (!current) return;
+  if (person >= personCount()) person = 0;
+  const pt = $("person-tools"); pt.innerHTML = "";
+  for (let i = 0; i < personCount(); i++) {
+    const b = document.createElement("button");
+    b.textContent = `${i + 1}人目`; if (i === person) b.className = "on";
+    b.onclick = () => { person = i; selected = null; updateTools(); draw(); };
+    pt.appendChild(b);
+  }
+  const addPerson = document.createElement("button");
+  addPerson.textContent = "＋人を足す";
+  addPerson.title = "1 人目の骨格と顔を写して右に置きます。ドラッグして合わせてください";
+  addPerson.onclick = () => {
+    pushUndo();
+    const [cx, cy, cw, ch] = crop(), [w, h] = size(), dx = cw * 0.25 / w;
+    const base = personJoints(0), f0 = personFace(0);
+    const shift = (p) => [p[0] + dx, p[1]];
+    const points = {};
+    for (const [k, v] of Object.entries(base)) points[k] = shift(v);
+    if (!Object.keys(points).length) points.neck = [(cx + cw * 0.7) / w, (cy + ch * 0.3) / h];
+    const np = { points };
+    if (f0) np.face = transformFace(f0, shift(f0.center), 1, 0);
+    editableOthers().push(np);
+    person = personCount() - 1; selected = null; mode = "bones"; updateMode(); changed(); updateTools();
+  };
+  pt.appendChild(addPerson);
+  if (person > 0) {
+    const del = document.createElement("button");
+    del.className = "danger"; del.textContent = `${person + 1}人目を消す`;
+    del.onclick = () => { pushUndo(); editableOthers().splice(person - 1, 1); person = 0; selected = null; changed(); updateTools(); };
+    pt.appendChild(del);
+  }
   const js = joints();
   // 関節ごとにボタンを 1 つ、決まった位置に置く。ない関節は「＋左耳」、ある関節は「左耳を消す」。
   // 以前は選んだ関節だけに「消す」を出していたので、続けて足すと前に足した関節のボタンが消えていた
@@ -681,7 +789,7 @@ function updateTools() {
   if (f) {
     const del = document.createElement("button");
     del.className = "danger"; del.textContent = "顔を消す";
-    del.onclick = () => { pushUndo(); setEdit("face", null); updateTools(); };
+    del.onclick = () => { pushUndo(); setFace(null); updateTools(); };
     ft.appendChild(del);
   } else {
     const add = document.createElement("button");
@@ -690,7 +798,7 @@ function updateTools() {
       pushUndo();
       const [cx, cy, cw, ch] = crop(), [w, h] = size();
       const center = js.nose ? js.nose.slice() : [(cx + cw / 2) / w, (cy + ch * 0.25) / h];
-      setEdit("face", { center, height: ch * 0.12 / h, yaw: 0, roll: 0, contour: [], mouth: [] });
+      setFace({ center, height: ch * 0.12 / h, yaw: 0, roll: 0, contour: [], mouth: [] });
       updateTools();
     };
     ft.appendChild(add);
@@ -715,7 +823,7 @@ $("yaw").addEventListener("pointerdown", () => pushUndo());
 $("yaw").addEventListener("input", () => {
   const f = face(); if (!f) return;
   const g = clone(f); g.yaw = Number($("yaw").value);
-  setEdit("face", g); $("yaw-value").textContent = g.yaw + "°";
+  setFace(g); $("yaw-value").textContent = g.yaw + "°";
 });
 
 function updateMode() {
@@ -739,7 +847,7 @@ function undo() {
   if (last.name !== current) select(last.name);
   changed(); updateTools();
 }
-$("reset-bones").onclick = () => { pushUndo(); removeEdit("joints"); removeEdit("face"); updateTools(); };
+$("reset-bones").onclick = () => { pushUndo(); removeEdit("joints"); removeEdit("face"); removeEdit("others"); person = 0; updateTools(); };
 $("reset-crop").onclick = () => { pushUndo(); removeEdit("crop"); updateTools(); };
 $("reset-all").onclick = () => { pushUndo(); delete edits[current]; changed(); updateTools(); };
 

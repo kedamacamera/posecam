@@ -86,12 +86,7 @@ def convert_shape(record, edit):
     outlines = record.get("outlines") or []
     lines = record.get("lines") or []
 
-    shape = {"points": {k: iso(v) for k, v in joints.items()}}
-    if outlines:
-        shape["outline"] = [iso(p) for p in outlines[0]]
-    if len(outlines) > 1:
-        shape["extraOutlines"] = [[iso(p) for p in o] for o in outlines[1:]]
-    if face:
+    def convert_face(face):
         f = dict(face)
         f["center"] = iso(face["center"])
         # 顔の高さは枠の高さに対する割合
@@ -103,9 +98,28 @@ def convert_shape(record, edit):
                 f[key] = iso(face[key])
             else:
                 f.pop(key, None)
-        shape["face"] = f
+        return f
+
+    # 2 人以上の写真の、2 人目以降の骨格と顔（[{points, face}]）
+    others = edit["others"] if "others" in edit else (record.get("others") or [])
+
+    shape = {"points": {k: iso(v) for k, v in joints.items()}}
+    if outlines:
+        shape["outline"] = [iso(p) for p in outlines[0]]
+    if len(outlines) > 1:
+        shape["extraOutlines"] = [[iso(p) for p in o] for o in outlines[1:]]
+    if face:
+        shape["face"] = convert_face(face)
     if lines:
         shape["lines"] = [[iso(p) for p in line] for line in lines]
+    if others:
+        people = []
+        for other in others:
+            person = {"points": {k: iso(v) for k, v in (other.get("points") or {}).items()}}
+            if other.get("face"):
+                person["face"] = convert_face(other["face"])
+            people.append(person)
+        shape["extraPeople"] = people
     return shape
 
 

@@ -40,6 +40,9 @@ final class PoseFeed: ObservableObject {
     /// 検出した顔のパーツ（画像座標）。骨格の表示に使う
     @Published fileprivate(set) var face: FaceShape?
     @Published fileprivate(set) var score: Double?
+    /// 2 人目以降の、検出した骨格と顔（画像座標）。2 人以上の型のときだけ表示に使う
+    @Published fileprivate(set) var others: [[Joint: CGPoint]] = []
+    @Published fileprivate(set) var otherFaces: [FaceShape] = []
 
     /// 写真の編集画面で、写真から求めた骨格を脚長の範囲の線に使う
     func showStill(pose: [Joint: CGPoint]?) {
@@ -1543,7 +1546,32 @@ final class CameraManager: NSObject, ObservableObject {
             let pose = result.pose
             self.poseBox.value = pose
             var score: Double?
-            if let template {
+            let isGroup = !(template?.extraPeople ?? []).isEmpty
+            if let template, isGroup {
+                // 2 人以上の型: 型の人と映っている人を組み合わせて、人ごとの一致度を平均する
+                let detected = result.poses.map { $0.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) } }
+                let people = template.people
+                let jointScore = PoseMatcher.score(people: people.map(\.joints), detected: detected, aspect: aspect)
+                var silhouetteScore: Double?
+                if let silhouette = result.silhouette {
+                    let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
+                    if self.templateCells?.key != key {
+                        self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
+                                                                         width: silhouette.width,
+                                                                         height: silhouette.height))
+                    }
+                    silhouetteScore = PoseMatcher.silhouetteScore(template: self.templateCells!.cells,
+                                                                  detected: silhouette.cells,
+                                                                  width: silhouette.width)
+                }
+                let templateFaces = people.compactMap(\.face)
+                let faceScore = PoseMatcher.faceScore(
+                    templates: templateFaces,
+                    detected: result.faces.map { $0.map { PoseSpace.toIsotropic($0, aspect: aspect) } },
+                    personFound: !result.poses.isEmpty || silhouetteScore != nil)
+                score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore, face: faceScore,
+                                            faceWidth: templateFaces.map(\.width).max() ?? 0)
+            } else if let template {
                 let jointScore = pose.flatMap { pose -> Double? in
                     let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
                     return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect)
@@ -1583,6 +1611,10 @@ final class CameraManager: NSObject, ObservableObject {
                 guard self.poseNeeded.value else { return }
                 if self.poseFeed.detected != pose { self.poseFeed.detected = pose }
                 if self.poseFeed.face != face { self.poseFeed.face = face }
+                let others = isGroup ? Array(result.poses.dropFirst()) : []
+                let otherFaces = isGroup ? Array(result.faces.dropFirst()) : []
+                if self.poseFeed.others != others { self.poseFeed.others = others }
+                if self.poseFeed.otherFaces != otherFaces { self.poseFeed.otherFaces = otherFaces }
                 let rounded = self.template == nil ? nil : score.map { $0.rounded() }
                 if self.poseFeed.score != rounded { self.poseFeed.score = rounded }
                 self.evaluateAutoShutter()
