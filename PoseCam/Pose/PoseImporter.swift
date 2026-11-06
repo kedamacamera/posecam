@@ -135,24 +135,26 @@ enum PoseImporter {
         guard !outlines.isEmpty || joints.count >= 6 else { return nil }
         let faces = PoseDetector.faceShapes(ciImage: image)
         var analysis = PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines, face: faces.first)
-        analysis.others = otherPeople(people, faces: faces, outlines: outlines.count)
+        analysis.others = otherPeople(people, faces: faces)
         return analysis
     }
 
-    /// 2 人目以降の人。後ろに小さく写った人を拾わないよう、人の輪郭が 2 つ以上あるときだけ、
-    /// 1 人目の体の大きさ（関節の上下の幅）の 40% 以上の人を、輪郭の数 − 1 人まで使う。
+    /// 2 人目以降の人。後ろに小さく写った人を拾わないよう、関節が 6 つ以上あり、
+    /// 1 人目の体の大きさ（関節の上下の幅）の半分以上の人を 3 人まで使う。
+    /// （以前は人の輪郭が 2 つ以上あるときだけにしていたが、くっついて写った 2 人は輪郭が 1 つになり、
+    /// 2 人の見本写真 11 枚のうち 1 枚しか 2 人目が取れなかった）
     /// 顔は、1 人目の顔（いちばん大きい顔）以外で、その人の頭（鼻・耳・首）にいちばん近いものを付ける
-    static func otherPeople(_ people: [[Joint: CGPoint]], faces: [FaceShape], outlines: Int) -> [PersonShape] {
-        guard outlines > 1, let first = people.first else { return [] }
+    static func otherPeople(_ people: [[Joint: CGPoint]], faces: [FaceShape]) -> [PersonShape] {
+        guard let first = people.first else { return [] }
         func height(_ joints: [Joint: CGPoint]) -> CGFloat {
             let ys = joints.values.map(\.y)
             return (ys.max() ?? 0) - (ys.min() ?? 0)
         }
-        let minimum = height(first) * 0.4
+        let minimum = height(first) * 0.5
         var remaining = Array(faces.dropFirst())
         var result: [PersonShape] = []
         for joints in people.dropFirst() where joints.count >= 6 && height(joints) >= minimum {
-            guard result.count < outlines - 1 else { break }
+            guard result.count < 3 else { break }
             let head = [Joint.nose, .leftEar, .rightEar].compactMap { joints[$0] }
             let anchor = head.isEmpty ? joints[.neck] : CGPoint(x: head.map(\.x).reduce(0, +) / CGFloat(head.count),
                                                                  y: head.map(\.y).reduce(0, +) / CGFloat(head.count))
