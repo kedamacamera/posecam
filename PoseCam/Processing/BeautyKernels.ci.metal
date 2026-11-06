@@ -137,7 +137,8 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     // 比べる肌の色みは、その場所の暗さにそろえる（リニアの色空間では、同じ肌でも暗い所ほど色みの差も小さい）。
     // そろえないと、影や髪（もみあげ）のような暗い所を明るい肌の色みへ寄せてしまい、赤茶色の斑点になっていた
     float ratioY = nearY / max(averageY, 0.001);
-    float shade = clamp(ratioY, 0.0, 1.0);
+    // 剃り跡の少しの暗さ（リニアで半分以上の明るさ）はそのまま肌の色みを目標にし、それより暗い影・髪だけ弱める
+    float shade = clamp(ratioY / 0.5, 0.0, 1.0);
     averageCb *= shade;
     averageCr *= shade;
     // 青い（Cb が高い・Cr が低い）ほど、暗いほど強く効かせる
