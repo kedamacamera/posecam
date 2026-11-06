@@ -167,14 +167,23 @@ final class FrameProcessor {
         let area = CIVector(cgRect: extent)
         let sum = skinOnly.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
         let weight = reference.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
+        // ひげの所の平均の色（この人の剃り跡の色）。頬の色との差が、打ち消す色のずれになる
+        let beardOnly = image.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: black,
+            kCIInputMaskImageKey: beardMask,
+        ])
+        let beardSum = beardOnly.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
+        let beardWeight = beardMask.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area])
+            .clampedToExtent()
         // 剃り跡のむらは毛穴より大きいので、少しぼかした色で判定する
         let local = image.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.004).cropped(to: extent)
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
-                                  arguments: [image, local, sum, weight, Float(strength), Float(debug ? 1 : 0)])
+                                  arguments: [image, local, sum, weight, beardSum, beardWeight,
+                                              Float(strength), Float(debug ? 1 : 0)])
         return output?.cropped(to: extent) ?? image
     }
 
-    /// 確認用: 青ひげ隠しの中の値を色で表した画像（赤: 効き具合、緑: 参照できる肌の量 ×10、青: 青み ×10）。
+    /// 確認用: 青ひげ隠しの中の値を色で表した画像（赤: 効き具合、緑: 参照できる肌の量 ×10、青: ひげの色のずれの出方 t）。
     func beardDebug(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
         guard let beard = masks.beard else { return nil }
         let extent = image.extent

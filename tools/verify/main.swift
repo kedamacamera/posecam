@@ -237,6 +237,13 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
             return String(format: "Y %.3f Cb %+.3f Cr %+.3f", v.y, v.cb, v.cr)
         }
         report.append("beard_\(name): original [\(chroma(original))] stubble [\(chroma(image))] concealed [\(chroma(concealed))]")
+        // ひげのない元の写真にかけたとき、色が変わらないか（以前はあごがオレンジ色になっていた）
+        if let cleanMasks = detector.analyze(ciImage: original, wantsMasks: true).masks {
+            var beardOnly = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
+            beardOnly.beard = 1
+            let clean = processor.process(original, settings: beardOnly, legs: nil, masks: cleanMasks)
+            report.append("beard_\(name): no stubble, beard 100 [\(chroma(clean))] (should stay near original)")
+        }
     }
     // 顔の周りだけで処理した結果が、画面全体で処理した結果と同じか（差の最大値。0〜1）
     var wholeMasks = masks
@@ -252,7 +259,7 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
     report.append(String(format: "beard_%@: face region %@, max diff vs whole image R %.4f G %.4f B %.4f", name,
                          masks.faceRegion.map { "\($0)" } ?? "nil",
                          maxPixel[0], maxPixel[1], maxPixel[2]))
-    report.append("beard_\(name): original, stubble added, beard 100, beard mask, debug (R=w, G=ref skin x10, B=bluish x10), smoothing 80 + beard + contour 80")
+    report.append("beard_\(name): original, stubble added, beard 100, beard mask, debug (R=w*t, G=ref skin x10, B=t), smoothing 80 + beard + contour 80")
 }
 
 // MARK: - ダイレクトフラッシュ
@@ -268,6 +275,40 @@ if let (name, ambient) = inputs.first, let person = personMask(ambient) {
     let flashPhoto = flashLight.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: ambient])
         .cropped(to: ambient.extent)
     let result = DirectFlash.apply(photo: flashPhoto, ambient: ambient, exposureRatio: 1)
+
+    // 位置合わせ: 写真を手ぶれ相当（右へ 3%・下へ 2%）ずらしたとき、コマが写真に重なるよう動くか
+    let dx = ambient.extent.width * 0.03, dy = -ambient.extent.height * 0.02
+    let shiftedPhoto = flashPhoto.transformed(by: CGAffineTransform(translationX: dx, y: dy))
+        .clampedToExtent().cropped(to: ambient.extent)
+    let shiftedAmbient = ambient.transformed(by: CGAffineTransform(translationX: dx, y: dy))
+        .clampedToExtent().cropped(to: ambient.extent)
+    if let map = DirectFlash.warp(ambient, to: shiftedPhoto) {
+        let c = CGPoint(x: ambient.extent.midX, y: ambient.extent.midY)
+        let q = map(c) ?? .zero
+        report.append(String(format: "direct flash align: expected move (%.1f, %.1f), got (%.1f, %.1f)",
+                             dx, dy, q.x - c.x, q.y - c.y))
+    } else {
+        report.append("direct flash align: no transform")
+    }
+    func meanDiff(_ a: CIImage, _ b: CIImage) -> Double {
+        let inner = a.extent.insetBy(dx: a.extent.width * 0.1, dy: a.extent.height * 0.1)
+        let d = a.applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: b])
+            .applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: inner)])
+        var px = [Float](repeating: 0, count: 4)
+        context.render(d, toBitmap: &px, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return Double(px[0] + px[1] + px[2]) / 3
+    }
+    let aligned = DirectFlash.align(ambient, to: shiftedPhoto) ?? ambient
+    report.append(String(format: "direct flash align: mean diff to moved frame, unaligned %.4f, aligned %.4f",
+                         meanDiff(ambient, shiftedAmbient), meanDiff(aligned, shiftedAmbient)))
+    let shiftedResult = DirectFlash.apply(photo: shiftedPhoto, ambient: ambient, exposureRatio: 1)
+    let sw = ambient.extent.width
+    let sheet2 = shiftedPhoto
+        .composited(over: shiftedResult.transformed(by: CGAffineTransform(translationX: sw, y: 0)))
+    savePNG(sheet2.transformed(by: CGAffineTransform(scaleX: 1200 / (sw * 2), y: 1200 / (sw * 2))),
+            "directflash_shifted.png")
+    report.append("directflash_shifted.png: flash photo moved 3%/2% from the frame, direct flash result")
     let background = person.applyingFilter("CIColorInvert")
     report.append(String(format: "direct flash %@: person luma %.3f -> %.3f, background luma %.3f -> %.3f",
                          name, meanLuma(flashPhoto, mask: person), meanLuma(result, mask: person),
