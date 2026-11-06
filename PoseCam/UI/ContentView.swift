@@ -37,6 +37,13 @@ struct ContentView: View {
     /// 写真の保存に時間がかかっている（0.7 秒たっても終わらない）ときだけ「保存中」を出す
     @State private var showsSaving = false
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
+    /// パネル・シャッター・撮影モードの範囲の上端（画面の座標）
+    @State private var controlsTop: CGFloat = .infinity
+    /// シャッターの段・撮影モードの段の上端（画面の座標）。プレビューに重なっているかを決めるのに使う
+    @State private var shutterRowTop: CGFloat = 0
+    @State private var modeRowTop: CGFloat = 0
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
+    @Environment(\.colorScheme) private var colorScheme
 
     private let topBarHeight: CGFloat = 50
 
@@ -47,7 +54,7 @@ struct ContentView: View {
                                 height: geo.size.height + insets.top + insets.bottom)
 
             ZStack(alignment: .top) {
-                Color.black
+                Color.chromeBackground
 
                 if camera.cameraAuthorized {
                     preview(screen: screen, topInset: insets.top)
@@ -56,12 +63,14 @@ struct ContentView: View {
                         topBar
                             .frame(height: topBarHeight)
                             .padding(.top, insets.top)
+                            // フルの比率では上のバーも映像の上に重なるので、外観の設定によらず白い文字にする
+                            .environment(\.colorScheme, camera.aspect == .full ? .dark : colorScheme)
                         statusRow
                             .padding(.horizontal, 12)
                             .padding(.top, 6)
                         Spacer(minLength: 0)
-                        bottomControls(previewBottom: previewBottom(screen: screen, topInset: insets.top))
-                            .padding(.bottom, max(insets.bottom, 12))
+                        bottomControls(previewBottom: previewBottom(screen: screen, topInset: insets.top),
+                                       bottomPadding: max(insets.bottom, 12))
                     }
 
                     if camera.template != nil {
@@ -113,7 +122,7 @@ struct ContentView: View {
             .onAppear { camera.setScreenAspect(screen.width / screen.height) }
             .onChange(of: screen) { camera.setScreenAspect(screen.width / screen.height) }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearance.scheme)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .onAppear {
@@ -172,7 +181,8 @@ struct ContentView: View {
                     TemplateLayer(feed: camera.poseFeed, template: template, opacity: poseOpacity)
                 }
                 if camera.showSkeleton {
-                    SkeletonLayer(feed: camera.poseFeed)
+                    SkeletonLayer(feed: camera.poseFeed,
+                                  template: camera.template?.isObject == true ? nil : camera.template)
                 }
                 if gridStyle != .off {
                     GridOverlay(style: gridStyle)
@@ -184,6 +194,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
             // タップ（ピント・露出）・長押し（AE/AF ロック）・上下（露出）・つまむ（ズーム）・本体のボタン（シャッター）
             CameraGestureView(hardwareShutterEnabled: hardwareShutterEnabled,
+                              ignoreBelow: controlsTop - top,
                               onTap: { point, size in handleTap(point, size) },
                               onLongPress: { point, size in handleLongPress(point, size) },
                               onVerticalPan: { dy in handlePan(dy) },
@@ -334,6 +345,14 @@ struct ContentView: View {
                 Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
                 Toggle("水平器", isOn: $showLevel)
+                Picker(selection: $appearance) {
+                    ForEach(Appearance.allCases) { item in
+                        Text(item.label).tag(item)
+                    }
+                } label: {
+                    Label("外観（ダーク・ライト）", systemImage: "circle.lefthalf.filled")
+                }
+                .pickerStyle(.menu)
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
@@ -403,7 +422,7 @@ struct ContentView: View {
         return -(frame.maxY - previewBottom) - 6
     }
 
-    private func bottomControls(previewBottom: CGFloat) -> some View {
+    private func bottomControls(previewBottom: CGFloat, bottomPadding: CGFloat) -> some View {
         VStack(spacing: 10) {
             // 選んだポーズの見本写真（左下）。タップで隠す・出す
             if let name = selectedPose?.imageName {
@@ -422,117 +441,135 @@ struct ContentView: View {
                     .offset(y: lensBarShift(previewBottom: previewBottom))
             }
 
-            if panel != nil {
-                // パネルを開いている間は、下のパネルの切り替えボタンを隠して画面を広くし、代わりに閉じる印を出す
-                Button {
-                    withAnimation(.easeOut(duration: 0.18)) { panel = nil }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 64, height: 22)
-                        .background(Capsule().fill(Color.black.opacity(0.45)))
-                }
-                .transition(.opacity)
-            }
-
-            if let panel {
-                Group {
-                    switch panel {
-                    case .pose:
-                        PoseStrip(library: library, selection: $selectedPose,
-                                  frameAspect: camera.frameAspect) { showLibrary = true }
-                    case .filter:
-                        FilterStrip(selection: $camera.settings.filter, strength: $camera.settings.filterStrength)
-                    case .beauty:
-                        BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal,
-                                    selected: $beautyItem)
-                    }
-                }
-                // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）
-                .frame(height: panel == .beauty ? 120 : panel == .pose ? 140 : 134)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
-                .padding(.horizontal, 8)
-                // パネルは下へフリックしても閉じられる（横のスクロールとは向きで区別する）
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 12)
-                        .onChanged { value in
-                            // 下へなぞり始めたら、指を離したときに下のポーズ・フィルターが選ばれないようにする
-                            let down = value.translation.height
-                            if down > 12, down > abs(value.translation.width) { panelFlicking = true }
-                        }
-                        .onEnded { value in
-                            let down = value.translation.height
-                            if down > 40, down > abs(value.translation.width) * 1.2 {
-                                withAnimation(.easeOut(duration: 0.18)) { self.panel = nil }
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { panelFlicking = false }
-                        }
-                )
-                .environment(\.suppressPanelTaps, panelFlicking)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            if panel == nil {
-                PanelChips(panel: $panel)
-                    .transition(.opacity)
-            }
-
-            HStack {
-                flashButton
-                Spacer()
-                ShutterButton(mode: camera.mode,
-                              isRecording: camera.isRecording,
-                              isBusy: camera.isCapturing || camera.isSequenceRunning,
-                              progress: Double(camera.recordingSeconds) / Double(CameraManager.snapMaxSeconds),
-                              action: { camera.shutterPressed() },
-                              onLongPressStart: { camera.startQuickVideo() },
-                              onLongPressEnd: { camera.stopQuickVideo() })
-                Spacer()
-                if camera.isRecording && !camera.isQuickVideo {
-                    // 録画中は、カメラの切り替えの代わりに静止画のシャッター（録画中のコマを写真にする）
+            // パネル・シャッター・撮影モードの範囲。フルの比率ではこの下にもプレビュー（ピント・露出の操作面）があり、
+            // ボタンを押したつもりの指を操作面が取ってしまい、撮影モードが切り替わらずにピントの枠が出ていた。
+            // この範囲より下の指は、操作面では受け取らない
+            VStack(spacing: 10) {
+                if panel != nil {
+                    // パネルを開いている間は、下のパネルの切り替えボタンを隠して画面を広くし、代わりに閉じる印を出す
                     Button {
-                        camera.captureStillWhileRecording()
+                        withAnimation(.easeOut(duration: 0.18)) { panel = nil }
                     } label: {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 38, height: 38)
-                            .overlay(Circle().stroke(Color.white, lineWidth: 2).padding(-4))
-                            .frame(width: 48, height: 48)
-                    }
-                } else {
-                    Button {
-                        camera.flipCamera()
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath.camera")
-                            .font(.title2)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(.white)
-                            .frame(width: 48, height: 48)
-                            .background(Circle().fill(Color.white.opacity(0.18)))
+                            .frame(width: 64, height: 22)
+                            .background(Capsule().fill(Color.black.opacity(0.45)))
                     }
-                    .disabled(camera.isRecording || camera.isSequenceRunning)
+                    .transition(.opacity)
                 }
-            }
-            .padding(.horizontal, 30)
 
-            // 一番下はアルバムと撮影モード。画面を閉じるときの上スワイプでシャッターに触れないよう、
-            // シャッターは一段上に置く
-            ZStack {
-                ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
-                    camera.setMode($0)
+                if let panel {
+                    Group {
+                        switch panel {
+                        case .pose:
+                            PoseStrip(library: library, selection: $selectedPose,
+                                      frameAspect: camera.frameAspect) { showLibrary = true }
+                        case .filter:
+                            FilterStrip(selection: $camera.settings.filter, strength: $camera.settings.filterStrength)
+                        case .beauty:
+                            BeautyPanel(settings: $camera.settings, showOriginal: $camera.showOriginal,
+                                        selected: $beautyItem)
+                        }
+                    }
+                    // 美肌・スタイルはスライダーが多いので少し高くする（はみ出した分はスクロール）
+                    .frame(height: panel == .beauty ? 120 : panel == .pose ? 140 : 134)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.6)))
+                    .padding(.horizontal, 8)
+                    // パネルは下へフリックしても閉じられる（横のスクロールとは向きで区別する）
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 12)
+                            .onChanged { value in
+                                // 下へなぞり始めたら、指を離したときに下のポーズ・フィルターが選ばれないようにする
+                                let down = value.translation.height
+                                if down > 12, down > abs(value.translation.width) { panelFlicking = true }
+                            }
+                            .onEnded { value in
+                                let down = value.translation.height
+                                if down > 40, down > abs(value.translation.width) * 1.2 {
+                                    withAnimation(.easeOut(duration: 0.18)) { self.panel = nil }
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { panelFlicking = false }
+                            }
+                    )
+                    .environment(\.suppressPanelTaps, panelFlicking)
+                // パネルは映像の上に重なるので、外観の設定によらず暗い表示
+                .environment(\.colorScheme, .dark)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+
+                if panel == nil {
+                    PanelChips(panel: $panel)
+                        .transition(.opacity)
+                }
+
                 HStack {
-                    ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving) { showAlbum = true }
+                    flashButton
                     Spacer()
+                    ShutterButton(mode: camera.mode,
+                                  isRecording: camera.isRecording,
+                                  isBusy: camera.isCapturing || camera.isSequenceRunning,
+                                  progress: Double(camera.recordingSeconds) / Double(CameraManager.snapMaxSeconds),
+                                  action: { camera.shutterPressed() },
+                                  onLongPressStart: { camera.startQuickVideo() },
+                                  onLongPressEnd: { camera.stopQuickVideo() })
+                    Spacer()
+                    if camera.isRecording && !camera.isQuickVideo {
+                        // 録画中は、カメラの切り替えの代わりに静止画のシャッター（録画中のコマを写真にする）
+                        Button {
+                            camera.captureStillWhileRecording()
+                        } label: {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 38, height: 38)
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2).padding(-4))
+                                .frame(width: 48, height: 48)
+                        }
+                    } else {
+                        Button {
+                            camera.flipCamera()
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                                .font(.title2)
+                                .foregroundStyle(Color.chromeText)
+                                .frame(width: 48, height: 48)
+                                .background(Circle().fill(Color.chromeText.opacity(0.18)))
+                        }
+                        .disabled(camera.isRecording || camera.isSequenceRunning)
+                    }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 30)
+                // 映像の上に重なる段は、外観の設定によらず白い文字（9:16 ではシャッターの段が映像に重なる）
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { shutterRowTop = $0 }
+                .environment(\.colorScheme, shutterRowTop < previewBottom - 1 ? .dark : colorScheme)
+
+                // 一番下はアルバムと撮影モード。画面を閉じるときの上スワイプでシャッターに触れないよう、
+                // シャッターは一段上に置く
+                ZStack {
+                    ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
+                        camera.setMode($0)
+                    }
+                    HStack {
+                        ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving) { showAlbum = true }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                }
+                .padding(.top, 4)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { modeRowTop = $0 }
+                .environment(\.colorScheme, modeRowTop < previewBottom - 1 ? .dark : colorScheme)
             }
-            .padding(.top, 4)
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { controlsTop = $0 }
         }
         .padding(.top, 14)
+        .padding(.bottom, bottomPadding)
         .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+            // 下端（ホームバーの所）まで暗くする。以前は一番下の帯だけ暗くならず、映像がそのまま見えていた
+            // ライトの外観で、下の段が映像に重なっていないときは、明るい帯を暗くしない
+            LinearGradient(colors: [.clear, .black.opacity(colorScheme == .dark || shutterRowTop < previewBottom - 1
+                                                         || modeRowTop < previewBottom - 1 ? 0.6 : 0)],
+                           startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
         )
     }

@@ -82,22 +82,20 @@ final class FrameProcessor {
             // 以前のぼかしで消す方法は、点が残ったまま肌がぼやけて見えていた。
             // クロージングの結果をそのまま使うと、平らな面がつながってまだらなブロックになり、
             // 結果をぼかすと、あごの縁・唇の輪郭までぼやけていた。
-            // そこで「クロージングで明るくなった量（点を埋めた量）」だけをぼかして元に足す。
-            // 大きな輪郭はクロージングで変わらない（埋めた量が 0）ので、ぼかしても輪郭はぼやけない
+            // 「埋めた量」だけをぼかして足す方法は、点 1 つぶんの量が周りへ薄く散って点がほとんど埋まらなかった。
+            // そこで、クロージングの結果を少しならした「点のない肌」を目標にし、それより暗い点の画素だけを置き換える。
+            // ならした結果と元の結果の暗い方を目標にするので、あごの縁の外側（首の影）が明るくなることもない
             let r = max(1, longSide * 0.0025)
             let closedRaw = concealed.clampedToExtent()
                 .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r])
                 .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r])
                 .cropped(to: faceArea)
-            var closed = closedRaw
-            if let difference = Self.positiveDifferenceKernel, let add = Self.addColorKernel,
-               let filledAmount = difference.apply(extent: faceArea, roiCallback: { _, rect in rect },
-                                                   arguments: [closedRaw, concealed]) {
-                let smoothAmount = filledAmount.clampedToExtent().applyingGaussianBlur(sigma: r * 0.8)
-                    .cropped(to: faceArea)
-                closed = add.apply(extent: faceArea, roiCallback: { _, rect in rect },
-                                   arguments: [concealed, smoothAmount]) ?? closedRaw
-            }
+            let target = closedRaw.clampedToExtent().applyingGaussianBlur(sigma: r * 0.6).cropped(to: faceArea)
+                .applyingFilter("CIDarkenBlendMode", parameters: [kCIInputBackgroundImageKey: closedRaw])
+                .cropped(to: faceArea)
+            let closed = Self.fillDotsKernel?.apply(extent: faceArea, roiCallback: { _, rect in rect },
+                                                    arguments: [concealed, target, Float(0.04), Float(0.12)])
+                ?? closedRaw
             let filled = blend(closed, over: concealed, mask: beardMask, amount: settings.beard)
                 .cropped(to: faceArea)
                 .composited(over: result)
@@ -152,16 +150,10 @@ final class FrameProcessor {
         ]).applyingFilter("CIColorClamp")
     }
 
-    static let positiveDifferenceKernel: CIKernel? = {
+    static let fillDotsKernel: CIKernel? = {
         guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
               let data = try? Data(contentsOf: url) else { return nil }
-        return try? CIKernel(functionName: "positiveDifference", fromMetalLibraryData: data)
-    }()
-
-    static let addColorKernel: CIKernel? = {
-        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
-              let data = try? Data(contentsOf: url) else { return nil }
-        return try? CIKernel(functionName: "addColor", fromMetalLibraryData: data)
+        return try? CIKernel(functionName: "fillDots", fromMetalLibraryData: data)
     }()
 
     static let beardKernel: CIKernel? = {
@@ -246,21 +238,24 @@ final class FrameProcessor {
         return try? CIKernel(functionName: "rednessRemoval", fromMetalLibraryData: data)
     }()
 
-    /// 周りの肌より赤い所を、周りの肌だけの平均の色に近づける（BeautyKernels.ci.metal の rednessRemoval）。
+    /// 周りの肌より赤い小さな所を、すぐ周りの肌の色に近づける（BeautyKernels.ci.metal の rednessRemoval）。
     private func removeRedness(_ image: CIImage, mask: CIImage, strength: Double, longSide: CGFloat) -> CIImage {
         guard let kernel = Self.rednessKernel else { return image }
         let extent = image.extent
         let black = CIImage(color: .black).cropped(to: extent)
-        // ニキビ数個ぶんより広い範囲の「肌だけ」の平均を取る
-        let sigma = longSide * 0.012
         let skinOnly = image.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: black,
             kCIInputMaskImageKey: mask,
         ])
-        let sum = skinOnly.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
-        let weight = mask.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        func blur(_ x: CIImage, _ sigma: CGFloat) -> CIImage {
+            x.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        }
+        // すぐ周り（ニキビ跡数個ぶん）と広い範囲の、肌だけの平均
+        let near = longSide * 0.01, wide = longSide * 0.03
+        let local = blur(image, max(1, longSide * 0.0012))
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
-                                  arguments: [image, sum, weight, Float(strength)])
+                                  arguments: [image, local, blur(skinOnly, near), blur(mask, near),
+                                              blur(skinOnly, wide), blur(mask, wide), Float(strength)])
         return output?.cropped(to: extent) ?? image
     }
 

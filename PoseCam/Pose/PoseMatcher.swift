@@ -15,14 +15,14 @@ enum PoseMatcher {
         (.leftShoulder, .rightShoulder),
     ]
 
-    /// 向きのずれがこの角度までは満点
-    private static let angleSlack = 15.0 * Double.pi / 180
+    /// 向きのずれがこの角度までは満点（人の体型・関節の検出のぶれで 15 度では厳しかった）
+    private static let angleSlack = 20.0 * Double.pi / 180
     /// 向きのずれがこの角度で 0 点
-    private static let angleTolerance = 85.0 * Double.pi / 180
+    private static let angleTolerance = 90.0 * Double.pi / 180
     /// 関節の位置のずれ（型の体の高さに対する割合）がこの値までは満点
-    private static let positionSlack = 0.06
+    private static let positionSlack = 0.08
     /// 関節の位置のずれがこの値で 0 点
-    private static let positionTolerance = 0.45
+    private static let positionTolerance = 0.5
 
     /// 関節の位置と向きでの一致度。どちらも等方座標で渡す。
     /// aspect は画面の縦横比（横 / 縦）で、画面内に見えているはずの関節を決めるのに使う。
@@ -53,7 +53,7 @@ enum PoseMatcher {
         return angle * position * coverageFactor * 100
     }
 
-    /// 骨ごとの向きの差。15 度までは満点、85 度ずれた骨は 0 点。
+    /// 骨ごとの向きの差。20 度までは満点、90 度ずれた骨は 0 点。
     private static func angleScore(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint]) -> Double? {
         var scores: [Double] = []
         for (a, b) in bones {
@@ -70,10 +70,10 @@ enum PoseMatcher {
         guard scores.count >= 2 else { return nil }
         let mean = scores.reduce(0, +) / Double(scores.count)
         // 平均だけだと腕 1 本の違いが薄まるので、いちばんずれている骨の点数も少し反映する
-        return mean * 0.75 + (scores.min() ?? 0) * 0.25
+        return mean * 0.85 + (scores.min() ?? 0) * 0.15
     }
 
-    /// 関節の位置の差。型の体の高さの 6% までは満点、45% ずれると 0 点。
+    /// 関節の位置の差。型の体の高さの 8% までは満点、50% ずれると 0 点。
     /// 上半身だけの型は関節の上下の幅が小さく、わずかなずれでも割合が大きくなって厳しすぎたので、
     /// 体の高さは画面の 35% より小さく見積もらない。
     private static func positionScore(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint],
@@ -204,36 +204,38 @@ enum PoseMatcher {
 
     /// 顔の位置・大きさ・向き・傾きの一致度（0〜100）。どちらも等方座標。
     /// 横顔でも使えるよう、目の位置ではなく顔の枠で比べる。
-    /// - 位置: 顔の枠の中心のずれ。顔の幅の 20% までは満点、100% ずれると 0 点
-    ///   （全身の写真で顔が小さいときは、画面の高さの 8% を顔の幅とみなして厳しくなりすぎないようにする）
+    /// - 位置: 顔の枠の中心のずれ。顔の幅の 25% までは満点、150% ずれると 0 点
+    ///   （全身の写真で顔が小さいときは、画面の高さの 10% を顔の幅とみなして厳しくなりすぎないようにする）
     /// - 大きさ: 顔の枠の高さの比。1.15 倍までは満点、1.8 倍（または 0.55 倍）で 0 点
-    /// - 向き（正面・斜め・横顔）: 左右の向きの差。18 度までは満点、55 度で 0 点
-    /// - 傾き: 7 度までは満点、35 度で 0 点
+    /// - 向き（正面・斜め・横顔）: 左右の向きの差。20 度までは満点、70 度で 0 点
+    /// - 傾き: 10 度までは満点、45 度で 0 点
     /// 4 つを掛け合わせると少しずつのずれが重なって低くなりすぎるので、0.8 乗して和らげる（どれかが 0 なら 0 のまま）
     static func faceScore(template t: FaceShape, detected d: FaceShape) -> Double {
         func ramp(_ value: Double, _ slack: Double, _ zero: Double) -> Double {
             max(0, min(1, 1 - (value - slack) / (zero - slack)))
         }
         guard t.height > 1e-4, d.height > 1e-4 else { return 0 }
-        let faceWidth = max(Double(t.width), 0.08)
+        let faceWidth = max(Double(t.width), 0.1)
         let position = ramp(hypot(Double(t.center.x - d.center.x), Double(t.center.y - d.center.y)) / faceWidth,
-                            0.2, 1.0)
+                            0.25, 1.5)
         let size = ramp(abs(log(Double(d.height / t.height))), log(1.15), log(1.8))
-        let yaw = ramp(abs(t.yaw - d.yaw), 18, 55)
+        let yaw = ramp(abs(t.yaw - d.yaw), 20, 70)
         var rollDifference = abs(t.roll - d.roll).truncatingRemainder(dividingBy: 360)
         if rollDifference > 180 { rollDifference = 360 - rollDifference }
-        let roll = ramp(rollDifference, 7, 35)
+        let roll = ramp(rollDifference, 10, 45)
         return pow(position * size * yaw * roll, 0.8) * 100
     }
 
     /// 関節・人の形・顔の点数をまとめる。あるものだけで平均する。
-    /// 顔は、型の顔が大きいほど（顔のアップほど）重く見る（顔の幅が画面の高さの 25% 以上で、ほかの 2 倍）。
+    /// 顔は、型の顔が大きいほど（顔のアップほど）重く見る。顔の幅が画面の高さの 10% 以下（全身・上半身）では
+    /// ほかの 0.4 倍、25% 以上で 2 倍。以前は小さい顔でも 1 倍以上で、顔の点数が厳しいと、顔を隠した方が
+    /// （顔の点数が外れて）一致度が上がっていた
     static func combine(joints: Double?, silhouette: Double?, face: Double? = nil, faceWidth: CGFloat = 0) -> Double {
         var total = 0.0, weight = 0.0
         if let joints { total += joints; weight += 1 }
         if let silhouette { total += silhouette; weight += 1 }
         if let face {
-            let w = 0.5 + 1.5 * min(1, Double(faceWidth) / 0.25)
+            let w = 0.4 + 1.6 * min(1, max(0, (Double(faceWidth) - 0.1) / 0.15))
             total += face * w
             weight += w
         }

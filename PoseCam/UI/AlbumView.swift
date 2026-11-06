@@ -7,6 +7,7 @@ import SwiftUI
 /// 写真をタップすると大きく表示し、「編集」で傾き補正・伸縮・肌の補正ができる。
 struct AlbumView: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     /// 端末の写真・動画（新しい順）。件数が多くても、表示するときに 1 件ずつ取り出す
     @State private var assets: PHFetchResult<PHAsset>?
     @State private var status: PHAuthorizationStatus = .notDetermined
@@ -49,7 +50,7 @@ struct AlbumView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearance.scheme)
         .task { await load() }
         .onChange(of: pickerItem) {
             guard let item = pickerItem else { return }
@@ -104,6 +105,7 @@ struct AssetPager: View {
     let onEdit: (Data) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     @State private var index: Int
     @State private var isLoading = false
 
@@ -117,10 +119,10 @@ struct AssetPager: View {
             Group {
                 if let assets {
                     // 写真アプリと同じく、拡大中は写真の端まで動かしてから、さらに動かすと前後へめくれる
-                    PhotoPageView(assets: assets, index: $index)
+                    PhotoPageView(assets: assets, index: $index) { dismiss() }
                 }
             }
-            .background(Color.black)
+            .background(Color(.systemBackground))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }
@@ -145,7 +147,7 @@ struct AssetPager: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearance.scheme)
     }
 
     init(assets: PHFetchResult<PHAsset>?, start: Int, onEdit: @escaping (Data) -> Void) {
@@ -184,7 +186,7 @@ struct AssetPage: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            Color(.systemBackground)
             if asset.mediaType == .video {
                 if let player {
                     VideoPlayer(player: player)

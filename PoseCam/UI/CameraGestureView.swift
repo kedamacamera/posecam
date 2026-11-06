@@ -13,6 +13,8 @@ import UIKit
 struct CameraGestureView: UIViewRepresentable {
     /// 本体のボタンでシャッターを切ってよいか（アルバム・編集などの画面を開いている間は、ふつうの音量ボタンに戻す）
     var hardwareShutterEnabled: Bool
+    /// この高さより下（この面の座標）に触れた指は受け取らない（上に重なっているボタンに任せる）
+    var ignoreBelow: CGFloat = .infinity
     let onTap: (CGPoint, CGSize) -> Void
     let onLongPress: (CGPoint, CGSize) -> Void
     /// 上下になぞった量（ポイント、上が負）。指を離したら nil
@@ -33,9 +35,11 @@ struct CameraGestureView: UIViewRepresentable {
         long.minimumPressDuration = 0.6
         let pan = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.pan(_:)))
         pan.maximumNumberOfTouches = 1
-        pan.delegate = c
         let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinch(_:)))
-        for recognizer in [tap, long, pan, pinch] as [UIGestureRecognizer] { view.addGestureRecognizer(recognizer) }
+        for recognizer in [tap, long, pan, pinch] as [UIGestureRecognizer] {
+            recognizer.delegate = c
+            view.addGestureRecognizer(recognizer)
+        }
         if #available(iOS 17.2, *) {
             let interaction = AVCaptureEventInteraction { [weak c] event in
                 switch event.phase {
@@ -87,6 +91,12 @@ struct CameraGestureView: UIViewRepresentable {
             case .began, .changed: parent.onPinch(recognizer.scale)
             default: parent.onPinch(nil)
             }
+        }
+
+        /// 下のボタン（撮影モード・シャッターなど）の所に触れた指は受け取らない
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let view = recognizer.view else { return true }
+            return touch.location(in: view).y < parent.ignoreBelow
         }
 
         /// 上下になぞったときだけ露出の補正にする（横になぞったときは何もしない）

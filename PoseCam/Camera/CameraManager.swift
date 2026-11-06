@@ -1538,6 +1538,10 @@ final class CameraManager: NSObject, ObservableObject {
                 } else if template.face != nil, template.face!.width > 0.15 {
                     // 顔のアップの型なのに顔が映っていなければ 0 点として数える
                     faceScore = 0
+                } else if template.face != nil, pose != nil || silhouetteScore != nil {
+                    // 人は映っているのに顔が見つからない（手や物で隠れている）ときは、半分の点として数える。
+                    // 数えないと、顔の点数が低い人ほど顔を隠した方が一致度が上がっていた
+                    faceScore = 50
                 }
                 // 人が見つからないときも「0%」と表示する（表示が消えると反応していないように見えるため）
                 score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore, face: faceScore,

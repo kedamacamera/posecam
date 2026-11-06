@@ -229,6 +229,49 @@ enum PoseDrawing {
         }
     }
 
+    /// 型の骨格と比べて色分けした骨格。骨ごとの向きの差が 20 度までは緑、50 度以上はオレンジ（間は黄色）。
+    /// インカメラ（鏡像）では左右のラベルが入れ替わるので、全体の差が小さい方の対応で比べる（一致度と同じ）
+    static func drawSkeleton(_ points: [Joint: CGPoint], guide: [Joint: CGPoint], in context: GraphicsContext) {
+        func difference(_ pa: CGPoint, _ pb: CGPoint, _ ga: CGPoint, _ gb: CGPoint) -> Double? {
+            let dx = Double(pb.x - pa.x), dy = Double(pb.y - pa.y)
+            let gx = Double(gb.x - ga.x), gy = Double(gb.y - ga.y)
+            let l1 = hypot(dx, dy), l2 = hypot(gx, gy)
+            guard l1 > 1, l2 > 1 else { return nil }
+            return acos(max(-1, min(1, (dx * gx + dy * gy) / (l1 * l2)))) * 180 / .pi
+        }
+        func differences(_ map: (Joint) -> Joint) -> [Int: Double] {
+            var result: [Int: Double] = [:]
+            for (i, bone) in Joint.bones.enumerated() {
+                guard let pa = points[bone.0], let pb = points[bone.1],
+                      let ga = guide[map(bone.0)], let gb = guide[map(bone.1)],
+                      let d = difference(pa, pb, ga, gb) else { continue }
+                result[i] = d
+            }
+            return result
+        }
+        let straight = differences { $0 }
+        let swapped = differences { $0.mirrored }
+        func mean(_ d: [Int: Double]) -> Double { d.isEmpty ? .infinity : d.values.reduce(0, +) / Double(d.count) }
+        let chosen = mean(swapped) < mean(straight) ? swapped : straight
+        let style = StrokeStyle(lineWidth: 3.5, lineCap: .round)
+        for (i, (a, b)) in Joint.bones.enumerated() {
+            guard let pa = points[a], let pb = points[b] else { continue }
+            var path = Path()
+            path.move(to: pa)
+            path.addLine(to: pb)
+            let color: Color
+            if let d = chosen[i] {
+                color = d <= 20 ? .green : (d >= 50 ? .orange : .yellow)
+            } else {
+                color = .cyan
+            }
+            context.stroke(path, with: .color(color.opacity(0.9)), style: style)
+        }
+        for p in points.values {
+            context.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(.cyan))
+        }
+    }
+
     /// サムネイル用に、点の集まり全体を枠に収める変換を返す。
     static func fitTransform(_ points: [CGPoint], into size: CGSize, inset: CGFloat) -> (CGPoint) -> CGPoint {
         let xs = points.map(\.x)
@@ -288,16 +331,36 @@ struct TemplateLayer: View {
     }
 }
 
-/// 検出した骨格（細い線）。
+/// 検出した骨格（細い線）。型があるときは、型の骨格を白い点線で重ね、
+/// 自分の骨は型と向きが合っていれば緑、ずれていればオレンジにする（どこを直せば一致度が上がるか分かるように）。
 struct SkeletonLayer: View {
     @ObservedObject var feed: PoseFeed
+    var template: PoseTemplate? = nil
 
     var body: some View {
-        if feed.detected != nil || feed.face != nil {
+        if feed.detected != nil || feed.face != nil || template != nil {
             Canvas { context, size in
                 let toView = { (p: CGPoint) in CGPoint(x: p.x * size.width, y: p.y * size.height) }
+                let guide = template.map { $0.joints.mapValues { PoseSpace.toView($0, size: size) } } ?? [:]
+                if !guide.isEmpty {
+                    let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [6, 6])
+                    for (a, b) in Joint.bones {
+                        guard let pa = guide[a], let pb = guide[b] else { continue }
+                        var path = Path()
+                        path.move(to: pa)
+                        path.addLine(to: pb)
+                        context.stroke(path, with: .color(.black.opacity(0.35)),
+                                       style: StrokeStyle(lineWidth: 4.5, lineCap: .round, dash: [6, 6]))
+                        context.stroke(path, with: .color(.white.opacity(0.9)), style: dash)
+                    }
+                }
                 if let detected = feed.detected {
-                    PoseDrawing.drawSkeleton(detected.mapValues(toView), in: context, color: .cyan.opacity(0.8))
+                    let points = detected.mapValues(toView)
+                    if guide.isEmpty {
+                        PoseDrawing.drawSkeleton(points, in: context, color: .cyan.opacity(0.8))
+                    } else {
+                        PoseDrawing.drawSkeleton(points, guide: guide, in: context)
+                    }
                 }
                 if let face = feed.face {
                     PoseDrawing.drawFace(face, in: context, transform: toView, color: .cyan.opacity(0.8), lineWidth: 2)
@@ -341,12 +404,12 @@ struct PoseThumbnail: View {
                         let transform = PoseDrawing.fitTransform(points, into: size,
                                                                  inset: outlines.isEmpty ? 10 : 4)
                         PoseDrawing.drawTemplate(template, in: context, transform: transform,
-                                                 color: .white, lineWidth: 1.2, fillOpacity: 0.15)
+                                                 color: .chromeText, lineWidth: 1.2, fillOpacity: 0.15)
                     }
                 }
             }
             .frame(width: Self.size.width, height: Self.size.height)
-            .background(Color.white.opacity(0.12))
+            .background(Color.chromeText.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSelected ? Color.yellow : .clear, lineWidth: 2))
             .overlay(alignment: .topTrailing) {
@@ -364,7 +427,7 @@ struct PoseThumbnail: View {
                 .lineLimit(1)
                 .frame(width: 66)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.chromeText)
     }
 }
 
@@ -591,6 +654,7 @@ struct PoseLibraryView: View {
     @ObservedObject var library: PoseLibrary
     @Binding var selection: PoseTemplate?
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
 
     private let columns = [GridItem(.adaptive(minimum: 72), spacing: 8)]
 
@@ -623,7 +687,7 @@ struct PoseLibraryView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearance.scheme)
     }
 }
 

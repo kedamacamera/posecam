@@ -16,7 +16,7 @@ struct AssetGridView: UIViewRepresentable {
         layout.minimumInteritemSpacing = 2
         layout.minimumLineSpacing = 2
         let view = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        view.backgroundColor = .black
+        view.backgroundColor = .systemBackground
         view.register(Cell.self, forCellWithReuseIdentifier: Cell.id)
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
@@ -94,7 +94,7 @@ struct AssetGridView: UIViewRepresentable {
 
         override init(frame: CGRect) {
             super.init(frame: frame)
-            contentView.backgroundColor = UIColor(white: 0.15, alpha: 1)
+            contentView.backgroundColor = .secondarySystemBackground
             contentView.clipsToBounds = true
             imageView.contentMode = .scaleAspectFill
             imageView.clipsToBounds = true

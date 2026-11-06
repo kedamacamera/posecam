@@ -4,6 +4,7 @@ import SwiftUI
 /// Apache License 2.0 は「ライセンスの写しを渡すこと」が条件なので全文を同梱し、名前をタップすると表示する。
 struct LicensesView: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
 
     private struct Entry: Identifiable {
         let name: String
@@ -40,7 +41,7 @@ struct LicensesView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearance.scheme)
     }
 }
 

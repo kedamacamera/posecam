@@ -32,8 +32,8 @@ struct LabeledIcon: View {
                 .lineLimit(1)
         }
         .frame(minWidth: 48)
-        .foregroundStyle(active ? Color.yellow : .white)
-        .shadow(color: .black.opacity(0.5), radius: 2)
+        .foregroundStyle(active ? Color.chromeAccent : .chromeText)
+        .shadow(color: .chromeShadow, radius: 2)
     }
 }
 
@@ -54,14 +54,14 @@ struct AspectMenu: View {
                     .font(.system(size: 11, weight: .bold))
                     .padding(.horizontal, 4)
                     .frame(height: 22)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white, lineWidth: 1.5))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.chromeText, lineWidth: 1.5))
                     .frame(height: 24)
                 Text("比率")
                     .font(.system(size: 10, weight: .medium))
             }
             .frame(minWidth: 48)
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.5), radius: 2)
+            .foregroundStyle(Color.chromeText)
+            .shadow(color: .chromeShadow, radius: 2)
         }
     }
 }
@@ -882,8 +882,8 @@ struct ModePicker: View {
                 Button { onSelect(item) } label: {
                     Text(item.rawValue)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(item == mode ? Color.yellow : .white.opacity(0.75))
-                        .shadow(color: .black.opacity(0.5), radius: 2)
+                        .foregroundStyle(item == mode ? Color.chromeAccent : Color.chromeText.opacity(0.75))
+                        .shadow(color: .chromeShadow, radius: 2)
                 }
                 .disabled(isLocked)
             }
@@ -909,7 +909,7 @@ struct ShutterButton: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.white, lineWidth: 4)
+                .stroke(Color.chromeText, lineWidth: 4)
                 .frame(width: 74, height: 74)
             if (mode == .snap || mode == .photo) && isRecording {
                 Circle()
@@ -1000,12 +1000,12 @@ struct ThumbnailButton: View {
                             .resizable()
                             .scaledToFill()
                     } else {
-                        Color.white.opacity(0.15)
+                        Color.chromeText.opacity(0.15)
                     }
                 }
                 .frame(width: 34, height: 34)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.chromeText.opacity(0.6), lineWidth: 1))
                 .overlay {
                     if busy {
                         ZStack {
@@ -1016,7 +1016,7 @@ struct ThumbnailButton: View {
                 }
                 Text(busy ? "保存中" : "アルバム")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.chromeText)
             }
         }
     }
@@ -1170,8 +1170,8 @@ struct CrashReportView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.ignoresSafeArea())
-        .foregroundStyle(.white)
+        .background(Color.chromeBackground.ignoresSafeArea())
+        .foregroundStyle(Color.chromeText)
     }
 }
 
@@ -1193,7 +1193,7 @@ struct PermissionView: View {
             .buttonStyle(.borderedProminent)
         }
         .multilineTextAlignment(.center)
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.chromeText)
         .padding()
     }
 }

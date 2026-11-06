@@ -19,8 +19,23 @@ import Vision
 /// 1. コマを写真に重なるよう位置合わせしてから比べる（Vision の画像の位置合わせ）
 /// 2. 暗くする割合は縮めた画像で求め、なめらかに引き伸ばす（軽い）
 /// 3. 写真の方がコマより大きく暗い所（動いた所）は、広い範囲の割合を使う
-/// さらに、フラッシュらしい硬さ（パキッとした感じ）を出すため、輪郭のコントラスト（明瞭度）と全体のコントラストを上げる。
+/// 仕上げは、フィルムカメラのフラッシュ（BeautyCam の「フジフラッシュ」のような写り）に寄せる。
+/// 以前は明瞭度（大きな半径のアンシャープマスク）・コントラスト・彩度を上げていたが、部屋の電球の色が残って
+/// オレンジに転び、暗い所は真っ黒に潰れ、輪郭に縁が出ていた（実際の写真で顔 R190 G115 B83、
+/// フジフラッシュは R220 G175 B153）。そこで
+/// 1. 写真全体の平均の色から、電球のオレンジを打ち消す（白い物が白に近づく。肌の血色は少し残す）
+/// 2. 少し明るくし、黒を少し持ち上げ、白飛びをなだらかにするトーンカーブ
+/// 3. 彩度を少し落とし、暗い所をわずかに青く、細かい粒子を足す
 enum DirectFlash {
+    static let finishKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "flashFinish", fromMetalLibraryData: data)
+    }()
+
+    /// 平均の色を読むだけに使う（1 画素だけ描く）
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
     static let kernel: CIKernel? = {
         guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
               let data = try? Data(contentsOf: url) else { return nil }
@@ -54,15 +69,41 @@ enum DirectFlash {
             .cropped(to: extent)
         let relit = photo.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: gain])
             .cropped(to: extent)
-        // 明瞭度（大きめの半径のアンシャープマスク）とコントラストで硬い光にし、周辺の落ち込みを少し足す
-        return relit
-            .clampedToExtent()
-            .applyingFilter("CIUnsharpMask", parameters: [kCIInputRadiusKey: max(extent.width, extent.height) * 0.008,
-                                                          kCIInputIntensityKey: 0.45])
-            .cropped(to: extent)
-            .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.12, kCIInputSaturationKey: 1.05,
-                                                            kCIInputBrightnessKey: 0])
-            .applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: 0.45, kCIInputRadiusKey: 1.6])
+        return finish(relit, extent: extent)
+    }
+
+    /// フィルムのフラッシュ風の仕上げ（色の偏りの打ち消し・明るさ・トーンカーブ・彩度・粒子・周辺の落ち込み）
+    static func finish(_ image: CIImage, extent: CGRect) -> CIImage {
+        var result = image
+        // 1. 平均の色（リニア）を、緑に対して赤 1.04 倍・青 0.97 倍（ほんのり暖かい）に近づける。
+        //    全部は直さず 0.85 乗にとどめ、極端な色の場所（夕日・単色の壁）で大きく転ばないよう倍率を制限する
+        var pixel = [Float](repeating: 0, count: 4)
+        let average = image.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: extent)])
+        context.render(average, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBAf, colorSpace: nil)
+        if pixel[0] > 1e-4, pixel[1] > 1e-4, pixel[2] > 1e-4 {
+            let gainR = pow(min(max(1.04 * pixel[1] / pixel[0], 0.7), 1.3), 0.85)
+            let gainB = pow(min(max(0.97 * pixel[1] / pixel[2], 0.7), 1.5), 0.85)
+            result = result.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: CGFloat(gainR), y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 1, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(gainB), w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+        }
+        // 2. 少し明るく（1/3 段）
+        result = result.applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: 0.32])
+        // 3. トーンカーブ・彩度・暗部の青み・粒子（粒子は長辺 4000 で 1 画素ほどの細かさ）
+        if let finishKernel {
+            let grainScale = max(1, max(extent.width, extent.height) / 4000)
+            let noise = (CIFilter(name: "CIRandomGenerator")?.outputImage ?? CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)))
+                .transformed(by: CGAffineTransform(scaleX: grainScale, y: grainScale))
+                .cropped(to: extent)
+            result = finishKernel.apply(extent: extent, roiCallback: { _, rect in rect },
+                                        arguments: [result, noise, Float(0.82), Float(0.024)]) ?? result
+        }
+        return result
+            .applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: 0.25, kCIInputRadiusKey: 1.6])
             .cropped(to: extent)
     }
 

@@ -53,40 +53,47 @@ float4 darkSpotRemoval(sampler src, sampler local, sampler darkest, sampler mean
     return float4(mix(color.rgb, average.rgb, weight), color.a);
 }
 
-/// 赤み消し。周りの肌より赤い所（ニキビ・ニキビ跡・小鼻の際・眉の際の赤み）だけを、周りの肌の色になじませる。
+/// 赤み消し。周りの肌より赤い小さな所（ニキビ・ニキビ跡）だけを、すぐ周りの肌の色になじませる。
 /// 赤い色を一律に薄くする（彩度を下げる）のではないので、顔全体の血色は変わらない。
-/// skinSum: 肌だけを残した画像をぼかしたもの、skinWeight: 肌のマスクを同じだけぼかしたもの。
-/// skinSum / skinWeight が「周りの肌だけの平均の色」になる（髪・背景・唇の色は混ざらない）。
-/// 赤みは明るさで割った値（光の強さが変わっても同じ色なら同じ値）で比べる。ニキビ跡は周りより暗いので、
-/// 以前のように赤みの量をそのまま比べると、色はずっと赤いのに「周りと同じくらい」と判定されてほとんど効かなかった
-/// （実際の写真で、そのままの差は -0.02〜+0.07、明るさで割ると +0.31〜+0.37）。
-/// 赤い所は暗いことが多いので、周りより暗いぶんも一緒に戻す。
-float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float strength, destination dest) {
+/// 色みは明るさで割った値（光の強さが変わっても同じ色なら同じ値）で比べる（ニキビ跡は周りより暗いため）。
+/// - local: 少しぼかした画像（画素のばらつきで判定がまだらにならないように）
+/// - nearSum / nearWeight: 肌だけをニキビ跡数個ぶんの範囲でぼかした平均（すぐ周りの肌の色）
+/// - wideSum / wideWeight: さらに広い範囲の肌の平均
+/// 影の中の肌は明るさで割ると赤く見えるので、以前は影も「赤い所」として明るくしてしまい、
+/// 影が薄くなる・影の縁が不自然になっていた。そこで
+/// 1. すぐ周りの平均そのものが広い範囲より暗い所（影の中）は変えない
+/// 2. すぐ周りより大きく暗い所（まぶたの溝・小鼻の際・ほくろ）は変えない
+/// 3. 明るさを戻すのは、すぐ周りより少し暗い小さな点の分だけ（最大 2 割）
+float4 rednessRemoval(sampler src, sampler local, sampler nearSum, sampler nearWeight,
+                      sampler wideSum, sampler wideWeight, float strength, destination dest) {
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
-    float4 sum = skinSum.sample(skinSum.transform(coord));
-    float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
-    if (weightSum < 0.02) {
+    float nw = nearWeight.sample(nearWeight.transform(coord)).r;
+    float ww = wideWeight.sample(wideWeight.transform(coord)).r;
+    if (nw < 0.02 || ww < 0.02) {
         return color;
     }
-    float3 average = sum.rgb / weightSum;
+    float3 near = nearSum.sample(nearSum.transform(coord)).rgb / nw;
+    float3 wide = wideSum.sample(wideSum.transform(coord)).rgb / ww;
+    float3 l = local.sample(local.transform(coord)).rgb;
     float3 lumaWeights = float3(0.299, 0.587, 0.114);
 
     float y = max(dot(color.rgb, lumaWeights), 0.001);
-    float averageY = max(dot(average, lumaWeights), 0.001);
-    // 明るさで割った赤み（R - Y）・青み（B - Y）
+    float ly = max(dot(l, lumaWeights), 0.001);
+    float ny = max(dot(near, lumaWeights), 0.001);
+    float wy = max(dot(wide, lumaWeights), 0.001);
     float2 c = float2(color.r - y, color.b - y) / y;
-    float2 averageC = float2(average.r - averageY, average.b - averageY) / averageY;
+    float2 lc = float2(l.r - ly, l.b - ly) / ly;
+    float2 nc = float2(near.r - ny, near.b - ny) / ny;
 
-    // 周りより赤い（赤みが多く、青みが少ない）ほど強く効かせる。周りと同じか赤くない所は変えない
-    float excess = (c.x - averageC.x) - 0.5 * (c.y - averageC.y);
-    // 周りよりずっと暗い所（メガネのフチ・髪・ほくろ・まつ毛）は赤みがあってもニキビではないので変えない
-    float ratio = y / averageY;
-    float darkGuard = smoothstep(0.3, 0.5, ratio);
-    float weight = smoothstep(0.04, 0.2, excess) * darkGuard * strength;
+    // すぐ周りより赤い（赤みが多く、青みが少ない）ほど強く効かせる
+    float excess = (lc.x - nc.x) - 0.5 * (lc.y - nc.y);
+    float inShadow = smoothstep(0.72, 0.9, ny / wy);
+    float notCrease = smoothstep(0.62, 0.8, ly / ny);
+    float weight = smoothstep(0.015, 0.09, excess) * inShadow * notCrease * strength;
 
-    float newY = y + max(0.0, averageY - y) * weight * 0.8;
-    float2 newC = mix(c, averageC, weight) * newY;
+    float newY = y + min(max(0.0, ny - ly), 0.2 * ny) * weight;
+    float2 newC = mix(c, nc, weight) * newY;
     float r = newY + newC.x;
     float b = newY + newC.y;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
@@ -118,6 +125,37 @@ float4 directFlash(sampler photoLow, sampler ambientLow, sampler photoCoarse, sa
     f = mix(f, coarse, mismatch);
     float gain = (1.0 - f) + f * ambientGain;
     return float4(gain, gain, gain, 1.0);
+}
+
+/// ダイレクトフラッシュの仕上げ（フィルムカメラのフラッシュのような、明るく色の転ばない写り）。
+/// リニアの値を見た目の明るさ（ガンマ 2.2）にしてトーンカーブをかけ、彩度を少し落とし、
+/// 暗い所をわずかに青く、細かい粒子を足してからリニアに戻す。
+/// トーンカーブ: 黒を少し持ち上げ（真っ黒に潰さない）、中間を少し明るく、白は頭打ちをなだらかに（白飛びを和らげる）。
+/// noise: CIRandomGenerator の画像（0〜1 の乱数）。grain: 粒子の強さ
+static float flashCurve(float x) {
+    // (入力, 出力) の折れ線: (0, .02) (.1, .1) (.25, .26) (.5, .53) (.75, .78) (.9, .9) (1, .95) (1.4, 1)
+    if (x < 0.1) { return mix(0.02, 0.1, x / 0.1); }
+    if (x < 0.25) { return mix(0.1, 0.26, (x - 0.1) / 0.15); }
+    if (x < 0.5) { return mix(0.26, 0.53, (x - 0.25) / 0.25); }
+    if (x < 0.75) { return mix(0.53, 0.78, (x - 0.5) / 0.25); }
+    if (x < 0.9) { return mix(0.78, 0.9, (x - 0.75) / 0.15); }
+    if (x < 1.0) { return mix(0.9, 0.95, (x - 0.9) / 0.1); }
+    return mix(0.95, 1.0, clamp((x - 1.0) / 0.4, 0.0, 1.0));
+}
+
+float4 flashFinish(sampler src, sampler noise, float saturation, float grain, destination dest) {
+    float2 coord = dest.coord();
+    float4 color = src.sample(src.transform(coord));
+    float3 v = pow(max(color.rgb, 0.0), float3(1.0 / 2.2));
+    float3 o = float3(flashCurve(v.r), flashCurve(v.g), flashCurve(v.b));
+    float luma = dot(o, float3(0.299, 0.587, 0.114));
+    o = luma + (o - luma) * saturation;
+    float shadow = clamp(1.0 - luma / 0.35, 0.0, 1.0);
+    o += shadow * float3(-0.01, 0.0, 0.02);
+    float n = noise.sample(noise.transform(coord)).r - 0.5;
+    o += n * grain;
+    o = clamp(o, 0.0, 1.0);
+    return float4(pow(o, float3(2.2)), color.a);
 }
 
 /// 青ひげ隠し（反対色で打ち消す）。剃り跡は、皮膚の下の毛が透けて「周りの肌より赤みが抜け、少し青く」見える
@@ -172,18 +210,19 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
 }
 
-/// a - b のうち正の部分（クロージングで明るくなった量）。不透明度は 1
-float4 positiveDifference(sampler a, sampler b, destination dest) {
+/// 剃り跡の点を埋める。target は点を消した肌（クロージングの結果を少しならし、元より明るくならない側を採ったもの）。
+/// target より low〜high の割合以上暗い画素（剃り跡の点）だけを target に置き換え、
+/// それ以外（肌の細かい質感）はそのまま残す。点を埋めた量をぼかして足す以前の方法は、
+/// 点 1 つぶんの量が周りへ薄く散って、点がほとんど埋まらなかった。
+float4 fillDots(sampler src, sampler target, float low, float high, destination dest) {
     float2 coord = dest.coord();
-    float3 d = a.sample(a.transform(coord)).rgb - b.sample(b.transform(coord)).rgb;
-    return float4(max(d, 0.0), 1.0);
-}
-
-/// base に delta の色を足す（不透明度は base のまま）
-float4 addColor(sampler base, sampler delta, destination dest) {
-    float2 coord = dest.coord();
-    float4 color = base.sample(base.transform(coord));
-    return float4(color.rgb + delta.sample(delta.transform(coord)).rgb, color.a);
+    float4 color = src.sample(src.transform(coord));
+    float3 t = target.sample(target.transform(coord)).rgb;
+    float3 lumaWeights = float3(0.299, 0.587, 0.114);
+    float ty = max(dot(t, lumaWeights), 0.001);
+    float d = (ty - dot(color.rgb, lumaWeights)) / ty;
+    float w = smoothstep(low, high, d);
+    return float4(mix(color.rgb, t, w), color.a);
 }
 
 /// 脚長。出力の各行が、元の画像のどの行から来るかを区分ごとの一次式で決めて、1 回で引き伸ばす
