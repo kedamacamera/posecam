@@ -97,6 +97,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isCapturing = false
     /// 撮った後、加工・保存がまだ終わっていない写真の数
     @Published private(set) var savingPhotos = 0
+    /// ダイレクトフラッシュで、カメラか被写体が大きく動いている（撮る前に「止まってください」と出す）
+    @Published private(set) var isMovingTooMuch = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
     let poseFeed = PoseFeed()
     /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
@@ -129,13 +131,19 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: 設定（UI から変える）
 
     @Published var flashOn = false {
-        didSet { applyTorch() }
+        didSet {
+            applyTorch()
+            updateMotionWatch()
+        }
     }
     /// ダイレクトフラッシュ（写ルンです・昔のコンデジ風）。フラッシュの光が届かない背景を暗く落とす
     @Published var directFlash = false {
         // ダイレクトフラッシュは 1 枚の処理が重いので、連続撮影は 3 枚までにする
         // （10 枚続けると、メモリが足りずに保存できないことがあった）
-        didSet { if directFlash && burstCount > 3 { burstCount = 3 } }
+        didSet {
+            if directFlash && burstCount > 3 { burstCount = 3 }
+            updateMotionWatch()
+        }
     }
     @Published var autoShutter = false {
         didSet { updatePoseNeeded() }
@@ -248,6 +256,12 @@ final class CameraManager: NSObject, ObservableObject {
     private let recordingAudio = Locked(false)
     /// 書き込みのキューに渡して、まだ書いていないコマの数（多すぎるときはコマを捨てる）
     private let pendingRecordFrames = Locked(0)
+    /// 動きを見張るか（ダイレクトフラッシュの写真のときだけ）
+    private let motionWatch = Locked(false)
+    /// 動きの判定に使う、前のコマを小さくした明るさ（videoQueue 専用）
+    private var motionPrevious: [Float]?
+    private var motionLevel: Float = 0
+    private var motionMoving = false
     /// 描けずに捨てたコマの数（recordingQueue で使う）
     private var failedRecordFrames = 0
 
@@ -346,6 +360,7 @@ final class CameraManager: NSObject, ObservableObject {
         guard newMode != mode, !isRecording, !isSequenceRunning else { return }
         mode = newMode
         modeBox.value = newMode
+        updateMotionWatch()
         resetFocus()
         focusResetCount += 1
         let position = self.position
@@ -979,8 +994,6 @@ final class CameraManager: NSObject, ObservableObject {
                 self.shutterCount += 1
                 self.pendingPhotos += 1
                 self.isCapturing = true
-                // ダイレクトフラッシュは、発光前のコマと写真の間に動くと合成がずれる
-                if options.direct { self.report("撮り終わるまで動かないでください") }
                 if total > 1 { self.burstProgress = "\(current)/\(total)" }
                 if current >= total { self.finishSequence() }
             }
@@ -1630,6 +1643,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 
         let source = CIImage(cvPixelBuffer: pixelBuffer)
         latestSourceBox.value = source
+        if motionWatch.value, frameCount % 3 == 0 { measureMotion(source) }
         if let exif = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil)
             as? [String: Any] {
             latestExifBox.value = exif
@@ -1682,6 +1696,49 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                 .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY)))
         } else {
             renderer.display(processed)
+        }
+    }
+
+    private func updateMotionWatch() {
+        let watch = flashOn && directFlash && mode == .photo
+        motionWatch.value = watch
+        if !watch { isMovingTooMuch = false }
+    }
+
+    /// カメラ・被写体の動きの大きさを、3 コマに 1 回、24×32 に縮めたコマの明るさの差で求める（videoQueue）。
+    /// ダイレクトフラッシュは、発光前のコマと写真の間に動くと合成がずれるので、動いている間は撮る前に知らせる。
+    /// 骨格の判定は人が写っていないと使えず、カメラの手ぶれも分からないので、画面全体の変化で見る
+    private func measureMotion(_ source: CIImage) {
+        let w = 24, h = 32
+        let e = source.extent
+        let scale = CGFloat(h) / e.height
+        let tiny = source
+            .applyingFilter("CILanczosScaleTransform", parameters: [
+                kCIInputScaleKey: scale,
+                kCIInputAspectRatioKey: (CGFloat(w) / e.width) / scale,
+            ])
+        let t = tiny.extent
+        let placed = tiny.transformed(by: CGAffineTransform(translationX: -t.minX, y: -t.minY))
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        renderer.ciContext.render(placed, toBitmap: &bytes, rowBytes: w * 4,
+                                  bounds: CGRect(x: 0, y: 0, width: w, height: h),
+                                  format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        var luma = [Float](repeating: 0, count: w * h)
+        for i in 0..<(w * h) {
+            luma[i] = (0.299 * Float(bytes[i * 4]) + 0.587 * Float(bytes[i * 4 + 1]) + 0.114 * Float(bytes[i * 4 + 2])) / 255
+        }
+        defer { motionPrevious = luma }
+        guard let previous = motionPrevious else { return }
+        var diff: Float = 0
+        for i in 0..<luma.count { diff += abs(luma[i] - previous[i]) }
+        diff /= Float(luma.count)
+        motionLevel = motionLevel * 0.6 + diff * 0.4
+        // 出す・消すの境目を分けて、表示がちらつかないようにする
+        let moving = motionMoving ? motionLevel > 0.018 : motionLevel > 0.03
+        guard moving != motionMoving else { return }
+        motionMoving = moving
+        DispatchQueue.main.async {
+            if self.motionWatch.value { self.isMovingTooMuch = moving }
         }
     }
 

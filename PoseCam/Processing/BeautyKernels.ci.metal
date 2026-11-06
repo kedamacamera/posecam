@@ -53,11 +53,14 @@ float4 darkSpotRemoval(sampler src, sampler local, sampler darkest, sampler mean
     return float4(mix(color.rgb, average.rgb, weight), color.a);
 }
 
-/// 赤み消し。周りの肌より赤い所（ニキビ・小鼻の際・眉の際の赤み）だけを、周りの肌の色になじませる。
+/// 赤み消し。周りの肌より赤い所（ニキビ・ニキビ跡・小鼻の際・眉の際の赤み）だけを、周りの肌の色になじませる。
 /// 赤い色を一律に薄くする（彩度を下げる）のではないので、顔全体の血色は変わらない。
 /// skinSum: 肌だけを残した画像をぼかしたもの、skinWeight: 肌のマスクを同じだけぼかしたもの。
 /// skinSum / skinWeight が「周りの肌だけの平均の色」になる（髪・背景・唇の色は混ざらない）。
-/// 赤い所は少し暗いことが多いので、周りより暗いぶんも一緒に戻す。
+/// 赤みは明るさで割った値（光の強さが変わっても同じ色なら同じ値）で比べる。ニキビ跡は周りより暗いので、
+/// 以前のように赤みの量をそのまま比べると、色はずっと赤いのに「周りと同じくらい」と判定されてほとんど効かなかった
+/// （実際の写真で、そのままの差は -0.02〜+0.07、明るさで割ると +0.31〜+0.37）。
+/// 赤い所は暗いことが多いので、周りより暗いぶんも一緒に戻す。
 float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float strength, destination dest) {
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
@@ -69,26 +72,23 @@ float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float st
     float3 average = sum.rgb / weightSum;
     float3 lumaWeights = float3(0.299, 0.587, 0.114);
 
-    // 明るさと色み（赤み = R - Y、青み = B - Y）に分ける
-    float y = dot(color.rgb, lumaWeights);
-    float cr = color.r - y;
-    float cb = color.b - y;
-    float averageY = dot(average, lumaWeights);
-    float averageCr = average.r - averageY;
-    float averageCb = average.b - averageY;
+    float y = max(dot(color.rgb, lumaWeights), 0.001);
+    float averageY = max(dot(average, lumaWeights), 0.001);
+    // 明るさで割った赤み（R - Y）・青み（B - Y）
+    float2 c = float2(color.r - y, color.b - y) / y;
+    float2 averageC = float2(average.r - averageY, average.b - averageY) / averageY;
 
     // 周りより赤い（赤みが多く、青みが少ない）ほど強く効かせる。周りと同じか赤くない所は変えない
-    float excess = (cr - averageCr) - 0.5 * (cb - averageCb);
-    // 周りよりずっと暗い所（メガネのフチ・髪・ほくろ）は赤みがあってもニキビではないので変えない
-    float darkGuard = 1.0 - smoothstep(0.12, 0.25, averageY - y);
-    float weight = smoothstep(0.004, 0.04, excess) * darkGuard * strength;
+    float excess = (c.x - averageC.x) - 0.5 * (c.y - averageC.y);
+    // 周りよりずっと暗い所（メガネのフチ・髪・ほくろ・まつ毛）は赤みがあってもニキビではないので変えない
+    float ratio = y / averageY;
+    float darkGuard = smoothstep(0.3, 0.5, ratio);
+    float weight = smoothstep(0.04, 0.2, excess) * darkGuard * strength;
 
-    float newCr = mix(cr, averageCr, weight);
-    float newCb = mix(cb, averageCb, weight);
-    float newY = y + max(0.0, averageY - y) * weight * 0.6;
-
-    float r = newY + newCr;
-    float b = newY + newCb;
+    float newY = y + max(0.0, averageY - y) * weight * 0.8;
+    float2 newC = mix(c, averageC, weight) * newY;
+    float r = newY + newC.x;
+    float b = newY + newC.y;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
     return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
 }
@@ -111,7 +111,10 @@ float4 directFlash(sampler photoLow, sampler ambientLow, sampler photoCoarse, sa
     float coarseTotal = dot(photoCoarse.sample(photoCoarse.transform(coord)).rgb, lumaWeights);
     float coarseAmbient = dot(ambientCoarse.sample(ambientCoarse.transform(coord)).rgb, lumaWeights) * ratio;
     float coarse = clamp(coarseAmbient / max(coarseTotal, 0.0005), 0.0, 1.0);
-    float mismatch = smoothstep(1.1, 1.6, ambient / max(total, 0.0005));
+    // 写真とコマは iOS の明るさの仕上げ方が違うので、少し食い違うのはふつう。1.1 倍から広い範囲の割合にしていた頃は、
+    // 顔のあちこちが広い範囲の割合（背景を含むので暗くする割合が大きい）になり、まだらに暗くなっていた。
+    // 2 倍以上はっきり食い違う所（人や手が動いた所）だけにする
+    float mismatch = smoothstep(2.0, 3.5, ambient / max(total, 0.0005));
     f = mix(f, coarse, mismatch);
     float gain = (1.0 - f) + f * ambientGain;
     return float4(gain, gain, gain, 1.0);
@@ -167,6 +170,20 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float b = newY + cb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;
     return float4(clamp(float3(r, g, b), 0.0, 1.0), color.a);
+}
+
+/// a - b のうち正の部分（クロージングで明るくなった量）。不透明度は 1
+float4 positiveDifference(sampler a, sampler b, destination dest) {
+    float2 coord = dest.coord();
+    float3 d = a.sample(a.transform(coord)).rgb - b.sample(b.transform(coord)).rgb;
+    return float4(max(d, 0.0), 1.0);
+}
+
+/// base に delta の色を足す（不透明度は base のまま）
+float4 addColor(sampler base, sampler delta, destination dest) {
+    float2 coord = dest.coord();
+    float4 color = base.sample(base.transform(coord));
+    return float4(color.rgb + delta.sample(delta.transform(coord)).rgb, color.a);
 }
 
 /// 脚長。出力の各行が、元の画像のどの行から来るかを区分ごとの一次式で決めて、1 回で引き伸ばす

@@ -17,10 +17,6 @@ struct ContentView: View {
     @State private var showLibrary = false
     @State private var showLicenses = false
     @State private var showAlbum = false
-    /// 「写真を編集」で、まず写真を選ぶ画面を出す
-    @State private var showEditPicker = false
-    @State private var editPickerItem: PhotosPickerItem?
-    @State private var editing: EditorInput?
     /// 構図のガイドの線
     @AppStorage("gridStyle") private var gridStyle: GridStyle = .off
     /// 水平器
@@ -138,6 +134,8 @@ struct ContentView: View {
         }
         .onChange(of: showsLegRange) { camera.showsLegRange = showsLegRange }
         .onChange(of: mirrorPose) { updateTemplate() }
+        // 比率を変えても、ポーズの型は同じ大きさのまま（縦長の比率で拡大しない）
+        .onChange(of: camera.frameAspect) { updateTemplate() }
         .onChange(of: scenePhase) {
             if scenePhase != .active {
                 camera.stopRecordingIfNeeded()
@@ -153,21 +151,6 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showAlbum) {
             AlbumView()
-        }
-        // 「写真を編集」: 写真を選んだら、そのまま編集の画面を開く
-        .photosPicker(isPresented: $showEditPicker, selection: $editPickerItem, matching: .images)
-        .onChange(of: editPickerItem) {
-            guard let item = editPickerItem else { return }
-            Task {
-                let data = try? await item.loadTransferable(type: Data.self)
-                editPickerItem = nil
-                // 写真を選ぶ画面が閉じきってから編集の画面を開く（同時に開くと画面が重なって崩れていた）
-                try? await Task.sleep(for: .milliseconds(450))
-                if let data { editing = EditorInput(data: data) }
-            }
-        }
-        .fullScreenCover(item: $editing) { input in
-            PhotoEditorView(data: input.data)
         }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
@@ -242,8 +225,8 @@ struct ContentView: View {
 
     /// アルバム・編集などの画面を開いている間は、音量ボタンをふつうの音量ボタンに戻す
     private var hardwareShutterEnabled: Bool {
-        camera.cameraAuthorized && !showAlbum && editing == nil && !showLibrary && !showLicenses
-            && !showEditPicker && camera.snapClip == nil && crashReport == nil
+        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses
+            && camera.snapClip == nil && crashReport == nil
     }
 
     /// タップ: パネルが開いていれば閉じる。閉じていれば、その所にピントと露出を合わせる
@@ -348,10 +331,9 @@ struct ContentView: View {
             .opacity(camera.mode == .photo ? 1 : 0.4)
             Spacer()
             Menu {
-                Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が劣化します）", isOn: $camera.muteShutter)
+                Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
                 Toggle("骨格を表示", isOn: $camera.showSkeleton)
                 Toggle("水平器", isOn: $showLevel)
-                Button("写真を編集（傾き補正・伸縮・肌）") { showEditPicker = true }
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
@@ -374,6 +356,10 @@ struct ContentView: View {
             Spacer()
             if let progress = camera.burstProgress {
                 Badge(text: progress)
+            }
+            if camera.isMovingTooMuch && camera.flashOn && camera.directFlash && camera.mode == .photo {
+                // ダイレクトフラッシュは、発光前と撮影の間に動くと合成がずれる。撮る前に知らせる
+                Badge(text: "動いています。止まってから撮ってください", color: Color.orange.opacity(0.9))
             }
             if showsSaving {
                 Badge(text: camera.savingPhotos > 1 ? "写真を保存中（\(camera.savingPhotos) 枚）・アプリを閉じないでください"
@@ -579,6 +565,6 @@ struct ContentView: View {
     }
 
     private func updateTemplate() {
-        camera.template = selectedPose.map { mirrorPose ? $0.mirrored() : $0 }
+        camera.template = selectedPose.map { (mirrorPose ? $0.mirrored() : $0).fitted(toFrameAspect: camera.frameAspect) }
     }
 }

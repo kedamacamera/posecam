@@ -97,22 +97,15 @@ struct EditorInput: Identifiable {
 }
 
 /// 写真・動画を 1 枚ずつ左右にめくって見る。写真は「編集」で編集画面へ。
-/// 何万件もあるとめくる画面が重くなるので、開いた写真の前後 100 件ずつをめくれるようにする。
+/// めくる画面は、表示するページだけを作る（何万件あっても重くならない）。
 struct AssetPager: View {
     let assets: PHFetchResult<PHAsset>?
     let start: Int
     let onEdit: (Data) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var index = 0
+    @State private var index: Int
     @State private var isLoading = false
-    /// 写真を拡大している間は、左右のめくりを止める（拡大した写真を指で動かせるようにする）
-    @State private var isZoomed = false
-
-    private var range: Range<Int> {
-        let count = assets?.count ?? 0
-        return max(0, start - 100)..<min(count, start + 101)
-    }
 
     private func asset(_ i: Int) -> PHAsset? {
         guard let assets, i >= 0, i < assets.count else { return nil }
@@ -121,17 +114,12 @@ struct AssetPager: View {
 
     var body: some View {
         NavigationStack {
-            TabView(selection: $index) {
-                ForEach(range, id: \.self) { i in
-                    if let item = asset(i) {
-                        AssetPage(asset: item, isCurrent: i == index) { isZoomed = $0 }
-                            .tag(i)
-                    }
+            Group {
+                if let assets {
+                    // 写真アプリと同じく、拡大中は写真の端まで動かしてから、さらに動かすと前後へめくれる
+                    PhotoPageView(assets: assets, index: $index)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .scrollDisabled(isZoomed)
-            .onChange(of: index) { isZoomed = false }
             .background(Color.black)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -158,7 +146,13 @@ struct AssetPager: View {
             }
         }
         .preferredColorScheme(.dark)
-        .onAppear { index = start }
+    }
+
+    init(assets: PHFetchResult<PHAsset>?, start: Int, onEdit: @escaping (Data) -> Void) {
+        self.assets = assets
+        self.start = start
+        self.onEdit = onEdit
+        _index = State(initialValue: start)
     }
 
     private func edit() {
@@ -176,13 +170,17 @@ struct AssetPager: View {
     }
 }
 
-/// 1 ページ。写真は画面いっぱいに（2 本指で拡大・ダブルタップで拡大と戻す）、動画は再生できるように表示する。
+/// 動画の 1 ページ（写真は PhotoPageView の ZoomingPhotoController で表示する）。
 struct AssetPage: View {
     let asset: PHAsset
     let isCurrent: Bool
-    var onZoomChange: (Bool) -> Void = { _ in }
     @State private var image: UIImage?
     @State private var player: AVPlayer?
+
+    init(asset: PHAsset, isCurrent: Bool) {
+        self.asset = asset
+        self.isCurrent = isCurrent
+    }
 
     var body: some View {
         ZStack {
@@ -194,7 +192,7 @@ struct AssetPage: View {
                     ProgressView()
                 }
             } else if let image {
-                ZoomableImage(image: image, onZoomChange: onZoomChange)
+                Image(uiImage: image).resizable().scaledToFit()
             } else {
                 ProgressView()
             }

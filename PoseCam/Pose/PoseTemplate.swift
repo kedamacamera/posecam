@@ -63,6 +63,26 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         return result
     }
 
+    /// 縦長の比率（9:16・フル）でも、3:4 のときと同じ大きさで画面に出す型。
+    /// 型は 3:4 の枠で作ってあり、等方座標は枠の高さが基準なので、そのままだと縦長の枠では高さに合わせて
+    /// 拡大されていた。画面の幅から決まる 3:4 の高さとの比で縮め、枠の上下の中央に置く。
+    /// 一致度もこの型で求めるので、表示と判定はずれない。aspect は枠の縦横比（横 / 縦）
+    func fitted(toFrameAspect aspect: CGFloat) -> PoseTemplate {
+        let k = min(1, aspect * 4 / 3)
+        guard k < 0.999 else { return self }
+        let f = { (p: CGPoint) in CGPoint(x: p.x * k, y: 0.5 + (p.y - 0.5) * k) }
+        var result = PoseTemplate(id: id + "@\(Int((k * 1000).rounded()))", name: name, category: category,
+                                  joints: joints.mapValues(f), isUserCreated: isUserCreated,
+                                  recommendedZoom: recommendedZoom, outline: outline?.map(f), imageName: imageName)
+        result.extraOutlines = extraOutlines?.map { $0.map(f) }
+        if var shape = face?.map(f) {
+            shape.height *= k
+            result.face = shape
+        }
+        result.lines = lines?.map { $0.map(f) }
+        return result
+    }
+
     /// 描く輪郭すべて
     var allOutlines: [[CGPoint]] {
         (outline.map { [$0] } ?? []) + (extraOutlines ?? [])

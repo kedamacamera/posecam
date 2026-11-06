@@ -80,12 +80,24 @@ final class FrameProcessor {
             // 1 本 1 本の剃り跡（毛の太さほどの暗い点）は、クロージング（明るい方へ広げてから暗い方へ戻す）で消す。
             // 点より大きい暗い所（唇の端・鼻の下の影・あごの陰影）は形が残る。
             // 以前のぼかしで消す方法は、点が残ったまま肌がぼやけて見えていた。
-            // クロージングの後にぼかしをかけていた頃は、あごの縁・唇の輪郭までぼやけていたので、ぼかさない
+            // クロージングの結果をそのまま使うと、平らな面がつながってまだらなブロックになり、
+            // 結果をぼかすと、あごの縁・唇の輪郭までぼやけていた。
+            // そこで「クロージングで明るくなった量（点を埋めた量）」だけをぼかして元に足す。
+            // 大きな輪郭はクロージングで変わらない（埋めた量が 0）ので、ぼかしても輪郭はぼやけない
             let r = max(1, longSide * 0.0025)
-            let closed = concealed.clampedToExtent()
+            let closedRaw = concealed.clampedToExtent()
                 .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r])
                 .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r])
                 .cropped(to: faceArea)
+            var closed = closedRaw
+            if let difference = Self.positiveDifferenceKernel, let add = Self.addColorKernel,
+               let filledAmount = difference.apply(extent: faceArea, roiCallback: { _, rect in rect },
+                                                   arguments: [closedRaw, concealed]) {
+                let smoothAmount = filledAmount.clampedToExtent().applyingGaussianBlur(sigma: r * 0.8)
+                    .cropped(to: faceArea)
+                closed = add.apply(extent: faceArea, roiCallback: { _, rect in rect },
+                                   arguments: [concealed, smoothAmount]) ?? closedRaw
+            }
             let filled = blend(closed, over: concealed, mask: beardMask, amount: settings.beard)
                 .cropped(to: faceArea)
                 .composited(over: result)
@@ -139,6 +151,18 @@ final class FrameProcessor {
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
         ]).applyingFilter("CIColorClamp")
     }
+
+    static let positiveDifferenceKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "positiveDifference", fromMetalLibraryData: data)
+    }()
+
+    static let addColorKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "addColor", fromMetalLibraryData: data)
+    }()
 
     static let beardKernel: CIKernel? = {
         guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
