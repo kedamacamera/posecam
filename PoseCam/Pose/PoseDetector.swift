@@ -16,7 +16,7 @@ struct BeautyMasks {
     var beard: CIImage?
     /// あごの輪郭のすぐ外側（首との境目）を白にしたマスク（輪郭の影入れ用）
     var jawShade: CIImage?
-    /// 鼻より上の顔（頬・額）を白にしたマスク。ひげの生えない肌の色を知るのに使う
+    /// 頬（目の下〜鼻の下、鼻を除く）を白にしたマスク。ひげの生えない肌の色を知るのに使う
     var upperFace: CIImage?
     /// 顔のある範囲（顔の枠を広げたもの・画像の座標）。重い処理をこの中だけで行う。顔がなければ nil
     var faceRegion: CGRect?
@@ -392,20 +392,26 @@ final class PoseDetector {
             .cropped(to: CGRect(origin: .zero, size: imageSize))
     }
 
-    /// 鼻より上の顔（頬・額）。顔の輪郭の内側を、鼻の下端より上だけ塗る（目・眉は後で肌の判定で外れる）。
+    /// 頬（目の下〜鼻の下端、顔の輪郭の内側。鼻は外す）。ひげの生えない肌の色を知るのに使う。
+    /// 額は頬より赤みが少なく、混ぜると青ひげ隠しの目標の色が剃り跡の色に近づいて効かなくなるので含めない。
     private static func upperFaceMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
         drawMask(imageSize: imageSize, blurOfFace: 0.02, faces: faces) { context, size in
             for face in faces {
                 guard let marks = face.landmarks, let contour = marks.faceContour,
                       let nose = marks.nose else { continue }
                 let points = contour.pointsInImage(imageSize: size)
-                guard points.count > 2, let noseBottom = nose.pointsInImage(imageSize: size).map(\.y).min()
-                else { continue }
+                let nosePoints = nose.pointsInImage(imageSize: size)
+                let eyes = [marks.leftEye, marks.rightEye].compactMap { $0?.pointsInImage(imageSize: size) }.flatMap { $0 }
+                guard points.count > 2, let noseBottom = nosePoints.map(\.y).min(),
+                      let eyeBottom = eyes.map(\.y).min() else { continue }
+                let faceWidth = face.boundingBox.width * size.width
                 let box = face.boundingBox
                 context.saveGState()
-                context.clip(to: CGRect(x: 0, y: noseBottom, width: size.width, height: size.height - noseBottom))
+                // 左下原点なので、鼻の下端より上・目の下端より少し下まで
+                let top = eyeBottom - faceWidth * 0.04
+                guard top > noseBottom else { context.restoreGState(); continue }
+                context.clip(to: CGRect(x: 0, y: noseBottom, width: size.width, height: top - noseBottom))
                 context.setFillColor(gray: 1, alpha: 1)
-                // 輪郭の線は耳の高さまでなので、その上（額）は顔の枠の上端まで延ばす
                 context.beginPath()
                 context.addLines(between: points)
                 if let last = points.last, let first = points.first {
@@ -414,6 +420,17 @@ final class PoseDetector {
                 }
                 context.closePath()
                 context.fillPath()
+                // 鼻（小鼻の影・鼻すじのテカリ）は頬の色ではないので外す
+                if nosePoints.count > 2 {
+                    context.setFillColor(gray: 0, alpha: 1)
+                    context.setStrokeColor(gray: 0, alpha: 1)
+                    context.setLineWidth(faceWidth * 0.08)
+                    context.setLineJoin(.round)
+                    context.beginPath()
+                    context.addLines(between: nosePoints)
+                    context.closePath()
+                    context.drawPath(using: .fillStroke)
+                }
                 context.restoreGState()
             }
         }

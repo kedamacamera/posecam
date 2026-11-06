@@ -106,6 +106,8 @@ struct AssetPager: View {
     @Environment(\.dismiss) private var dismiss
     @State private var index = 0
     @State private var isLoading = false
+    /// 写真を拡大している間は、左右のめくりを止める（拡大した写真を指で動かせるようにする）
+    @State private var isZoomed = false
 
     private var range: Range<Int> {
         let count = assets?.count ?? 0
@@ -122,12 +124,14 @@ struct AssetPager: View {
             TabView(selection: $index) {
                 ForEach(range, id: \.self) { i in
                     if let item = asset(i) {
-                        AssetPage(asset: item, isCurrent: i == index)
+                        AssetPage(asset: item, isCurrent: i == index) { isZoomed = $0 }
                             .tag(i)
                     }
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .scrollDisabled(isZoomed)
+            .onChange(of: index) { isZoomed = false }
             .background(Color.black)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -172,10 +176,11 @@ struct AssetPager: View {
     }
 }
 
-/// 1 ページ。写真は画面いっぱいに、動画は再生できるように表示する。
+/// 1 ページ。写真は画面いっぱいに（2 本指で拡大・ダブルタップで拡大と戻す）、動画は再生できるように表示する。
 struct AssetPage: View {
     let asset: PHAsset
     let isCurrent: Bool
+    var onZoomChange: (Bool) -> Void = { _ in }
     @State private var image: UIImage?
     @State private var player: AVPlayer?
 
@@ -189,7 +194,7 @@ struct AssetPage: View {
                     ProgressView()
                 }
             } else if let image {
-                Image(uiImage: image).resizable().scaledToFit()
+                ZoomableImage(image: image, onZoomChange: onZoomChange)
             } else {
                 ProgressView()
             }
@@ -215,7 +220,9 @@ struct AssetPage: View {
                 options.deliveryMode = .opportunistic
                 options.isNetworkAccessAllowed = true
                 let scale = UIScreen.main.scale
-                let size = CGSize(width: UIScreen.main.bounds.width * scale, height: UIScreen.main.bounds.height * scale)
+                // 拡大しても粗くならないよう、画面の 2 倍の細かさで読み込む
+                let size = CGSize(width: UIScreen.main.bounds.width * scale * 2,
+                                  height: UIScreen.main.bounds.height * scale * 2)
                 PHImageManager.default().requestImage(for: asset, targetSize: size, contentMode: .aspectFit,
                                                       options: options) { result, _ in
                     if let result { image = result }

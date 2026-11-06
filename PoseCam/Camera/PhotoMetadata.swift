@@ -13,6 +13,31 @@ enum PhotoMetadata {
     private static let exifKey = kCGImagePropertyExifDictionary as String
     private static let tiffKey = kCGImagePropertyTIFFDictionary as String
 
+    /// 撮影日時（Exif の撮影・デジタル化の日時と、TIFF の日時）を date に書き換えた情報。
+    /// 編集して保存した写真を、保存した日時の写真にするのに使う。
+    static func stamped(_ metadata: [String: Any], date: Date) -> [String: Any] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        let dateText = formatter.string(from: date)
+        formatter.dateFormat = "xxx"
+        let offset = formatter.string(from: date)
+        var result = metadata
+        var exif = metadata[exifKey] as? [String: Any] ?? [:]
+        exif[kCGImagePropertyExifDateTimeOriginal as String] = dateText
+        exif[kCGImagePropertyExifDateTimeDigitized as String] = dateText
+        exif[kCGImagePropertyExifOffsetTimeOriginal as String] = offset
+        exif[kCGImagePropertyExifOffsetTimeDigitized as String] = offset
+        exif[kCGImagePropertyExifOffsetTime as String] = offset
+        exif.removeValue(forKey: kCGImagePropertyExifSubsecTimeOriginal as String)
+        exif.removeValue(forKey: kCGImagePropertyExifSubsecTimeDigitized as String)
+        result[exifKey] = exif
+        var tiff = metadata[tiffKey] as? [String: Any] ?? [:]
+        tiff[kCGImagePropertyTIFFDateTime as String] = dateText
+        result[tiffKey] = tiff
+        return result
+    }
+
     /// 無音撮影の写真に付ける情報。exif は映像のコマの Exif。
     static func forVideoFrame(exif frameExif: [String: Any], position: AVCaptureDevice.Position) -> [String: Any] {
         var exif = frameExif

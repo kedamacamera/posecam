@@ -41,12 +41,10 @@ struct PhotoEditorView: View {
     @State private var smallAnalysis: PoseDetector.Result?
     @State private var isSaving = false
     @State private var message: String?
+    @State private var messageTask: Task<Void, Never>?
     @State private var renderTask: Task<Void, Never>?
-    /// 写真の拡大（2 本指でつまむ）と、拡大中の移動（1 本指でなぞる）。ダブルタップで元に戻す
-    @State private var zoom: CGFloat = 1
-    @State private var zoomAtStart: CGFloat = 1
-    @State private var pan: CGSize = .zero
-    @State private var panAtStart: CGSize = .zero
+    /// 脚長の範囲の線に使う、写真の骨格
+    @StateObject private var legFeed = PoseFeed()
 
     // 画像の処理は裏のスレッドで行うので、画面（メインスレッド）に縛らない
     nonisolated(unsafe) private static let context = CIContext()
@@ -58,37 +56,31 @@ struct PhotoEditorView: View {
                 ZStack {
                     Color.black
                     if let preview {
-                        Image(uiImage: preview)
-                            .resizable()
-                            .scaledToFit()
-                            .overlay(tool == .tilt && zoom <= 1.01 ? GridOverlay(style: .thirds) : nil)
-                            .scaleEffect(zoom)
-                            .offset(pan)
+                        // 2 本指で指の間を中心に拡大、1 本指で移動、ダブルタップで拡大・戻す（ZoomableImage）
+                        ZoomableImage(image: preview, displaySize: { area in displaySize(of: preview, in: area) }) {
+                            if tool == .tilt {
+                                GridOverlay(style: .thirds)
+                            } else if tool == .beauty && beautyItem == .legLength {
+                                LegRangeOverlay(feed: legFeed, settings: $settings)
+                            }
+                        }
                     } else {
                         ProgressView()
                     }
                 }
                 .frame(maxHeight: .infinity)
-                .clipped()
-                .contentShape(Rectangle())
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { value in zoom = min(6, max(1, zoomAtStart * value.magnification)) }
-                        .onEnded { _ in
-                            zoomAtStart = zoom
-                            if zoom <= 1.01 { resetZoom() }
-                        }
-                        .simultaneously(with: DragGesture(minimumDistance: 4)
-                            .onChanged { value in
-                                guard zoom > 1.01 else { return }
-                                pan = CGSize(width: panAtStart.width + value.translation.width,
-                                             height: panAtStart.height + value.translation.height)
-                            }
-                            .onEnded { _ in panAtStart = pan })
-                )
-                .onTapGesture(count: 2) {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        if zoom > 1.01 { resetZoom() } else { zoom = 2.5; zoomAtStart = 2.5 }
+                // 「保存しました」は写真の上に重ねて出す（以前は下に行を足していて、そのぶん写真が小さくなっていた）
+                .overlay(alignment: .top) {
+                    if let message {
+                        Text(message)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(Color.black.opacity(0.7)))
+                            .padding(.top, 8)
+                            .transition(.opacity)
+                            .allowsHitTesting(false)
                     }
                 }
 
@@ -127,10 +119,6 @@ struct PhotoEditorView: View {
                     }
                 }
                 .frame(height: 140, alignment: .top)
-
-                if let message {
-                    Text(message).font(.footnote).foregroundStyle(.secondary)
-                }
             }
             // 一番下の操作が、画面の下端（ホームに戻る・アプリの切り替えの操作をする所）に近すぎないようにする
             .padding(.bottom, 28)
@@ -176,11 +164,27 @@ struct PhotoEditorView: View {
         }
     }
 
-    private func resetZoom() {
-        zoom = 1
-        zoomAtStart = 1
-        pan = .zero
-        panAtStart = .zero
+    /// 写真を表示する大きさ。伸縮する前の写真が画面に収まる大きさを基準にし、伸縮した分だけ大きさを変える。
+    /// 伸縮した後の写真を毎回画面に収めていた頃は、横幅を広げると（画面の幅はもう一杯なので）高さが縮んで見え、
+    /// 縦幅を広げると幅が縮んで見えて、逆の向きに伸び縮みしているように見えていた。
+    /// 画面より大きくなった分は、はみ出した所を 1 本指で動かして見る
+    private func displaySize(of image: UIImage, in area: CGSize) -> CGSize {
+        guard let small, small.extent.width > 0, small.extent.height > 0 else {
+            return ZoomableImage<EmptyView>.fit(image.size, in: area)
+        }
+        let base = ZoomableImage<EmptyView>.fit(small.extent.size, in: area)
+        return CGSize(width: base.width * image.size.width / small.extent.width,
+                      height: base.height * image.size.height / small.extent.height)
+    }
+
+    private func show(_ text: String) {
+        withAnimation { message = text }
+        messageTask?.cancel()
+        messageTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            withAnimation { message = nil }
+        }
     }
 
     private var geometry: Perspective {
@@ -192,13 +196,13 @@ struct PhotoEditorView: View {
     nonisolated private static func applyEffects(_ image: CIImage, settings: ProcessingSettings,
                                      analysis: PoseDetector.Result?) -> CIImage {
         guard settings.needsMasks || settings.filter != .none || settings.legLength > 0.01 else { return image }
-        let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis?.pose, manual: nil) : nil
+        let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis?.pose, manual: settings.legRange) : nil
         return processor.process(image, settings: settings, legs: legs, masks: analysis?.masks)
     }
 
     private func load() {
         guard let image = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
-            message = "写真を読み込めませんでした"
+            show("写真を読み込めませんでした")
             return
         }
         properties = CGImageSourceCreateWithData(data as CFData, nil)
@@ -216,6 +220,7 @@ struct PhotoEditorView: View {
             let analysis = PoseDetector().analyze(ciImage: reduced, wantsMasks: true, wantsPerson: true)
             await MainActor.run {
                 smallAnalysis = analysis
+                legFeed.showStill(pose: analysis.pose)
                 schedulePreview()
             }
         }
@@ -248,14 +253,17 @@ struct PhotoEditorView: View {
             }
             let image = Self.applyEffects(source, settings: settings, analysis: analysis)
             let output = geometry.apply(to: image, fill: fill)
-            guard let jpeg = PhotoMetadata.jpeg(output, metadata: properties, context: Self.context) else {
-                await MainActor.run { isSaving = false; message = "保存できませんでした" }
+            // 編集した写真は、撮影した日時ではなく保存した日時の写真にする（写真アプリでも新しい写真として並ぶ）
+            let now = Date()
+            let stamped = PhotoMetadata.stamped(properties, date: now)
+            guard let jpeg = PhotoMetadata.jpeg(output, metadata: stamped, context: Self.context) else {
+                await MainActor.run { isSaving = false; show("保存できませんでした") }
                 return
             }
-            MediaSaver.savePhoto(jpeg) { ok in
+            MediaSaver.savePhoto(jpeg, creationDate: now) { ok in
                 DispatchQueue.main.async {
                     isSaving = false
-                    message = ok ? "保存しました（元の写真はそのまま残っています）" : "保存できませんでした（写真へのアクセス許可を確認してください）"
+                    show(ok ? "保存しました（元の写真はそのまま残っています）" : "保存できませんでした（写真へのアクセス許可を確認してください）")
                 }
             }
         }

@@ -412,6 +412,10 @@ struct PoseStrip: View {
     @State private var isJumping = false
     /// ポーズの一覧を直接動かすためのもの（見出しのタップ用）
     @State private var rowProxy: ScrollViewProxy?
+    /// 見出しのタップで一覧を合わせ直す予約の番号
+    @State private var jumpGeneration = 0
+    /// パネルを下へフリックして閉じている途中（指の下のポーズを選ばない）
+    @Environment(\.suppressPanelTaps) private var suppressTaps
 
     private struct Item: Identifiable {
         let id: String
@@ -480,7 +484,7 @@ struct PoseStrip: View {
         ScrollViewReader { proxy in
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: 10) {
-                Button { selection = nil } label: {
+                Button { if !suppressTaps { selection = nil } } label: {
                     TileLabel(systemImage: "nosign", title: "なし", highlighted: selection == nil)
                 }
                 PhotosPicker(selection: $pickerItem, matching: .images) {
@@ -492,6 +496,7 @@ struct PoseStrip: View {
                 }
                 ForEach(items) { item in
                     PoseCell(library: library, pose: item.pose, selection: $selection) {
+                        guard !suppressTaps else { return }
                         selection = item.pose
                         Self.lastSelectedItem = item.id
                         // 選んだポーズのカテゴリへ、見出しをすぐ切り替える
@@ -507,6 +512,8 @@ struct PoseStrip: View {
         }
         // 画面の中央にあるポーズで見出しを決める（中央を越えた時点で、前後のカテゴリへ切り替わる）
         .scrollPosition(id: $visibleItem, anchor: .center)
+        // 見出しのタップで合わせている間は、惰性・指でのスクロールを止める
+        .scrollDisabled(isJumping)
         .onChange(of: visibleItem) {
             guard !isJumping, let visibleItem,
                   let category = items.first(where: { $0.id == visibleItem })?.category,
@@ -518,24 +525,28 @@ struct PoseStrip: View {
     }
 
     /// 見出しをタップしたとき、そのカテゴリの先頭のポーズを中央へ動かす。
-    /// スワイプの惰性で一覧が動いている間にタップすると、以前は惰性の動きが勝って、
-    /// タップしたカテゴリへ移らなかった。いったんアニメーションなしで動かして惰性を止めてから、動かし直す。
+    /// スワイプの惰性で一覧が動いている間にタップすると、惰性の動きが勝って、タップしたカテゴリへ移らないことがあった
+    /// （0.5 秒後に 1 回だけ合わせ直していたが、惰性がそれより長く続くと外れていた）。
+    /// 合わせている間は一覧のスクロールを止め、惰性が収まるまで（1.5 秒）何度か確かめて合わせ直す。
     private func jump(to category: String) {
         guard let first = items.first(where: { $0.category == category }) else { return }
+        jumpGeneration += 1
+        let generation = jumpGeneration
         isJumping = true
         activeCategory = category
         rowProxy?.scrollTo(first.id, anchor: .center)
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.25)) { visibleItem = first.id }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            // まだ別のカテゴリにいたら（惰性が残っていたら）もう一度合わせる
-            if activeCategory == category,
-               items.first(where: { $0.id == visibleItem })?.category != category {
-                rowProxy?.scrollTo(first.id, anchor: .center)
-                visibleItem = first.id
+        for delay in [0.3, 0.6, 1.0, 1.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard jumpGeneration == generation, activeCategory == category else { return }
+                if items.first(where: { $0.id == visibleItem })?.category != category {
+                    rowProxy?.scrollTo(first.id, anchor: .center)
+                    visibleItem = first.id
+                }
+                if delay == 1.5 { isJumping = false }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isJumping = false }
         }
     }
 
@@ -681,5 +692,17 @@ struct PoseMenu: View {
                 library.delete(pose)
             }
         }
+    }
+}
+
+/// パネルを下へフリックして閉じている途中は、指の下にあるポーズ・フィルターを選ばない
+struct SuppressPanelTapsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var suppressPanelTaps: Bool {
+        get { self[SuppressPanelTapsKey.self] }
+        set { self[SuppressPanelTapsKey.self] = newValue }
     }
 }

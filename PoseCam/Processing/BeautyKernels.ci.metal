@@ -117,66 +117,52 @@ float4 directFlash(sampler photoLow, sampler ambientLow, sampler photoCoarse, sa
     return float4(gain, gain, gain, 1.0);
 }
 
-/// 青ひげ隠し（反対色で打ち消す）。ひげの剃り跡は、皮膚の下の毛が透けて「周りの肌より青く・少し暗く」見える。
-/// 1. ひげの所の平均の色（beardSum / beardWeight）と、ひげの生えない頬・額の平均の色（skinSum / skinWeight）を求め、
-///    その差を「この人の剃り跡の色のずれ」とする（ひげの色の検出）
-/// 2. 画素ごとに、その色のずれがどれだけ出ているか（t: 頬の色なら 0、ひげの平均なら 1）を求め、
-///    ずれと反対の向き（反対色）に、その分だけ戻す
-/// 色みは明るさで割った値（影でも同じ肌なら同じ値）で比べるので、あご下や口元の影を「青い」と誤判定しない。
-/// 戻すのは青みを減らす向き（と、それに見合う分の赤み）だけで、頬の色より先へは行かない。
-/// 以前は周りの肌との色の差をそのまま埋めていて、影で暗い所や頬より黄色いあごが、頬の赤みへ寄せられてオレンジ色になっていた。
-/// 細かい質感（src - local）は残すので、塗りつぶしたようにはならない。
-/// debug が 1 のときは、確認用に (効き具合, 参照できる肌の量 ×10, t, 1) を色として返す。
-float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWeight,
-                    sampler beardSum, sampler beardWeight, float strength, float debug, destination dest) {
+/// 青ひげ隠し（反対色で打ち消す）。剃り跡は、皮膚の下の毛が透けて「周りの肌より赤みが抜け、少し青く」見える
+/// （実際の写真で測ると、頬より赤み Cr/Y が 1 割ほど低く、黄み（-Cb/Y）も少し低い。暗さの差はほとんどない）。
+/// 画素ごとに、頬の色（skinSum / skinWeight: 目の下〜鼻の下の頬だけの平均）と比べ、
+/// 赤みが足りない分・青みが多い分だけを、反対色（赤み・黄み）を足して打ち消す。
+/// 色みは明るさで割った値（光の強さが変わっても同じ肌なら同じ値）で比べる。影（あご下・口元）は
+/// この値では頬より赤いので、何も足さない（以前は影にも頬の色を足していて、あごがオレンジ色になっていた）。
+/// 足すのは頬の色に届くまでで、それより先へは行かない。細かい質感（src - local）は残す。
+/// 頬より大きく明るい所（鼻の下のテカリ）は、白っぽいのが光のせいなので変えない。
+/// debug が 1 のときは、確認用に (効き具合, 参照できる肌の量 ×10, 色の足りなさ, 1) を色として返す。
+float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWeight, float strength,
+                    float debug, destination dest) {
     float2 coord = dest.coord();
     float4 color = src.sample(src.transform(coord));
     float weightSum = skinWeight.sample(skinWeight.transform(coord)).r;
-    float beardW = beardWeight.sample(beardWeight.transform(coord)).r;
-    if (weightSum < 0.0005 || beardW < 0.0005) {
+    if (weightSum < 0.0005) {
         return debug > 0.5 ? float4(0.0, weightSum * 10.0, 0.0, 1.0) : color;
     }
     float3 lumaWeights = float3(0.299, 0.587, 0.114);
     float3 average = skinSum.sample(skinSum.transform(coord)).rgb / weightSum;
-    float3 beardAverage = beardSum.sample(beardSum.transform(coord)).rgb / beardW;
     float3 near = local.sample(local.transform(coord)).rgb;
-
     float averageY = max(dot(average, lumaWeights), 0.001);
-    float beardY = max(dot(beardAverage, lumaWeights), 0.001);
     float nearY = max(dot(near, lumaWeights), 0.001);
-    // 明るさで割った色み（Cb, Cr）。光の強さが変わっても同じ色なら同じ値になる
     float2 averageC = float2(average.b - averageY, average.r - averageY) / averageY;
-    float2 beardC = float2(beardAverage.b - beardY, beardAverage.r - beardY) / beardY;
     float2 nearC = float2(near.b - nearY, near.r - nearY) / nearY;
 
-    // 打ち消す向き: ひげの色 → 頬の色。青みを減らす向きだけにし、赤みは青みを減らす量までしか足さない
-    float2 axis = averageC - beardC;
-    axis.x = min(axis.x, 0.0);
-    axis.y = clamp(axis.y, 0.0, -axis.x);
-    float length2 = dot(axis, axis);
-    if (length2 < 0.000004) {
-        return debug > 0.5 ? float4(0.0, weightSum * 10.0, 0.0, 1.0) : color;
-    }
-    // この場所に、ひげの色のずれがどれだけ出ているか（0: 頬と同じ、1: ひげの平均、濃い所は 1.5 まで）
-    float t = clamp(dot(averageC - nearC, axis) / length2, 0.0, 1.5);
+    // 頬の色との差のうち、打ち消す向き（青みを減らす・赤みを足す）だけ。1 回に動かす量にも上限を付ける
+    float2 deficit = averageC - nearC;
+    deficit.x = clamp(deficit.x, -0.2, 0.0);
+    deficit.y = clamp(deficit.y, 0.0, 0.25);
+    float amount = clamp(length(deficit) / 0.08, 0.0, 1.0);
 
-    // 伸びたひげ・鼻の穴・濃い影（頬のリニアで 0.08 以下の明るさ）は変えない
     float ratioY = nearY / averageY;
-    float w = strength * smoothstep(0.08, 0.15, ratioY);
     float y = dot(color.rgb, lumaWeights);
-    // その画素自身が暗い（髪の毛・もみあげ）ときも変えない
+    // 伸びたひげ・鼻の穴・濃い影・髪（とても暗い所）と、テカリ（頬よりずっと明るい所）は変えない
+    float w = strength * smoothstep(0.08, 0.15, ratioY) * (1.0 - smoothstep(1.4, 2.0, ratioY));
     w *= smoothstep(0.08, 0.15, y / averageY);
     if (debug > 0.5) {
-        return float4(w * min(t, 1.0), weightSum * 10.0, min(t, 1.0), 1.0);
+        return float4(w * amount, weightSum * 10.0, amount, 1.0);
     }
 
-    float2 shift = axis * t * w;
+    float2 shift = deficit * w;
     float cb = color.b - y + shift.x * y;
     float cr = color.r - y + shift.y * y;
-    // 明るさは、ひげで暗くなった分の 4 割だけ戻す（影の所は戻さない。戻すと平たく浮いて見える）
+    // 剃り跡で少し暗くなった分も、色が足りない所だけ 3 割戻す（影の所は戻さない。戻すと平たく浮いて見える）
     float darker = max(0.0, averageY - nearY);
-    float lift = 0.4 * smoothstep(0.35, 0.55, ratioY);
-    float newY = y + darker * lift * w * min(t, 1.0);
+    float newY = y + darker * 0.3 * smoothstep(0.35, 0.55, ratioY) * w * amount;
     float r = newY + cr;
     float b = newY + cb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;

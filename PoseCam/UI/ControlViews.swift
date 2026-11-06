@@ -226,45 +226,54 @@ struct LensBar: View {
                     .transition(.opacity)
             }
             // 倍率ボタンは同じ大きさの丸を 1 本の帯にまとめる（選んだ丸だけ大きくすると、帯の外へはみ出していた）。
-            // いま使っているレンズの名前は、帯の左に楕円で囲んで出す
-            HStack(spacing: 4) {
-                ForEach(options) { option in
-                    let active = option.displayFactor == activeFactor
-                    Text(active ? ZoomFormat.short(zoom) + "×" : ZoomFormat.short(option.displayFactor))
-                        .font(.system(size: active ? 12 : 11, weight: .bold))
-                        .foregroundStyle(active ? Color.yellow : .white)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(Color.white.opacity(active ? 0.18 : 0)))
-                        .contentShape(Circle())
-                        .onTapGesture { onSelect(option.displayFactor) }
-                        .gesture(
-                            LongPressGesture(minimumDuration: 0.3)
-                                .onEnded { _ in
-                                    withAnimation(.easeOut(duration: 0.15)) { showRuler = true }
-                                    hideTask?.cancel()
-                                }
-                                .sequenced(before: dragGesture)
-                        )
-                }
-            }
-            .padding(3)
-            .background(Capsule().fill(Color.black.opacity(0.45)))
-            .overlay(alignment: .leading) {
-                if let activeLens {
-                    Text(activeLens)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.black.opacity(0.45)))
-                        .overlay(Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.8))
-                        .alignmentGuide(.leading) { $0[.trailing] + 8 }
-                        .allowsHitTesting(false)
-                }
+            // いま使っているレンズの名前は、帯の左に楕円で囲んで並べる。帯が画面の中央に来るよう、
+            // 右にも同じ幅の透明な名前を置く（以前は重ねて置いていて、倍率ボタンと重なっていた）
+            HStack(spacing: 8) {
+                lensLabel
+                buttons
+                lensLabel.hidden()
             }
         }
+    }
+
+    @ViewBuilder private var lensLabel: some View {
+        if let activeLens {
+            Text(activeLens)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.black.opacity(0.45)))
+                .overlay(Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.8))
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var buttons: some View {
+        HStack(spacing: 4) {
+            ForEach(options) { option in
+                let active = option.displayFactor == activeFactor
+                Text(active ? ZoomFormat.short(zoom) + "×" : ZoomFormat.short(option.displayFactor))
+                    .font(.system(size: active ? 12 : 11, weight: .bold))
+                    .foregroundStyle(active ? Color.yellow : .white)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(active ? 0.18 : 0)))
+                    .contentShape(Circle())
+                    .onTapGesture { onSelect(option.displayFactor) }
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.3)
+                            .onEnded { _ in
+                                withAnimation(.easeOut(duration: 0.15)) { showRuler = true }
+                                hideTask?.cancel()
+                            }
+                            .sequenced(before: dragGesture)
+                    )
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.black.opacity(0.45)))
     }
 
     /// 左へ動かすと拡大、右へ動かすと縮小（標準カメラと同じ向き）。
@@ -400,6 +409,7 @@ struct PanelChips: View {
 struct FilterStrip: View {
     @Binding var selection: PhotoFilter
     @Binding var strength: Double
+    @Environment(\.suppressPanelTaps) private var suppressTaps
 
     var body: some View {
         VStack(spacing: 8) {
@@ -417,6 +427,7 @@ struct FilterStrip: View {
             HStack(spacing: 12) {
                 ForEach(PhotoFilter.allCases) { filter in
                     Button {
+                        guard !suppressTaps else { return }
                         selection = filter
                         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(filter, anchor: .center) }
                     } label: {
@@ -975,6 +986,8 @@ struct ShutterButton: View {
 /// 最後に撮った写真・動画。タップでアプリ内のアルバムを開く。
 struct ThumbnailButton: View {
     let image: UIImage?
+    /// 撮った写真をまだ保存している（くるくるを重ねる）
+    var busy = false
     /// アプリ内のアルバムを開く
     let action: () -> Void
 
@@ -993,7 +1006,15 @@ struct ThumbnailButton: View {
                 .frame(width: 34, height: 34)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6), lineWidth: 1))
-                Text("アルバム")
+                .overlay {
+                    if busy {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.45))
+                            ProgressView().tint(.white).scaleEffect(0.7)
+                        }
+                    }
+                }
+                Text(busy ? "保存中" : "アルバム")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white)
             }

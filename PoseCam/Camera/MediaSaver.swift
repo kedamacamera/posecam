@@ -3,9 +3,12 @@ import Photos
 
 /// 写真アプリへの保存。追加のみの権限（.addOnly）で足りる。
 enum MediaSaver {
-    static func savePhoto(_ data: Data, completion: @escaping (Bool) -> Void) {
+    /// creationDate: 写真アプリで並ぶ日時（nil なら写真の撮影日時。編集した写真は保存した日時にする）
+    static func savePhoto(_ data: Data, creationDate: Date? = nil, completion: @escaping (Bool) -> Void) {
         withAddPermission({ ok, _ in completion(ok) }) {
-            PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: .photo, data: data, options: nil)
+            if let creationDate { request.creationDate = creationDate }
         }
     }
 

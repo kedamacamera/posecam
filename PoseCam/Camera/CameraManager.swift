@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import CoreImage
 import ImageIO
+import os
 import UIKit
 
 enum CaptureMode: String, CaseIterable, Identifiable {
@@ -39,6 +40,11 @@ final class PoseFeed: ObservableObject {
     /// 検出した顔のパーツ（画像座標）。骨格の表示に使う
     @Published fileprivate(set) var face: FaceShape?
     @Published fileprivate(set) var score: Double?
+
+    /// 写真の編集画面で、写真から求めた骨格を脚長の範囲の線に使う
+    func showStill(pose: [Joint: CGPoint]?) {
+        detected = pose
+    }
 }
 
 /// レンズ切り替えボタン 1 つぶん。displayFactor は標準カメラと同じ表示倍率（0.5 / 1 / 2 / 5 など）。
@@ -89,6 +95,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isQuickVideo = false
     @Published private(set) var recordingSeconds = 0
     @Published private(set) var isCapturing = false
+    /// 撮った後、加工・保存がまだ終わっていない写真の数
+    @Published private(set) var savingPhotos = 0
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
     let poseFeed = PoseFeed()
     /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
@@ -124,7 +132,11 @@ final class CameraManager: NSObject, ObservableObject {
         didSet { applyTorch() }
     }
     /// ダイレクトフラッシュ（写ルンです・昔のコンデジ風）。フラッシュの光が届かない背景を暗く落とす
-    @Published var directFlash = false
+    @Published var directFlash = false {
+        // ダイレクトフラッシュは 1 枚の処理が重いので、連続撮影は 3 枚までにする
+        // （10 枚続けると、メモリが足りずに保存できないことがあった）
+        didSet { if directFlash && burstCount > 3 { burstCount = 3 } }
+    }
     @Published var autoShutter = false {
         didSet { updatePoseNeeded() }
     }
@@ -258,8 +270,12 @@ final class CameraManager: NSObject, ObservableObject {
     private var countdownTimer: DispatchSourceTimer?
     private var matchStartedAt: Date?
     private var lastAutoShotAt = Date.distantPast
-    private var pendingPhotos = 0
+    private var pendingPhotos = 0 {
+        didSet { savingPhotos = pendingPhotos }
+    }
     private var takeCounter = 0
+    /// AE/AF ロックの予約の番号（増やすと、それより前に予約した固定は行わない）
+    private var lockGeneration = 0
 
     // MARK: - セッション
 
@@ -809,6 +825,7 @@ final class CameraManager: NSObject, ObservableObject {
         let interest = position == .front ? CGPoint(x: sy, y: sx) : CGPoint(x: sy, y: 1 - sx)
         isFocusLocked = lock
         exposureBias = 0
+        if !lock { lockGeneration += 1 }
         sessionQueue.async {
             guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
             if device.isFocusPointOfInterestSupported {
@@ -819,13 +836,29 @@ final class CameraManager: NSObject, ObservableObject {
             }
             if device.isExposurePointOfInterestSupported {
                 device.exposurePointOfInterest = interest
-                let mode: AVCaptureDevice.ExposureMode = lock ? .autoExpose : .continuousAutoExposure
-                if device.isExposureModeSupported(mode) { device.exposureMode = mode }
+                if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
             }
+            // 顔に合わせて自動で露出を変える機能は、ロック中は止める（止めないと、顔が映ると明るさが変わる）
+            device.automaticallyAdjustsFaceDrivenAutoExposureEnabled = !lock
+            if lock { device.isFaceDrivenAutoExposureEnabled = false }
             device.setExposureTargetBias(0, completionHandler: nil)
             // 被写体が大きく変わったら、標準のカメラと同じく中央に戻す
             device.isSubjectAreaChangeMonitoringEnabled = !lock
             device.unlockForConfiguration()
+        }
+        guard lock else { return }
+        // 露出は、タップした所に合わせ終わるのを待ってから固定する。
+        // 以前は .autoExpose（1 回合わせたら固定）を使っていたが、機種によっては固定されず、明るさが変わり続けていた
+        lockGeneration += 1
+        let generation = lockGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            guard self.lockGeneration == generation else { return }
+            self.sessionQueue.async {
+                guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
+                if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
+                if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
+                device.unlockForConfiguration()
+            }
         }
     }
 
@@ -844,6 +877,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// ピント・露出を画面全体の自動に戻す（被写体が変わったとき・カメラを切り替えたとき）
     func resetFocus() {
         isFocusLocked = false
+        lockGeneration += 1
         exposureBias = 0
         sessionQueue.async {
             guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
@@ -854,6 +888,7 @@ final class CameraManager: NSObject, ObservableObject {
             if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
             device.setExposureTargetBias(0, completionHandler: nil)
             device.isSubjectAreaChangeMonitoringEnabled = false
+            device.automaticallyAdjustsFaceDrivenAutoExposureEnabled = true
             device.unlockForConfiguration()
         }
     }
@@ -897,6 +932,12 @@ final class CameraManager: NSObject, ObservableObject {
     /// 連続撮影はタイマーなしでも、押してから 2 秒後に 1 枚目を撮る（構える時間）。
     private func startPhotoSequence() {
         guard !isSequenceRunning else { return }
+        // 前の写真の加工・保存が詰まっているとき・メモリが少ないときは撮らない
+        // （撮り続けると、メモリが足りずに加工に失敗して保存できなくなっていた）
+        if isSaveBacklogged {
+            report("保存中です。しばらくお待ちください")
+            return
+        }
         isSequenceRunning = true
         let total = burstCount
         let interval = Self.burstInterval
@@ -938,6 +979,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.shutterCount += 1
                 self.pendingPhotos += 1
                 self.isCapturing = true
+                // ダイレクトフラッシュは、発光前のコマと写真の間に動くと合成がずれる
+                if options.direct { self.report("撮り終わるまで動かないでください") }
                 if total > 1 { self.burstProgress = "\(current)/\(total)" }
                 if current >= total { self.finishSequence() }
             }
@@ -1055,6 +1098,15 @@ final class CameraManager: NSObject, ObservableObject {
         guard let cgImage = renderer.ciContext.createCGImage(small, from: small.extent) else { return nil }
         // 元の大きさの座標に戻しておく（写真の加工では元のコマと同じように切り抜く）
         return CIImage(cgImage: cgImage).transformed(by: CGAffineTransform(scaleX: 4, y: 4))
+    }
+
+    /// 加工・保存が詰まっているか。ダイレクトフラッシュは 2 枚、それ以外は 5 枚まで待たせてよい。
+    /// アプリが使える残りのメモリが 500MB を切ったら、待っている写真があるうちは撮らない
+    var isSaveBacklogged: Bool {
+        let limit = flashOn && directFlash ? 2 : 5
+        let available = os_proc_available_memory()
+        let lowMemory = available > 0 && available < 500 * 1024 * 1024
+        return pendingPhotos >= limit || (pendingPhotos > 0 && lowMemory)
     }
 
     private func photoFinished() {

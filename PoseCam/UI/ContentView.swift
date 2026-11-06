@@ -34,6 +34,12 @@ struct ContentView: View {
     /// 本体のボタンを押し続けたときの短い動画
     @State private var hardwareHoldTask: Task<Void, Never>?
     @State private var hardwareQuickVideo = false
+    /// 倍率ボタンの帯の位置（画面の座標。持ち上げる前）
+    @State private var lensBarFrame: CGRect?
+    /// パネルを下へなぞっている途中
+    @State private var panelFlicking = false
+    /// 写真の保存に時間がかかっている（0.7 秒たっても終わらない）ときだけ「保存中」を出す
+    @State private var showsSaving = false
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
     private let topBarHeight: CGFloat = 50
@@ -58,7 +64,7 @@ struct ContentView: View {
                             .padding(.horizontal, 12)
                             .padding(.top, 6)
                         Spacer(minLength: 0)
-                        bottomControls
+                        bottomControls(previewBottom: previewBottom(screen: screen, topInset: insets.top))
                             .padding(.bottom, max(insets.bottom, 12))
                     }
 
@@ -120,6 +126,16 @@ struct ContentView: View {
         }
         .onChange(of: selectedPose) { updateTemplate() }
         .onChange(of: camera.focusResetCount) { focusPoint = nil }
+        .onChange(of: camera.savingPhotos) {
+            if camera.savingPhotos == 0 {
+                showsSaving = false
+            } else if !showsSaving {
+                Task {
+                    try? await Task.sleep(for: .milliseconds(700))
+                    if camera.savingPhotos > 0 { showsSaving = true }
+                }
+            }
+        }
         .onChange(of: showsLegRange) { camera.showsLegRange = showsLegRange }
         .onChange(of: mirrorPose) { updateTemplate() }
         .onChange(of: scenePhase) {
@@ -324,7 +340,9 @@ struct ContentView: View {
             LabeledIconButton(systemImage: "square.stack.3d.down.right",
                               label: camera.burstCount == 1 ? "連続撮影" : "\(camera.burstCount)枚",
                               active: camera.burstCount > 1) {
-                camera.burstCount = next(after: camera.burstCount, in: [1, 3, 5, 10])
+                // ダイレクトフラッシュのときは 3 枚まで（1 枚の加工が重く、続けて撮ると保存できないことがあった）
+                camera.burstCount = next(after: camera.burstCount,
+                                         in: camera.flashOn && camera.directFlash ? [1, 3] : [1, 3, 5, 10])
             }
             .disabled(camera.mode != .photo)
             .opacity(camera.mode == .photo ? 1 : 0.4)
@@ -357,6 +375,10 @@ struct ContentView: View {
             if let progress = camera.burstProgress {
                 Badge(text: progress)
             }
+            if showsSaving {
+                Badge(text: camera.savingPhotos > 1 ? "写真を保存中（\(camera.savingPhotos) 枚）・アプリを閉じないでください"
+                                                    : "写真を保存中・アプリを閉じないでください")
+            }
             if camera.savingVideos > 0 {
                 Badge(text: camera.savingVideos > 1 ? "動画を保存中（\(camera.savingVideos) 本）" : "動画を保存中")
             }
@@ -383,7 +405,19 @@ struct ContentView: View {
 
     // MARK: - 下部
 
-    private var bottomControls: some View {
+    /// プレビューの下端（画面の上端からの位置）
+    private func previewBottom(screen: CGSize, topInset: CGFloat) -> CGFloat {
+        guard camera.aspect != .full, let ratio = camera.aspect.ratio else { return screen.height }
+        return topInset + topBarHeight + min(screen.width / ratio, screen.height)
+    }
+
+    /// 倍率ボタンがプレビューの下端にまたがるとき、プレビューの上に収まるまで持ち上げる量（負の値）
+    private func lensBarShift(previewBottom: CGFloat) -> CGFloat {
+        guard let frame = lensBarFrame, frame.minY < previewBottom, frame.maxY > previewBottom else { return 0 }
+        return -(frame.maxY - previewBottom) - 6
+    }
+
+    private func bottomControls(previewBottom: CGFloat) -> some View {
         VStack(spacing: 10) {
             // 選んだポーズの見本写真（左下）。タップで隠す・出す
             if let name = selectedPose?.imageName {
@@ -397,6 +431,9 @@ struct ContentView: View {
                         activeLens: camera.activeLensName,
                         onSelect: { camera.setDisplayZoom($0, animated: true) },
                         onZoom: { camera.setDisplayZoom($0) })
+                    // 帯がプレビューの下端にまたがって、半分だけ映像の上にはみ出して見えないようにする
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lensBarFrame = $0 }
+                    .offset(y: lensBarShift(previewBottom: previewBottom))
             }
 
             if panel != nil {
@@ -433,14 +470,21 @@ struct ContentView: View {
                 .padding(.horizontal, 8)
                 // パネルは下へフリックしても閉じられる（横のスクロールとは向きで区別する）
                 .simultaneousGesture(
-                    DragGesture(minimumDistance: 20)
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { value in
+                            // 下へなぞり始めたら、指を離したときに下のポーズ・フィルターが選ばれないようにする
+                            let down = value.translation.height
+                            if down > 12, down > abs(value.translation.width) { panelFlicking = true }
+                        }
                         .onEnded { value in
                             let down = value.translation.height
                             if down > 40, down > abs(value.translation.width) * 1.2 {
                                 withAnimation(.easeOut(duration: 0.18)) { self.panel = nil }
                             }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { panelFlicking = false }
                         }
                 )
+                .environment(\.suppressPanelTaps, panelFlicking)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -493,7 +537,7 @@ struct ContentView: View {
                     camera.setMode($0)
                 }
                 HStack {
-                    ThumbnailButton(image: camera.lastThumbnail) { showAlbum = true }
+                    ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving) { showAlbum = true }
                     Spacer()
                 }
                 .padding(.horizontal, 20)

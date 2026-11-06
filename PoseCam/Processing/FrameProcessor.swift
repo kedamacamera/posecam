@@ -79,12 +79,12 @@ final class FrameProcessor {
             // ひげの所だけ、周りより暗い細かい点を周りの明るさで埋め、さらに軽くならす（ほくろ・鼻の穴のような濃い所は残す）
             // 1 本 1 本の剃り跡（毛の太さほどの暗い点）は、クロージング（明るい方へ広げてから暗い方へ戻す）で消す。
             // 点より大きい暗い所（唇の端・鼻の下の影・あごの陰影）は形が残る。
-            // 以前のぼかしで消す方法は、点が残ったまま肌がぼやけて見えていた
-            let r = max(1, longSide * 0.0028)
+            // 以前のぼかしで消す方法は、点が残ったまま肌がぼやけて見えていた。
+            // クロージングの後にぼかしをかけていた頃は、あごの縁・唇の輪郭までぼやけていたので、ぼかさない
+            let r = max(1, longSide * 0.0025)
             let closed = concealed.clampedToExtent()
                 .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r])
                 .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r])
-                .applyingGaussianBlur(sigma: r * 0.5)
                 .cropped(to: faceArea)
             let filled = blend(closed, over: concealed, mask: beardMask, amount: settings.beard)
                 .cropped(to: faceArea)
@@ -152,7 +152,8 @@ final class FrameProcessor {
         guard let kernel = Self.beardKernel else { return image }
         let extent = image.extent
         let black = CIImage(color: .black).cropped(to: extent)
-        // 目標の色 = ひげの生えない所（鼻より上の頬・額）の肌の平均の色。
+        // 目標の色 = ひげの生えない頬（目の下〜鼻の下）の肌の平均の色。額は頬より赤みが少なく、
+        // 混ぜると目標が剃り跡の色に近づいて、ほとんど効かなくなっていた
         // ひげの周りの肌を使うと、剃り跡の青みが周りにも少し広がっているぶん、目標の色まで青くなって効きが弱まる
         let notBeard = beardMask.applyingFilter("CIColorInvert")
         var reference = skinMask.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: notBeard])
@@ -167,23 +168,14 @@ final class FrameProcessor {
         let area = CIVector(cgRect: extent)
         let sum = skinOnly.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
         let weight = reference.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
-        // ひげの所の平均の色（この人の剃り跡の色）。頬の色との差が、打ち消す色のずれになる
-        let beardOnly = image.applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: black,
-            kCIInputMaskImageKey: beardMask,
-        ])
-        let beardSum = beardOnly.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area]).clampedToExtent()
-        let beardWeight = beardMask.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: area])
-            .clampedToExtent()
         // 剃り跡のむらは毛穴より大きいので、少しぼかした色で判定する
         let local = image.clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.004).cropped(to: extent)
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
-                                  arguments: [image, local, sum, weight, beardSum, beardWeight,
-                                              Float(strength), Float(debug ? 1 : 0)])
+                                  arguments: [image, local, sum, weight, Float(strength), Float(debug ? 1 : 0)])
         return output?.cropped(to: extent) ?? image
     }
 
-    /// 確認用: 青ひげ隠しの中の値を色で表した画像（赤: 効き具合、緑: 参照できる肌の量 ×10、青: ひげの色のずれの出方 t）。
+    /// 確認用: 青ひげ隠しの中の値を色で表した画像（赤: 効き具合、緑: 参照できる肌の量 ×10、青: 色の足りなさ）。
     func beardDebug(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
         guard let beard = masks.beard else { return nil }
         let extent = image.extent

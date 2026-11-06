@@ -112,15 +112,16 @@ struct FocusIndicator: View {
             RoundedRectangle(cornerRadius: 3)
                 .stroke(Color.yellow, lineWidth: 1.2)
                 .frame(width: side, height: side)
-            // 太陽の印（露出）。補正 ±2 で、枠の高さの ±0.8 倍動く
-            VStack(spacing: 0) {
-                Rectangle().fill(Color.yellow.opacity(0.7)).frame(width: 1, height: side * 0.8)
+            // 露出の目盛り（縦の線）は動かさず、太陽の印だけが補正の量で上下する（±2 段で線の端まで）
+            ZStack {
+                Rectangle().fill(Color.yellow.opacity(0.7)).frame(width: 1, height: side * 1.2)
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: 15))
                     .foregroundStyle(Color.yellow)
-                Rectangle().fill(Color.yellow.opacity(0.7)).frame(width: 1, height: side * 0.8)
+                    .background(Circle().fill(Color.black.opacity(0.25)).frame(width: 20, height: 20))
+                    .offset(y: -CGFloat(bias) / 2 * side * 0.6)
             }
-            .offset(x: side / 2 + 16, y: -CGFloat(bias) / 2 * side * 0.8)
+            .offset(x: side / 2 + 16)
             .opacity(bias != 0 || !dimmed ? 1 : 0)
         }
         .opacity(dimmed ? 0.45 : 1)
