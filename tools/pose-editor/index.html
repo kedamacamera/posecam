@@ -628,8 +628,20 @@ for (const id of ["category", "search", "only-edited"]) $(id).addEventListener("
 // MARK: - 読み込み
 
 (async function load() {
-  const res = await fetch("/api/data");
-  const json = await res.json();
+  // index.html を直接開くと（file:// で開くと）写真もデータも読めず、何も出ないので、開き方を出す
+  if (location.protocol === "file:") {
+    document.body.innerHTML = '<div style="padding:40px;font-size:16px;line-height:1.8">' +
+      "このファイルを直接開いても使えません。<br>同じフォルダの <b>pose-editor.bat</b> をダブルクリックしてください。" +
+      "<br>黒い画面が開き、ブラウザで <b>http://127.0.0.1:8765/</b> が自動で開きます。</div>";
+    return;
+  }
+  let json;
+  try {
+    json = await (await fetch("/api/data")).json();
+  } catch (err) {
+    $("title").textContent = "ツールのサーバーにつながりません。pose-editor.bat の黒い画面が開いたままか確かめてください。";
+    return;
+  }
   if (json.error) { $("title").textContent = json.error; return; }
   items = json.items; analysis = json.analysis; edits = json.edits; savedText = JSON.stringify(edits);
   const cats = [...new Set(items.map((i) => i.category))].filter(Boolean);
