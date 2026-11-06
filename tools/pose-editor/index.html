@@ -22,6 +22,11 @@
   .item.active { background: #3b3416; }
   .item small { color: var(--muted); }
   .badge { color: var(--accent); font-size: 11px; white-space: nowrap; }
+  .badge.ok { color: var(--face); }
+  .badge.todo { color: var(--muted); }
+  button.ok { background: #1f7a3a; border-color: #2fa152; font-weight: 700; }
+  button.ok.on { background: var(--face); color: #111; border-color: var(--face); }
+  #ok-button { min-height: 40px; }
   select, input[type=search] { width: 100%; background: #16171a; color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 7px; font: inherit; }
   #stage { position: relative; overflow: hidden; background: #111; }
@@ -60,7 +65,13 @@
   <header>
     <select id="category"><option value="">すべてのカテゴリ</option></select>
     <input id="search" type="search" placeholder="名前で絞り込み">
-    <label class="row"><input id="only-edited" type="checkbox"> 手直ししたものだけ</label>
+    <select id="status-filter">
+      <option value="">すべての状態</option>
+      <option value="todo">未確認だけ</option>
+      <option value="ok">OK（手直し不要）だけ</option>
+      <option value="edited">手直ししたものだけ</option>
+    </select>
+    <div id="progress" class="status"></div>
   </header>
   <div id="list"></div>
 </aside>
@@ -75,6 +86,8 @@
     <span class="gap"></span>
     <button id="stage-undo" title="1 つ戻す（Ctrl+Z）">↶</button>
     <span class="gap"></span>
+    <button id="stage-ok" class="ok" title="手直し不要にして次の未確認へ（Enter）">✓ OK</button>
+    <span class="gap"></span>
     <button id="zoom-out" title="縮小">－</button>
     <button id="zoom-in" title="拡大">＋</button>
     <button id="zoom-fit" title="全体を表示（F）">全体</button>
@@ -85,6 +98,9 @@
   <div class="row">
     <button id="save" class="primary">保存（Ctrl+S）</button>
     <span id="state" class="status"></span>
+  </div>
+  <div class="row">
+    <button id="ok-button" class="ok" title="手直しが要らない写真に印を付けて、次の未確認の写真へ進みます（Enter）">✓ OK（手直し不要）→ 次へ</button>
   </div>
   <div>
     <h3>モード</h3>
@@ -127,7 +143,7 @@
   </div>
   <div class="status">
     <kbd>↑</kbd><kbd>↓</kbd> 前後の写真 ／ ホイール 拡大縮小 ／ 右ドラッグ・Space+ドラッグ 移動 ／
-    <kbd>Delete</kbd> 選んだ関節を消す
+    <kbd>Delete</kbd> 選んだ関節を消す ／ <kbd>Enter</kbd> OK（手直し不要）にして次の未確認へ
   </div>
   <div class="status">
     液タブ: ペン先でドラッグ ／ サイドボタンを押しながら・何もない所をドラッグで移動 ／ 消しゴム側で関節に触れると消す ／
@@ -156,6 +172,7 @@ const main = $("main"), mctx = main.getContext("2d");
 const preview = $("preview"), pctx = preview.getContext("2d");
 
 let items = [], analysis = {}, edits = {}, savedText = "{}";
+let checked = new Set();  // 手直し不要（OK）にした写真の名前
 let current = null, image = null;
 const images = {};
 let view = { s: 1, ox: 0, oy: 0 };
@@ -198,7 +215,8 @@ function changed() {
   if (badge !== changed.badge) { changed.badge = badge; renderList(false); }
   draw();
 }
-function isDirty() { return JSON.stringify(edits) !== savedText; }
+function savedState() { return JSON.stringify({ edits, checked: [...checked].sort() }); }
+function isDirty() { return savedState() !== savedText; }
 
 // MARK: - 座標
 
@@ -547,25 +565,46 @@ $("stage-undo").onclick = undo;
 
 // MARK: - 一覧
 
+// 写真の状態: 手直しした（edited）／手直し不要と確かめた（ok）／まだ見ていない（todo）
+function status(name) { return edits[name] ? "edited" : checked.has(name) ? "ok" : "todo"; }
+const BADGES = { edited: '<span class="badge">● 手直し</span>', ok: '<span class="badge ok">✓ OK</span>',
+  todo: '<span class="badge todo">未確認</span>' };
+
 function renderList(scroll) {
-  const cat = $("category").value, q = $("search").value.trim(), onlyEdited = $("only-edited").checked;
   const list = $("list");
   list.innerHTML = "";
   for (const it of visibleItems()) {
     const div = document.createElement("div");
     div.className = "item" + (it.name === current ? " active" : "");
-    div.innerHTML = `<span>${it.label}<br><small>${it.name}</small></span>` +
-      (edits[it.name] ? `<span class="badge">● 手直し</span>` : "");
+    div.innerHTML = `<span>${it.label}<br><small>${it.name}</small></span>` + BADGES[status(it.name)];
     div.onclick = () => select(it.name);
     list.appendChild(div);
     if (scroll && it.name === current) setTimeout(() => div.scrollIntoView({ block: "nearest" }), 0);
   }
+  const done = items.filter((it) => status(it.name) !== "todo").length;
+  const nOk = items.filter((it) => status(it.name) === "ok").length;
+  $("progress").textContent = `確認済み ${done} / ${items.length}（OK ${nOk}・手直し ${done - nOk}）`;
 }
 function visibleItems() {
-  const cat = $("category").value, q = $("search").value.trim(), onlyEdited = $("only-edited").checked;
+  const cat = $("category").value, q = $("search").value.trim(), st = $("status-filter").value;
+  // 今見ている写真は、状態が変わっても一覧から消さない（OK にした直後に位置がわからなくならないように）
   return items.filter((it) => (!cat || it.category === cat) && (!q || (it.label + it.name).includes(q))
-    && (!onlyEdited || edits[it.name]));
+    && (!st || status(it.name) === st || it.name === current));
 }
+
+// OK（手直し不要）にして、一覧で次の未確認の写真へ進む。OK 済みなら取り消す
+function toggleOk() {
+  if (!current || edits[current]) return;
+  if (checked.has(current)) { checked.delete(current); updateState(); renderList(false); updateTools(); return; }
+  checked.add(current);
+  const list = visibleItems(), i = list.findIndex((it) => it.name === current);
+  const next = list.slice(i + 1).concat(list.slice(0, i)).find((it) => status(it.name) === "todo");
+  updateState();
+  if (next) select(next.name);
+  else { renderList(false); updateTools(); toast("この一覧の写真はすべて確認済みです"); }
+}
+$("ok-button").onclick = toggleOk;
+$("stage-ok").onclick = toggleOk;
 
 function select(name) {
   current = name; selected = null; hover = null;
@@ -642,6 +681,10 @@ function updateTools() {
   $("reset-crop").disabled = !("crop" in e);
   $("reset-all").disabled = !edits[current];
   $("undo").disabled = !undoStack.length;
+  const st = status(current), ok = $("ok-button");
+  ok.disabled = $("stage-ok").disabled = st === "edited";
+  ok.classList.toggle("on", st === "ok"); $("stage-ok").classList.toggle("on", st === "ok");
+  ok.textContent = st === "edited" ? "手直し済み（OK 印は不要）" : st === "ok" ? "✓ OK 済み（押すと取り消し）" : "✓ OK（手直し不要）→ 次へ";
 }
 
 $("yaw").addEventListener("pointerdown", () => pushUndo());
@@ -689,14 +732,14 @@ function toast(text) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => (t.style.display = "none"), 2600);
 }
 async function save() {
-  const body = JSON.stringify({ edits });
+  const body = JSON.stringify({ edits, checked: [...checked].sort() });
   try {
     const res = await fetch("/api/save", { method: "POST", headers: { "Content-Type": "application/json" }, body });
     const json = await res.json();
     if (!json.ok) throw new Error(json.error);
-    savedText = JSON.stringify(edits);
+    savedText = savedState();
     updateState();
-    toast(`保存しました（手直し ${json.edited} 枚・builtin_shapes.json の ${json.shapes} ポーズを作り直し）`);
+    toast(`保存しました（手直し ${json.edited} 枚・OK ${json.checked} 枚・builtin_shapes.json の ${json.shapes} ポーズを作り直し）`);
   } catch (err) {
     toast("保存できませんでした: " + err.message);
   }
@@ -712,6 +755,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); step(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); step(-1); }
   else if (e.key === " ") { spaceDown = true; e.preventDefault(); }
+  else if (e.key === "Enter" && !["BUTTON", "SELECT"].includes(e.target.tagName)) { e.preventDefault(); toggleOk(); }
   else if (e.key === "b" || e.key === "B") { mode = "bones"; updateMode(); }
   else if (e.key === "c" || e.key === "C") { mode = "crop"; selected = null; updateMode(); updateTools(); }
   else if (e.key === "f" || e.key === "F") fitView();
@@ -721,7 +765,7 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("keyup", (e) => { if (e.key === " ") spaceDown = false; });
 window.addEventListener("resize", () => draw());
-for (const id of ["category", "search", "only-edited"]) $(id).addEventListener("input", () => renderList(true));
+for (const id of ["category", "search", "status-filter"]) $(id).addEventListener("input", () => renderList(true));
 
 // MARK: - 読み込み
 
@@ -741,7 +785,8 @@ for (const id of ["category", "search", "only-edited"]) $(id).addEventListener("
     return;
   }
   if (json.error) { $("title").textContent = json.error; return; }
-  items = json.items; analysis = json.analysis; edits = json.edits; savedText = JSON.stringify(edits);
+  items = json.items; analysis = json.analysis; edits = json.edits; checked = new Set(json.checked || []);
+  savedText = savedState();
   const cats = [...new Set(items.map((i) => i.category))].filter(Boolean);
   for (const c of cats) { const o = document.createElement("option"); o.value = o.textContent = c; $("category").appendChild(o); }
   updateMode(); updateState();
