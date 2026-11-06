@@ -431,7 +431,10 @@ window.addEventListener("mousemove", (e) => {
   if (drag.kind !== "pan") changed(); else draw();
 });
 window.addEventListener("mouseup", () => {
-  if (drag && drag.kind !== "pan") {
+  // 写真の上で動かしていたときだけ処理する。ボタンを押したときにここで右側のボタンを作り直すと、
+  // クリックが届く前にボタンが消え、「＋左肩」「顔を消す」などを押しても何も起きなかった
+  if (!drag) return;
+  if (drag.kind !== "pan") {
     // 動かしていなければ戻す履歴は残さない
     const last = undoStack[undoStack.length - 1];
     if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
