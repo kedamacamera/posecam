@@ -18,7 +18,7 @@ jobs:
             PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift \
             PoseCam/Pose/PoseImporter.swift PoseCam/Pose/PoseTemplate.swift \
             PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
-            PoseCam/Processing/ProcessingSettings.swift PoseCam/Util/Locked.swift PoseCam/Processing/DirectFlash.swift PoseCam/Processing/LegStretch.swift PoseCam/Camera/PhotoMetadata.swift tools/verify/main.swift
+            PoseCam/Processing/ProcessingSettings.swift PoseCam/Util/Locked.swift PoseCam/Processing/DirectFlash.swift PoseCam/Processing/LegStretch.swift PoseCam/Camera/PhotoMetadata.swift PoseCam/Camera/PixelBufferRender.swift tools/verify/main.swift
           # アプリと同じ美肌のカーネルと肌のモデルを、実行ファイルの隣に置く（Bundle.main から読み込まれる）
           xcrun -sdk macosx metal -fcikernel -c PoseCam/Processing/BeautyKernels.ci.metal -o bin/kernels.air
           xcrun -sdk macosx metallib -cikernel bin/kernels.air -o bin/default.metallib

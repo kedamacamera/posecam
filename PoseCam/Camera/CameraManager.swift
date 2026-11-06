@@ -230,6 +230,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let recordingAudio = Locked(false)
     /// 書き込みのキューに渡して、まだ書いていないコマの数（多すぎるときはコマを捨てる）
     private let pendingRecordFrames = Locked(0)
+    /// 描けずに捨てたコマの数（recordingQueue で使う）
+    private var failedRecordFrames = 0
 
     // recordingQueue 専用
     private var recorder: VideoRecorder?
@@ -1028,6 +1030,13 @@ final class CameraManager: NSObject, ObservableObject {
             return result
         }
         guard flash != nil else { return nil }
+        // 続けて撮ったときに一時的に書き出せないことがあるので、少し待って 1 回やり直す
+        Diagnostics.log("ダイレクトフラッシュ: 書き出しに失敗、やり直す")
+        Thread.sleep(forTimeInterval: 0.3)
+        if let result = processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
+                                     ambient: flash) {
+            return result
+        }
         // ダイレクトフラッシュの加工で書き出せなかったときも、写真は残す（通常のフラッシュの写真として保存する）
         Diagnostics.log("ダイレクトフラッシュ: 書き出しに失敗したので通常のフラッシュで保存")
         report("ダイレクトフラッシュの加工に失敗したので、通常のフラッシュで保存しました")
@@ -1192,6 +1201,10 @@ final class CameraManager: NSObject, ObservableObject {
                 Diagnostics.log("録画: #\(take) 書き込みが追いつかず捨てたコマ \(self.droppedRecordFrames)")
                 self.droppedRecordFrames = 0
             }
+            if self.failedRecordFrames > 0 {
+                Diagnostics.log("録画: #\(take) 描けずに捨てたコマ \(self.failedRecordFrames)")
+                self.failedRecordFrames = 0
+            }
 
             recorder.finish { outcome in
                 guard let url = outcome.url else {
@@ -1233,19 +1246,25 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// videoQueue から呼ぶ。加工済みのコマを書き込み用の入れ物に描いて、書き込みのキューへ渡す。
-    private func handleRecording(_ image: CIImage, at time: CMTime) {
-        guard let take = recordingTake.value else { return }
+    /// 描いた入れ物を返す（録画中はプレビューもこれを表示し、同じ加工を 2 回 GPU で描かない）。
+    private func handleRecording(_ image: CIImage, at time: CMTime) -> CVPixelBuffer? {
+        guard let take = recordingTake.value else { return nil }
         // 書き込みが詰まっているときは、プレビューを止めないようにコマを捨てる
         guard pendingRecordFrames.value < 8 else {
             recordingQueue.async { self.droppedRecordFrames += 1 }
-            return
+            return nil
         }
-        guard let buffer = makeRecordBuffer(image) else { return }
+        guard let buffer = makeRecordBuffer(image) else {
+            // 描けなかったコマは書き込まない（以前は真っ黒なコマが入っていた）
+            recordingQueue.async { self.failedRecordFrames += 1 }
+            return nil
+        }
         pendingRecordFrames.value += 1
         recordingQueue.async {
             self.pendingRecordFrames.value -= 1
             self.appendRecordFrame(buffer, at: time, take: take)
         }
+        return buffer
     }
 
     /// videoQueue から呼ぶ。
@@ -1269,8 +1288,7 @@ final class CameraManager: NSObject, ObservableObject {
         CVPixelBufferPoolCreatePixelBuffer(nil, recordPool, &buffer)
         guard let buffer else { return nil }
         let normalized = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-        renderer.ciContext.render(normalized, to: buffer, bounds: CGRect(origin: .zero, size: size),
-                                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        guard renderer.ciContext.renderAndWait(normalized, to: buffer, size: size) else { return nil }
         return buffer
     }
 
@@ -1311,6 +1329,7 @@ final class CameraManager: NSObject, ObservableObject {
             }
             recorderTake = take
             droppedRecordFrames = 0
+            failedRecordFrames = 0
             let seconds = CACurrentMediaTime() - started
             Diagnostics.log("録画: #\(take) 開始 \(Int(size.width))x\(Int(size.height))\(seconds > 0.3 ? String(format: "（準備に %.1f 秒）", seconds) : "")")
         }
@@ -1501,7 +1520,10 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）
         var visionBuffer: CVPixelBuffer?
         if wantsMasks || wantsPose {
-            visionBuffer = makeVisionBuffer(image)
+            // 動画・スナップでは毎コマ判定するので小さめにして、コマ落ちを減らす
+            visionBuffer = makeVisionBuffer(image, maxLongSide: isPhoto ? 960 : 640)
+            // 判定用のコマが描けなかったときは、美肌のかからないコマが混ざらないよう、このコマを捨てる
+            if visionBuffer == nil, wantsMasks { return }
         }
         if wantsPose, let visionBuffer {
             analyzeIfIdle(visionBuffer, aspect: geometry.aspect)
@@ -1516,8 +1538,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
         let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil
         let processed = processor.process(image, settings: settings, legs: legs, masks: masks)
-        renderer.display(processed)
-        handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        if let recorded = handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) {
+            // 録画中は、録画用に描いたコマをそのまま表示する（加工を 2 回描くと GPU が追いつかずコマ落ちしていた）
+            let extent = processed.extent
+            renderer.display(CIImage(cvPixelBuffer: recorded)
+                .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY)))
+        } else {
+            renderer.display(processed)
+        }
     }
 
     /// 1 コマの処理に 0.5 秒以上かかったら記録する（5 秒に 1 回まで）。videoQueue から呼ぶ。
@@ -1529,10 +1557,10 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         Diagnostics.log(String(format: "映像: 1 コマの処理に %.1f 秒かかった", seconds))
     }
 
-    /// 判定用に、長辺 960 ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。
-    private func makeVisionBuffer(_ image: CIImage) -> CVPixelBuffer? {
+    /// 判定用に、長辺 maxLongSide ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。
+    private func makeVisionBuffer(_ image: CIImage, maxLongSide: CGFloat) -> CVPixelBuffer? {
         let extent = image.extent
-        let scale = min(1, 960 / max(extent.width, extent.height))
+        let scale = min(1, maxLongSide / max(extent.width, extent.height))
         let size = CGSize(width: (extent.width * scale).rounded(), height: (extent.height * scale).rounded())
         if visionPool == nil || visionPoolSize != size {
             let attributes: [String: Any] = [
@@ -1553,8 +1581,8 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         let small = image
             .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
             .transformed(by: CGAffineTransform(scaleX: size.width / extent.width, y: size.height / extent.height))
-        renderer.ciContext.render(small, to: buffer, bounds: CGRect(origin: .zero, size: size),
-                                  colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        // 描き終わる前に判定すると、黒いコマや前のコマから肌の範囲を求めてしまう（全体がぼやけるコマの原因）
+        guard renderer.ciContext.renderAndWait(small, to: buffer, size: size) else { return nil }
         return buffer
     }
 }

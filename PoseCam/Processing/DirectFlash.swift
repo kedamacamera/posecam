@@ -25,8 +25,10 @@ enum DirectFlash {
         guard let kernel else { return photo }
         let extent = photo.extent
         let sigma = max(extent.width, extent.height) * 0.006
-        let photoLow = photo.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
-        let ambientLow = ambient.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent)
+        // ぼかした明るさは 1/8 に縮めた画像で求めてから元の大きさに戻す（結果はほぼ同じで、ずっと軽い）。
+        // 写真の大きさのままぼかすと処理が重く、続けて撮ると書き出しに失敗することがあった
+        let photoLow = Self.lowPass(photo, sigma: sigma)
+        let ambientLow = Self.lowPass(ambient, sigma: sigma)
         guard let relit = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
                                        arguments: [photo, photoLow, ambientLow, Float(exposureRatio),
                                                    Float(ambientGain)]) else { return photo }
@@ -39,6 +41,20 @@ enum DirectFlash {
             .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 1.12, kCIInputSaturationKey: 1.05,
                                                             kCIInputBrightnessKey: 0])
             .applyingFilter("CIVignette", parameters: [kCIInputIntensityKey: 0.45, kCIInputRadiusKey: 1.6])
+            .cropped(to: extent)
+    }
+
+    /// 1/8 に縮めてぼかし、元の大きさ・位置に戻す
+    static func lowPass(_ image: CIImage, sigma: CGFloat) -> CIImage {
+        let extent = image.extent
+        let factor: CGFloat = 0.125
+        let toOrigin = CGAffineTransform(translationX: -extent.minX, y: -extent.minY)
+        let small = image.transformed(by: toOrigin.concatenating(CGAffineTransform(scaleX: factor, y: factor)))
+        let blurred = small.clampedToExtent()
+            .applyingGaussianBlur(sigma: max(0.5, sigma * factor))
+        return blurred
+            .transformed(by: CGAffineTransform(scaleX: 1 / factor, y: 1 / factor)
+                .concatenating(CGAffineTransform(translationX: extent.minX, y: extent.minY)))
             .cropped(to: extent)
     }
 }

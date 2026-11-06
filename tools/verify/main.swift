@@ -238,6 +238,20 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
         }
         report.append("beard_\(name): original [\(chroma(original))] stubble [\(chroma(image))] concealed [\(chroma(concealed))]")
     }
+    // 顔の周りだけで処理した結果が、画面全体で処理した結果と同じか（差の最大値。0〜1）
+    var wholeMasks = masks
+    wholeMasks.faceRegion = nil
+    var beardOnly = ProcessingSettings(filter: .none, smoothing: 0, brightening: 0)
+    beardOnly.beard = 1
+    let whole = processor.process(image, settings: beardOnly, legs: nil, masks: wholeMasks)
+    let diff = concealed.applyingFilter("CIDifferenceBlendMode", parameters: [kCIInputBackgroundImageKey: whole])
+        .applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: CIVector(cgRect: image.extent)])
+    var maxPixel = [Float](repeating: 0, count: 4)
+    context.render(diff, toBitmap: &maxPixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                   format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    report.append(String(format: "beard_%@: face region %@, max diff vs whole image R %.4f G %.4f B %.4f", name,
+                         masks.faceRegion.map { NSCoder.string(for: $0) } ?? "nil",
+                         maxPixel[0], maxPixel[1], maxPixel[2]))
     report.append("beard_\(name): original, stubble added, beard 100, beard mask, debug (R=w, G=ref skin x10, B=bluish x10), smoothing 80 + beard + contour 80")
 }
 
@@ -550,3 +564,35 @@ do {
 let text = report.joined(separator: "\n")
 print(text)
 try? text.write(to: outDir.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)
+
+// MARK: - 録画用の入れ物への描画（描き終わるまで待つ・向きが従来の描き方と同じか）
+do {
+    let w = 64, h = 48
+    // 上半分が赤、下半分が青（Core Image は左下原点なので、y が大きい方が上）
+    let red = CIImage(color: CIColor(red: 1, green: 0, blue: 0)).cropped(to: CGRect(x: 0, y: 24, width: 64, height: 24))
+    let blue = CIImage(color: CIColor(red: 0, green: 0, blue: 1)).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 24))
+    let image = red.composited(over: blue)
+    func makeBuffer() -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA,
+                            [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]] as CFDictionary, &buffer)
+        return buffer!
+    }
+    func top(_ buffer: CVPixelBuffer) -> String {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let p = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+        let row = CVPixelBufferGetBytesPerRow(buffer)
+        let mid = p + (h / 2 + 1) * row + 4
+        return "row0 BGRA \(p[4]),\(p[5]),\(p[6]),\(p[7]) / lower BGRA \(mid[0]),\(mid[1]),\(mid[2]),\(mid[3])"
+    }
+    let a = makeBuffer(), b = makeBuffer()
+    context.render(image, to: a, bounds: CGRect(x: 0, y: 0, width: w, height: h), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    let ok = context.renderAndWait(image, to: b, size: CGSize(width: w, height: h))
+    report.append("record render: old [\(top(a))] new [\(top(b))] ok \(ok)")
+    // 描けていない入れ物（真っ黒・透明）を失敗と判定できるか
+    let empty = makeBuffer()
+    let failed = context.renderAndWait(CIImage.empty(), to: empty, size: CGSize(width: w, height: h))
+    report.append("record render of empty image (black expected, ok true): ok \(failed) [\(top(empty))]")
+}
+try? report.joined(separator: "\n").write(to: outDir.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)

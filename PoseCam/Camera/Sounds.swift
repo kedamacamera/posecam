@@ -5,7 +5,8 @@ import AVFoundation
 /// 以前は iOS のシステム音（AudioServicesPlaySystemSound の 1117・1118・1103）を鳴らしていたが、
 /// 録画用に音声の設定（playAndRecord）にしているときにシステム音を鳴らすと、その後の録画で
 /// マイクの声が入らず、端末の中の音（開始音）だけが入っていた（無音の設定で音を鳴らさないときは声が入る）。
-/// そこで、音はアプリの中で作って、アプリ自身の音声の設定のまま AVAudioPlayer で鳴らす。
+/// そこで、iOS の録画開始・停止の音のファイル（以前と同じ音）を、アプリ自身の音声の設定のまま
+/// AVAudioPlayer で鳴らす。ファイルが読めない端末では、アプリの中で作った電子音で代わりにする。
 enum Sounds {
     enum Kind: CaseIterable {
         case recordStart, recordStop, tick
@@ -13,19 +14,47 @@ enum Sounds {
 
     private static var players: [Kind: AVAudioPlayer] = [:]
 
+    /// iOS の音のファイル（AudioServicesPlaySystemSound の 1117・1118・1103 と同じ音）
+    private static func systemSoundURL(for kind: Kind) -> URL? {
+        let names: [String]
+        switch kind {
+        case .recordStart: names = ["begin_video_record.caf", "begin_record.caf"]
+        case .recordStop: names = ["end_video_record.caf", "end_record.caf"]
+        case .tick: names = ["Tink.caf"]
+        }
+        let folders = ["/System/Library/Audio/UISounds/", "/System/Library/Audio/UISounds/Modern/"]
+        for folder in folders {
+            for name in names where FileManager.default.isReadableFile(atPath: folder + name) {
+                return URL(fileURLWithPath: folder + name)
+            }
+        }
+        return nil
+    }
+
     /// メインスレッドから呼ぶ
     static func play(_ kind: Kind) {
         if players[kind] == nil {
-            players[kind] = try? AVAudioPlayer(data: wav(for: kind))
+            if let url = systemSoundURL(for: kind) {
+                players[kind] = try? AVAudioPlayer(contentsOf: url)
+            }
+            if players[kind] == nil {
+                players[kind] = try? AVAudioPlayer(data: wav(for: kind))
+            }
             players[kind]?.prepareToPlay()
         }
         guard let player = players[kind] else { return }
-        // 端末の音量で大きさが変わりすぎないよう、音量が低いときは音そのものを大きくする
-        // （音量 40% 以上ならほぼ同じ大きさに聞こえる。それより下げると、さすがに小さくなる）
-        let output = AVAudioSession.sharedInstance().outputVolume
-        player.volume = min(1, 0.4 / max(output, 0.05))
+        player.volume = Float(compensation(for: AVAudioSession.sharedInstance().outputVolume))
         player.currentTime = 0
         player.play()
+    }
+
+    /// 端末の音量で大きさが変わりすぎないよう、音量を上げているときほど音そのものを小さくする。
+    /// 端末の音量（0〜1）は、目盛り 1 つごとに一定の割合（デシベル）で大きくなるので、
+    /// 音量 50% のときと同じ大きさになるよう、デシベルで打ち消す（以前は比で割っていて、大きい音量では打ち消しが足りなかった）。
+    /// 50% より下げたときは、そのまま小さくなる
+    static func compensation(for output: Float) -> Double {
+        // 音量 50%→100% で約 20dB 大きくなるとみなす
+        min(1, pow(10, Double(0.5 - output) * 2.0))
     }
 
     /// 短い電子音（44.1kHz・モノラル・16 ビットの WAV）。開始は上がる 2 音、停止は下がる 2 音、タイマーは 1 音

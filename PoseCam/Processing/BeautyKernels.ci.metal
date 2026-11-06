@@ -141,7 +141,10 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float amount = smoothstep(0.0, 0.012, bluish + 0.5 * max(darker, 0.0));
     // 伸びたひげ・鼻の穴・濃い影は、目標の肌の半分以下の明るさなので変えない。
     // 頬・額より口元が少し暗いのは自然な陰影なので、比で判定する（差で判定すると口元全体が外れていた）
-    float darkGuard = smoothstep(0.35, 0.5, nearY / max(averageY, 0.001));
+    // 比はリニアの値なので、0.35 は画面の値では 6 割ほどの明るさにあたる。以前はこれより暗い所を外していたため、
+    // 影になる口ひげ・下唇の真下・あご下の剃り跡が消えなかった。今は画面の値で 4 割ほど（リニアで 0.15）まで効かせる
+    float ratioY = nearY / max(averageY, 0.001);
+    float darkGuard = smoothstep(0.08, 0.15, ratioY);
     float w = amount * darkGuard * strength;
     if (debug > 0.5) {
         return float4(w, weightSum * 10.0, clamp(bluish * 10.0, 0.0, 1.0), 1.0);
@@ -154,7 +157,9 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float newCb = cb + (averageCb - nearCb) * w;
     float newCr = cr + (averageCr - nearCr) * w;
     // 明るさは暗い分の 4 割だけ戻す（戻しすぎると、あごの周りだけ明るく浮いて見える）
-    float newY = y + max(0.0, darker) * 0.4 * w;
+    // 影の所（あご下・口元）は明るさを戻すと平たく浮いて見えるので、色みだけを直す
+    float lift = 0.4 * smoothstep(0.35, 0.55, ratioY);
+    float newY = y + max(0.0, darker) * lift * w;
     float r = newY + newCr;
     float b = newY + newCb;
     float g = (newY - 0.299 * r - 0.114 * b) / 0.587;

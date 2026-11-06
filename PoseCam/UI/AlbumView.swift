@@ -14,8 +14,6 @@ struct AlbumView: View {
     @State private var editing: EditorInput?
     @State private var pickerItem: PhotosPickerItem?
 
-    private let columns = [GridItem(.adaptive(minimum: 96), spacing: 2)]
-
     var body: some View {
         NavigationStack {
             Group {
@@ -31,17 +29,10 @@ struct AlbumView: View {
                 } else if (assets?.count ?? 0) == 0 {
                     Text(status == .notDetermined ? "読み込み中…" : "写真がありません")
                         .foregroundStyle(.secondary)
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(0..<(assets?.count ?? 0), id: \.self) { index in
-                                if let asset = assets?.object(at: index) {
-                                    AssetThumbnail(asset: asset)
-                                        .onTapGesture { viewing = AlbumPage(index: index) }
-                                }
-                            }
-                        }
-                    }
+                } else if let assets {
+                    // 何十万枚あっても軽いよう、UIKit の一覧で表示する
+                    AssetGridView(assets: assets) { index in viewing = AlbumPage(index: index) }
+                        .ignoresSafeArea(edges: .bottom)
                 }
             }
             .navigationTitle("アルバム")
@@ -103,44 +94,6 @@ struct AlbumPage: Identifiable {
 struct EditorInput: Identifiable {
     let id = UUID()
     let data: Data
-}
-
-/// 一覧の 1 マス。動画には再生のマークを付ける。
-struct AssetThumbnail: View {
-    let asset: PHAsset
-    @State private var image: UIImage?
-
-    var body: some View {
-        Color.gray.opacity(0.2)
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                if let image {
-                    Image(uiImage: image).resizable().scaledToFill()
-                }
-            }
-            .clipped()
-            // 画像はマスより大きく描いて切り抜いているので、タップの範囲もマスに合わせる
-            // （合わせないと、マスの下の方をタップすると下の写真が選ばれていた）
-            .contentShape(Rectangle())
-            .overlay(alignment: .bottomLeading) {
-                if asset.mediaType == .video {
-                    Image(systemName: "play.fill")
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                        .padding(5)
-                        .shadow(radius: 2)
-                }
-            }
-            .task(id: asset.localIdentifier) {
-                let options = PHImageRequestOptions()
-                options.deliveryMode = .opportunistic
-                options.isNetworkAccessAllowed = true
-                PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: 300, height: 300),
-                                                      contentMode: .aspectFill, options: options) { result, _ in
-                    if let result { image = result }
-                }
-            }
-    }
 }
 
 /// 写真・動画を 1 枚ずつ左右にめくって見る。写真は「編集」で編集画面へ。

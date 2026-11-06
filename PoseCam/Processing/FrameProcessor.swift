@@ -67,7 +67,13 @@ final class FrameProcessor {
             // 剃り跡の所は肌のモデルの確からしさが下がるので、2 倍して 1 で止める（顔の輪郭の内側だけなので背景には出ない）
             let beardMask = beard.applyingFilter("CIMultiplyCompositing", parameters: [
                 kCIInputBackgroundImageKey: Self.boosted(skinRegion)])
-            let concealed = concealBeard(result, beardMask: beardMask, skinMask: mask, upperFace: masks.upperFace,
+            // 重い処理（ぼかし・クロージング）は顔の周りだけで行う。画面全体で行うと、動画で 1 コマの処理が
+            // 間に合わずコマ落ちしていた。ひげのマスクは顔の周りの外では 0 なので、結果は変わらない
+            let region = masks.faceRegion.map { $0.intersection(extent) } ?? extent
+            let faceArea = region.isEmpty ? extent : region
+            let concealed = concealBeard(result.cropped(to: faceArea), beardMask: beardMask.cropped(to: faceArea),
+                                         skinMask: mask.cropped(to: faceArea),
+                                         upperFace: masks.upperFace?.cropped(to: faceArea),
                                          strength: settings.beard, longSide: longSide)
             // 色を周りの肌に寄せても、剃り跡の 1 本 1 本の黒い点は細かい質感として残り、一部しか消えないように見えていた。
             // ひげの所だけ、周りより暗い細かい点を周りの明るさで埋め、さらに軽くならす（ほくろ・鼻の穴のような濃い所は残す）
@@ -79,8 +85,10 @@ final class FrameProcessor {
                 .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: r])
                 .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: r])
                 .applyingGaussianBlur(sigma: r * 0.5)
-                .cropped(to: extent)
+                .cropped(to: faceArea)
             let filled = blend(closed, over: concealed, mask: beardMask, amount: settings.beard)
+                .cropped(to: faceArea)
+                .composited(over: result)
             result = blend(filled, over: result, mask: beardMask, amount: 1)
         }
         if settings.smoothing > 0.01 {

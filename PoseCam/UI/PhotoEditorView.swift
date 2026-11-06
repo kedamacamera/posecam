@@ -37,6 +37,11 @@ struct PhotoEditorView: View {
     @State private var isSaving = false
     @State private var message: String?
     @State private var renderTask: Task<Void, Never>?
+    /// 写真の拡大（2 本指でつまむ）と、拡大中の移動（1 本指でなぞる）。ダブルタップで元に戻す
+    @State private var zoom: CGFloat = 1
+    @State private var zoomAtStart: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panAtStart: CGSize = .zero
 
     private static let context = CIContext()
     private static let processor = FrameProcessor()
@@ -50,12 +55,36 @@ struct PhotoEditorView: View {
                         Image(uiImage: preview)
                             .resizable()
                             .scaledToFit()
-                            .overlay(tool == .skin ? nil : GridOverlay(style: .thirds))
+                            .overlay(tool == .skin || zoom > 1.01 ? nil : GridOverlay(style: .thirds))
+                            .scaleEffect(zoom)
+                            .offset(pan)
                     } else {
                         ProgressView()
                     }
                 }
                 .frame(maxHeight: .infinity)
+                .clipped()
+                .contentShape(Rectangle())
+                .gesture(
+                    MagnifyGesture()
+                        .onChanged { value in zoom = min(6, max(1, zoomAtStart * value.magnification)) }
+                        .onEnded { _ in
+                            zoomAtStart = zoom
+                            if zoom <= 1.01 { resetZoom() }
+                        }
+                        .simultaneously(with: DragGesture(minimumDistance: 4)
+                            .onChanged { value in
+                                guard zoom > 1.01 else { return }
+                                pan = CGSize(width: panAtStart.width + value.translation.width,
+                                             height: panAtStart.height + value.translation.height)
+                            }
+                            .onEnded { _ in panAtStart = pan })
+                )
+                .onTapGesture(count: 2) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if zoom > 1.01 { resetZoom() } else { zoom = 2.5; zoomAtStart = 2.5 }
+                    }
+                }
 
                 Picker("道具", selection: $tool) {
                     ForEach(Tool.allCases) { Text($0.rawValue).tag($0) }
@@ -132,6 +161,13 @@ struct PhotoEditorView: View {
         }
     }
 
+    private func resetZoom() {
+        zoom = 1
+        zoomAtStart = 1
+        pan = .zero
+        panAtStart = .zero
+    }
+
     private var geometry: Perspective {
         Perspective(vertical: vertical, horizontal: horizontal, rotationDegrees: rotation,
                     stretchX: stretchX, stretchY: stretchY)
@@ -148,8 +184,8 @@ struct PhotoEditorView: View {
         properties[kCGImagePropertyOrientation as String] = 1
         let normalized = image.transformed(by: CGAffineTransform(translationX: -image.extent.minX, y: -image.extent.minY))
         source = normalized
-        // 画面用は長辺 1200 ピクセルに縮めて計算する
-        let scale = min(1, 1200 / max(normalized.extent.width, normalized.extent.height))
+        // 画面用は長辺 1800 ピクセルに縮めて計算する（拡大して肌の仕上がりを見られるよう、少し大きめ）
+        let scale = min(1, 1800 / max(normalized.extent.width, normalized.extent.height))
         let reduced = normalized.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         small = reduced
         schedulePreview()
@@ -305,7 +341,11 @@ struct Perspective {
     /// 写真の周りに、左右・上下に折り返した写真をつないだ画像（範囲は各辺 padding 倍ずつ広い）。
     static func mirrorPadded(_ image: CIImage, padding: CGFloat) -> CIImage {
         let w = image.extent.width, h = image.extent.height
-        var result = image
+        // 各タイルは、端の色を外へ延ばした画像から自分の範囲だけを切り抜いて並べる。
+        // 以前は写真をそのまま並べていたため、境目の 1 画素が「写真の端」と「外の透明」の中間になり、
+        // 変形して拡大すると、つなぎ目に線が出ていた
+        let source = image.clampedToExtent()
+        var result = source.cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
         for ix in -1...1 {
             for iy in -1...1 where !(ix == 0 && iy == 0) {
                 // x' = 2w - x（右）, -x（左）。y も同じ
@@ -313,7 +353,9 @@ struct Perspective {
                 let sy: CGFloat = iy == 0 ? 1 : -1
                 let tx: CGFloat = ix == 1 ? 2 * w : 0
                 let ty: CGFloat = iy == 1 ? 2 * h : 0
-                let tile = image.transformed(by: CGAffineTransform(a: sx, b: 0, c: 0, d: sy, tx: tx, ty: ty))
+                let rect = CGRect(x: CGFloat(ix) * w, y: CGFloat(iy) * h, width: w, height: h)
+                let tile = source.transformed(by: CGAffineTransform(a: sx, b: 0, c: 0, d: sy, tx: tx, ty: ty))
+                    .cropped(to: rect)
                 result = tile.composited(over: result)
             }
         }

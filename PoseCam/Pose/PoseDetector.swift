@@ -18,6 +18,8 @@ struct BeautyMasks {
     var jawShade: CIImage?
     /// 鼻より上の顔（頬・額）を白にしたマスク。ひげの生えない肌の色を知るのに使う
     var upperFace: CIImage?
+    /// 顔のある範囲（顔の枠を広げたもの・画像の座標）。重い処理をこの中だけで行う。顔がなければ nil
+    var faceRegion: CGRect?
 
     /// 大きさの確認に使う
     var extent: CGRect? { (skin ?? person)?.extent }
@@ -26,7 +28,7 @@ struct BeautyMasks {
         BeautyMasks(skin: skin.map(transform), person: person.map(transform),
                     features: features.map(transform), redFeatures: redFeatures.map(transform),
                     beard: beard.map(transform), jawShade: jawShade.map(transform),
-                    upperFace: upperFace.map(transform))
+                    upperFace: upperFace.map(transform), faceRegion: nil)
     }
 }
 
@@ -286,7 +288,8 @@ final class PoseDetector {
                 redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true),
                 beard: Self.beardMask(faces, imageSize: imageSize),
                 jawShade: Self.jawShadeMask(faces, imageSize: imageSize),
-                upperFace: Self.upperFaceMask(faces, imageSize: imageSize))
+                upperFace: Self.upperFaceMask(faces, imageSize: imageSize),
+                faceRegion: Self.faceRegion(faces, imageSize: imageSize))
         }
         return result
     }
@@ -416,6 +419,20 @@ final class PoseDetector {
         }
     }
 
+    /// 顔の枠を上下左右に顔の幅の半分ずつ広げた範囲（左下原点の画像の座標）。
+    /// ひげのマスクはあごの縁の外まで広げてぼかしているので、それより十分広くとる
+    private static func faceRegion(_ faces: [VNFaceObservation], imageSize: CGSize) -> CGRect? {
+        let boxes = faces.map { face -> CGRect in
+            let box = face.boundingBox
+            let rect = CGRect(x: box.minX * imageSize.width, y: box.minY * imageSize.height,
+                              width: box.width * imageSize.width, height: box.height * imageSize.height)
+            return rect.insetBy(dx: -rect.width * 0.5, dy: -rect.width * 0.5)
+        }
+        guard let first = boxes.first else { return nil }
+        return boxes.dropFirst().reduce(first) { $0.union($1) }
+            .intersection(CGRect(origin: .zero, size: imageSize)).integral
+    }
+
     /// ひげの生える範囲。顔の輪郭（あごのライン）の内側のうち鼻より下を塗り、唇を外す。
     private static func beardMask(_ faces: [VNFaceObservation], imageSize: CGSize) -> CIImage? {
         drawMask(imageSize: imageSize, blurOfFace: 0.035, faces: faces) { context, size in
@@ -428,7 +445,8 @@ final class PoseDetector {
                 guard points.count > 2, let noseBottom = nose.pointsInImage(imageSize: size).map(\.y).min()
                 else { continue }
                 context.saveGState()
-                context.clip(to: CGRect(x: 0, y: 0, width: size.width, height: noseBottom - faceWidth * 0.02))
+                // 口ひげは鼻のすぐ下から生えるので、鼻の下端のすぐ下まで含める
+                context.clip(to: CGRect(x: 0, y: 0, width: size.width, height: noseBottom - faceWidth * 0.005))
                 context.setFillColor(gray: 1, alpha: 1)
                 context.beginPath()
                 context.addLines(between: points)
@@ -437,7 +455,8 @@ final class PoseDetector {
                 // 顔の輪郭の点は実際のあごの縁より少し内側にあり、あごの縁・あごの下の剃り跡が範囲から外れて
                 // 一部しか消えなかった。輪郭の線を太くなぞって、縁の外側まで広げる
                 context.setStrokeColor(gray: 1, alpha: 1)
-                context.setLineWidth(faceWidth * 0.14)
+                // あご下の剃り跡まで届くよう、縁の外側へ顔の幅の 1 割ほど広げる
+                context.setLineWidth(faceWidth * 0.2)
                 context.setLineJoin(.round)
                 context.setLineCap(.round)
                 context.beginPath()
@@ -447,7 +466,8 @@ final class PoseDetector {
                 if let lips = marks.outerLips?.pointsInImage(imageSize: size), lips.count > 2 {
                     context.setFillColor(gray: 0, alpha: 1)
                     context.setStrokeColor(gray: 0, alpha: 1)
-                    context.setLineWidth(faceWidth * 0.04)
+                    // 唇の外側を広く外すと、下唇の真下・口ひげの際の剃り跡が残っていた。唇の縁だけ外す
+                    context.setLineWidth(faceWidth * 0.012)
                     context.setLineJoin(.round)
                     context.beginPath()
                     context.addLines(between: lips)

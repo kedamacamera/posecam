@@ -410,6 +410,8 @@ struct PoseStrip: View {
     @State private var activeCategory: String?
     /// 見出しをタップして一覧を動かしている間は、スクロールに合わせて見出しを動かさない
     @State private var isJumping = false
+    /// ポーズの一覧を直接動かすためのもの（見出しのタップ用）
+    @State private var rowProxy: ScrollViewProxy?
 
     private struct Item: Identifiable {
         let id: String
@@ -475,6 +477,7 @@ struct PoseStrip: View {
     }
 
     private var poseRow: some View {
+        ScrollViewReader { proxy in
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: 10) {
                 Button { selection = nil } label: {
@@ -510,14 +513,30 @@ struct PoseStrip: View {
                   category != activeCategory else { return }
             activeCategory = category
         }
+        .onAppear { rowProxy = proxy }
+        }
     }
 
+    /// 見出しをタップしたとき、そのカテゴリの先頭のポーズを中央へ動かす。
+    /// スワイプの惰性で一覧が動いている間にタップすると、以前は惰性の動きが勝って、
+    /// タップしたカテゴリへ移らなかった。いったんアニメーションなしで動かして惰性を止めてから、動かし直す。
     private func jump(to category: String) {
         guard let first = items.first(where: { $0.category == category }) else { return }
         isJumping = true
         activeCategory = category
-        withAnimation(.easeOut(duration: 0.3)) { visibleItem = first.id }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { isJumping = false }
+        rowProxy?.scrollTo(first.id, anchor: .center)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.25)) { visibleItem = first.id }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // まだ別のカテゴリにいたら（惰性が残っていたら）もう一度合わせる
+            if activeCategory == category,
+               items.first(where: { $0.id == visibleItem })?.category != category {
+                rowProxy?.scrollTo(first.id, anchor: .center)
+                visibleItem = first.id
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isJumping = false }
+        }
     }
 
     /// パネルを開き直したとき、使っているポーズを中央に表示する（使っていなければ先頭のまま）
