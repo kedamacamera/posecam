@@ -78,8 +78,9 @@ enum Joint: String, CaseIterable, Codable {
     }
 
     /// 描画に使う骨（関節の組）。
+    /// 首と鼻はつながない。鼻は顔を横に向けるだけで首の真上から大きく外れ、首から鼻への線が
+    /// 実際の頭の傾きと関係なく傾いて見えていた。頭の向き・傾きは顔（FaceShape の yaw・roll）で表す
     static let bones: [(Joint, Joint)] = [
-        (.neck, .nose),
         (.leftShoulder, .rightShoulder),
         (.leftShoulder, .leftElbow), (.leftElbow, .leftWrist),
         (.rightShoulder, .rightElbow), (.rightElbow, .rightWrist),

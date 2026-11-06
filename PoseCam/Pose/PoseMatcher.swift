@@ -11,7 +11,8 @@ enum PoseMatcher {
         (.leftHip, .leftKnee), (.leftKnee, .leftAnkle),
         (.rightHip, .rightKnee), (.rightKnee, .rightAnkle),
         (.leftShoulder, .leftHip), (.rightShoulder, .rightHip),
-        (.neck, .nose),
+        // 首→鼻の向きは比べない（顔を横に向けると、頭を傾けていなくても大きく変わる）。
+        // 頭の向き・傾きは顔の一致度（yaw・roll）で比べる
         (.leftShoulder, .rightShoulder),
     ]
 

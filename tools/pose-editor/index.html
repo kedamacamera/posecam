@@ -125,7 +125,8 @@ const JOINTS = {
   leftWrist: "左手首", rightWrist: "右手首", leftHip: "左腰", rightHip: "右腰", leftKnee: "左ひざ", rightKnee: "右ひざ",
   leftAnkle: "左足首", rightAnkle: "右足首",
 };
-const BONES = [["neck", "nose"], ["leftShoulder", "rightShoulder"], ["leftShoulder", "leftElbow"],
+// 首と鼻はつながない（アプリの Joint.bones と同じ。頭の向き・傾きは顔で表す）
+const BONES = [["leftShoulder", "rightShoulder"], ["leftShoulder", "leftElbow"],
   ["leftElbow", "leftWrist"], ["rightShoulder", "rightElbow"], ["rightElbow", "rightWrist"],
   ["leftShoulder", "leftHip"], ["rightShoulder", "rightHip"], ["leftHip", "rightHip"], ["leftHip", "leftKnee"],
   ["leftKnee", "leftAnkle"], ["rightHip", "rightKnee"], ["rightKnee", "rightAnkle"]];
