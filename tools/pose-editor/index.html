@@ -25,7 +25,12 @@
   select, input[type=search] { width: 100%; background: #16171a; color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 7px; font: inherit; }
   #stage { position: relative; overflow: hidden; background: #111; }
-  #main { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  /* ペン・指で描いても、ブラウザのスクロールや拡大、文字の選択にならないようにする */
+  #main { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #stage { user-select: none; -webkit-user-select: none; }
+  #stage-tools { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+  #stage-tools button { min-width: 44px; min-height: 40px; font-size: 16px; background: #000a; }
+  #stage-tools .gap { width: 8px; }
   #hint { position: absolute; left: 10px; bottom: 8px; right: 10px; color: var(--muted); font-size: 12px;
     pointer-events: none; text-shadow: 0 1px 2px #000; }
   #title { position: absolute; left: 10px; top: 8px; font-size: 15px; font-weight: 700; text-shadow: 0 1px 3px #000;
@@ -64,6 +69,16 @@
   <canvas id="main"></canvas>
   <div id="title"></div>
   <div id="hint"></div>
+  <div id="stage-tools">
+    <button id="prev" title="前の写真（↑）">▲</button>
+    <button id="next" title="次の写真（↓）">▼</button>
+    <span class="gap"></span>
+    <button id="stage-undo" title="1 つ戻す（Ctrl+Z）">↶</button>
+    <span class="gap"></span>
+    <button id="zoom-out" title="縮小">－</button>
+    <button id="zoom-in" title="拡大">＋</button>
+    <button id="zoom-fit" title="全体を表示（F）">全体</button>
+  </div>
 </section>
 
 <aside id="side">
@@ -113,6 +128,10 @@
   <div class="status">
     <kbd>↑</kbd><kbd>↓</kbd> 前後の写真 ／ ホイール 拡大縮小 ／ 右ドラッグ・Space+ドラッグ 移動 ／
     <kbd>Delete</kbd> 選んだ関節を消す
+  </div>
+  <div class="status">
+    液タブ: ペン先でドラッグ ／ サイドボタンを押しながら・何もない所をドラッグで移動 ／ 消しゴム側で関節に触れると消す ／
+    指 2 本でつまんで拡大縮小 ／ 写真の右上のボタンで拡大縮小・前後の写真・戻す
   </div>
 </aside>
 <div id="toast"></div>
@@ -349,10 +368,14 @@ function cropCorners() {
   return [pxToCanvas(cx, cy), pxToCanvas(cx + cw, cy), pxToCanvas(cx, cy + ch), pxToCanvas(cx + cw, cy + ch)];
 }
 
-// MARK: - マウス
+// MARK: - マウス・ペン・指
+
+// 当たり判定の広さ。ペン（液タブ）と指はマウスより先がぶれるので広めにする
+let slop = 0;
+function slopFor(e) { return e.pointerType === "touch" ? 14 : e.pointerType === "pen" ? 6 : 0; }
 
 function hit(x, y) {
-  const near = (p, r) => Math.hypot(p[0] - x, p[1] - y) <= r;
+  const near = (p, r) => Math.hypot(p[0] - x, p[1] - y) <= r + slop;
   if (mode === "crop") {
     const corners = cropCorners();
     for (let i = 0; i < 4; i++) if (near(corners[i], 12)) return { kind: "corner", index: i };
@@ -363,7 +386,7 @@ function hit(x, y) {
   const f = face();
   if (f && near(ringPoint(f), 11)) return { kind: "ring" };
   if (f && near(toCanvas(f.center), 13)) return { kind: "faceCenter" };
-  let best = null, bestD = 13;
+  let best = null, bestD = 13 + slop;
   for (const [name, p] of Object.entries(joints())) {
     const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
     if (d <= bestD) { best = name; bestD = d; }
@@ -373,11 +396,54 @@ function hit(x, y) {
 
 function local(e) { const r = main.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
+function zoomAt(x, y, k) {
+  view.ox = x - (x - view.ox) * k; view.oy = y - (y - view.oy) * k; view.s *= k;
+  draw();
+}
+
+// 動かし終わり。動かしていなければ戻す履歴は残さない
+function endDrag() {
+  if (!drag) return;
+  if (drag.kind !== "pan" && drag.kind !== "pinch") {
+    const last = undoStack[undoStack.length - 1];
+    if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
+  }
+  drag = null; updateTools();
+}
+
+// マウス・ペン（液タブ）・指をまとめて pointer イベントで扱う。
+// ペン: 先で操作、サイドボタンを押しながらで移動、消しゴム側で関節を消す。指: 2 本でつまんで拡大縮小・移動
+const touches = new Map();
 main.addEventListener("contextmenu", (e) => e.preventDefault());
-main.addEventListener("mousedown", (e) => {
+main.addEventListener("pointerdown", (e) => {
   if (!current) return;
+  main.setPointerCapture(e.pointerId);
+  slop = slopFor(e);
   const [x, y] = local(e);
-  if (e.button !== 0 || spaceDown) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
+  if (e.pointerType === "touch") {
+    touches.set(e.pointerId, [x, y]);
+    if (touches.size === 2) {
+      // 2 本目の指: それまでの操作をやめて、つまむ操作にする
+      endDrag();
+      const [a, b] = [...touches.values()];
+      drag = { kind: "pinch", d: Math.max(Math.hypot(a[0] - b[0], a[1] - b[1]), 1),
+        mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2, view: { ...view } };
+      return;
+    }
+    if (touches.size > 2) return;
+  }
+  // 消しゴム側（buttons の 32）で関節に触れたら消す
+  if (e.pointerType === "pen" && (e.buttons & 32)) {
+    const h = hit(x, y);
+    if (h && h.kind === "joint") {
+      pushUndo(); delete editableJoints()[h.name];
+      if (selected === h.name) selected = null;
+      changed(); updateTools();
+    }
+    return;
+  }
+  // 右ボタン・ペンのサイドボタン・Space を押しながらは移動
+  if (e.button !== 0 || (e.buttons & 2) || spaceDown) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
   const h = hit(x, y);
   if (!h) { selected = null; drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; draw(); updateTools(); return; }
   pushUndo();
@@ -392,10 +458,13 @@ main.addEventListener("mousedown", (e) => {
   }
   updateTools(); draw();
 });
-window.addEventListener("mousemove", (e) => {
+main.addEventListener("pointermove", (e) => {
   if (!current) return;
   const [x, y] = local(e);
+  if (e.pointerType === "touch" && touches.has(e.pointerId)) touches.set(e.pointerId, [x, y]);
   if (!drag) {
+    // ペンは画面から浮かせたままでも、近くの関節が光る
+    slop = slopFor(e);
     const h = hit(x, y);
     const name = h && h.kind === "joint" ? h.name : null;
     main.style.cursor = h ? (h.kind === "crop" ? "move" : "grab") : (spaceDown ? "grab" : "crosshair");
@@ -403,6 +472,17 @@ window.addEventListener("mousemove", (e) => {
     return;
   }
   const [w, h] = size();
+  if (drag.kind === "pinch") {
+    if (touches.size < 2) return;
+    const [a, b] = [...touches.values()];
+    const d = Math.max(Math.hypot(a[0] - b[0], a[1] - b[1]), 1), mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    const k = d / drag.d, v = drag.view;
+    view.s = v.s * k;
+    view.ox = mx - (drag.mx - v.ox) * k; view.oy = my - (drag.my - v.oy) * k;
+    draw();
+    return;
+  }
+  if (e.pointerType === "touch" && touches.size > 1) return;
   if (drag.kind === "pan") {
     view.ox = drag.ox + x - drag.x; view.oy = drag.oy + y - drag.y;
   } else if (drag.kind === "joint") {
@@ -431,25 +511,39 @@ window.addEventListener("mousemove", (e) => {
   }
   if (drag.kind !== "pan") changed(); else draw();
 });
-window.addEventListener("mouseup", () => {
-  // 写真の上で動かしていたときだけ処理する。ボタンを押したときにここで右側のボタンを作り直すと、
-  // クリックが届く前にボタンが消え、「＋左肩」「顔を消す」などを押しても何も起きなかった
-  if (!drag) return;
-  if (drag.kind !== "pan") {
-    // 動かしていなければ戻す履歴は残さない
-    const last = undoStack[undoStack.length - 1];
-    if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
+// 写真の上の操作だけをここで終える（pointer capture でこのキャンバスに届く）。
+// 右側のボタンを押したときに右側を作り直すと、クリックが届く前にボタンが消えるので、window では受けない
+function pointerEnd(e) {
+  if (e.pointerType === "touch") {
+    touches.delete(e.pointerId);
+    if (drag && drag.kind === "pinch") {
+      if (touches.size === 1) {
+        // 1 本残ったら、その指で続けて移動
+        const [p] = [...touches.values()];
+        drag = { kind: "pan", x: p[0], y: p[1], ox: view.ox, oy: view.oy };
+      } else if (!touches.size) drag = null;
+      return;
+    }
+    if (touches.size) return;
   }
-  drag = null; updateTools();
-});
+  endDrag();
+}
+main.addEventListener("pointerup", pointerEnd);
+main.addEventListener("pointercancel", pointerEnd);
 main.addEventListener("wheel", (e) => {
   if (!current) return;
   e.preventDefault();
   const [x, y] = local(e);
-  const k = Math.exp(-e.deltaY * 0.0015);
-  view.ox = x - (x - view.ox) * k; view.oy = y - (y - view.oy) * k; view.s *= k;
-  draw();
+  zoomAt(x, y, Math.exp(-e.deltaY * 0.0015));
 }, { passive: false });
+// キーボードやホイールがなくても使えるように、写真の右上に拡大・縮小などのボタンを置く
+function zoomCenter(k) { zoomAt(main.clientWidth / 2, main.clientHeight / 2, k); }
+$("zoom-in").onclick = () => zoomCenter(1.25);
+$("zoom-out").onclick = () => zoomCenter(0.8);
+$("zoom-fit").onclick = fitView;
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
+$("stage-undo").onclick = undo;
 
 // MARK: - 一覧
 
