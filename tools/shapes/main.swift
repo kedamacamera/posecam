@@ -4,7 +4,10 @@
 //
 // 使い方: shapes <見本写真のフォルダ>
 // 出力（out/ 以下）:
-//   builtin_shapes.json … 画像名 → PoseShape
+//   builtin_shapes.json … 画像名 → PoseShape（自動で取り出したまま。手直しは入らない）
+//   builtin_analysis.json … 画像名 → 写真の上の座標（左上原点・0...1）の関節・顔・輪郭と、自動で決めた枠。
+//                           Windows のボーン入れツール（tools/pose-editor）が読み込み、手直しを足して
+//                           アプリに入れる builtin_shapes.json を作り直す
 //   preview_<n>.png     … 見本写真に、取り出した輪郭（白）と骨格（水色）、枠（黄）を重ねた一覧
 
 import CoreGraphics
@@ -35,6 +38,20 @@ print("table edges file: \(tableEdges.count) images")
 
 var shapes: [String: PoseShape] = [:]
 var failed: [String] = []
+
+/// ボーン入れツールに渡す、写真の上の座標の解析結果
+struct AnalysisRecord: Encodable {
+    let size: [Double]
+    let category: String
+    let isObject: Bool
+    let joints: [String: CGPoint]
+    let outlines: [[CGPoint]]
+    let face: FaceShape?
+    let lines: [[CGPoint]]
+    /// 自動で決めた枠（ピクセル。x, y, 幅, 高さ）
+    let crop: [Double]
+}
+var records: [String: AnalysisRecord] = [:]
 var previews: [(name: String, image: CGImage, analysis: PhotoAnalysis, crop: CGRect)] = []
 
 for url in files {
@@ -53,6 +70,12 @@ for url in files {
         ? PoseImporter.fullFrameCrop(size: analysis.size, aspect: 3.0 / 4.0)
         : PoseImporter.defaultCrop(for: analysis, aspect: 3.0 / 4.0)
     shapes[name] = PoseImporter.shape(for: analysis, crop: crop)
+    records[name] = AnalysisRecord(
+        size: [Double(analysis.size.width), Double(analysis.size.height)],
+        category: categories[name] ?? "", isObject: isObject,
+        joints: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, $0.value) }),
+        outlines: analysis.outlines, face: analysis.face, lines: analysis.lines,
+        crop: [crop.minX, crop.minY, crop.width, crop.height].map { Double($0) })
 
     let scale = 200 / image.extent.width
     let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -64,6 +87,7 @@ for url in files {
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
 try encoder.encode(shapes).write(to: outDir.appendingPathComponent("builtin_shapes.json"))
+try encoder.encode(records).write(to: outDir.appendingPathComponent("builtin_analysis.json"))
 print("shapes: \(shapes.count), failed: \(failed.count) \(failed)")
 print("table edges: " + shapes.filter { $0.value.lines != nil }.map { "\($0.key)=\($0.value.lines!.count)" }.sorted().joined(separator: " "))
 

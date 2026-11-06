@@ -14,40 +14,55 @@ struct AlbumView: View {
     @State private var viewing: AlbumPage?
     @State private var editing: EditorInput?
     @State private var pickerItem: PhotosPickerItem?
+    @State private var gridLink = AssetGridLink()
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if status == .denied || status == .restricted {
-                    VStack(spacing: 12) {
-                        Text("写真を表示するには、設定で写真へのアクセスを許可してください。")
-                            .multilineTextAlignment(.center)
-                        Button("設定を開く") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        ZStack {
+            NavigationStack {
+                Group {
+                    if status == .denied || status == .restricted {
+                        VStack(spacing: 12) {
+                            Text("写真を表示するには、設定で写真へのアクセスを許可してください。")
+                                .multilineTextAlignment(.center)
+                            Button("設定を開く") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            }
+                        }
+                        .padding()
+                    } else if (assets?.count ?? 0) == 0 {
+                        Text(status == .notDetermined ? "読み込み中…" : "写真がありません")
+                            .foregroundStyle(.secondary)
+                    } else if let assets {
+                        // 何十万枚あっても軽いよう、UIKit の一覧で表示する
+                        AssetGridView(assets: assets, link: gridLink) { index in
+                            withAnimation(.easeOut(duration: 0.2)) { viewing = AlbumPage(index: index) }
+                        }
+                        .ignoresSafeArea(edges: .bottom)
+                    }
+                }
+                .navigationTitle("アルバム")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("閉じる") { dismiss() }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        // このアプリで撮っていない写真も編集できる
+                        PhotosPicker(selection: $pickerItem, matching: .images) {
+                            Label("ほかの写真を編集", systemImage: "photo.badge.plus")
                         }
                     }
-                    .padding()
-                } else if (assets?.count ?? 0) == 0 {
-                    Text(status == .notDetermined ? "読み込み中…" : "写真がありません")
-                        .foregroundStyle(.secondary)
-                } else if let assets {
-                    // 何十万枚あっても軽いよう、UIKit の一覧で表示する
-                    AssetGridView(assets: assets) { index in viewing = AlbumPage(index: index) }
-                        .ignoresSafeArea(edges: .bottom)
                 }
             }
-            .navigationTitle("アルバム")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("閉じる") { dismiss() }
+            // 写真の画面は一覧の上に重ねる（下へなぞったとき、下の一覧が透けて見えるように）
+            if let page = viewing, let assets {
+                AssetViewer(assets: assets, start: page.index, link: gridLink) { data in
+                    viewing = nil
+                    editing = EditorInput(data: data)
+                } onClose: {
+                    viewing = nil
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    // このアプリで撮っていない写真も編集できる
-                    PhotosPicker(selection: $pickerItem, matching: .images) {
-                        Label("ほかの写真を編集", systemImage: "photo.badge.plus")
-                    }
-                }
+                .transition(.opacity)
             }
         }
         .preferredColorScheme(appearance.scheme)
@@ -57,16 +72,6 @@ struct AlbumView: View {
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) { editing = EditorInput(data: data) }
                 pickerItem = nil
-            }
-        }
-        .fullScreenCover(item: $viewing) { page in
-            AssetPager(assets: assets, start: page.index) { data in
-                viewing = nil
-                // 写真の画面が閉じきってから編集の画面を開く
-                Task {
-                    try? await Task.sleep(for: .milliseconds(450))
-                    editing = EditorInput(data: data)
-                }
             }
         }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
@@ -97,68 +102,108 @@ struct EditorInput: Identifiable {
     let data: Data
 }
 
-/// 写真・動画を 1 枚ずつ左右にめくって見る。写真は「編集」で編集画面へ。
-/// めくる画面は、表示するページだけを作る（何万件あっても重くならない）。
-struct AssetPager: View {
-    let assets: PHFetchResult<PHAsset>?
-    let start: Int
+/// 写真・動画を 1 枚ずつ左右にめくって見る画面。一覧の上に重ねて表示する（別の画面として開かない）。
+/// 下へなぞると背景が薄くなって下の一覧が見え、離すと写真が一覧のマスへ縮んで戻る（写真アプリと同じ）。
+/// 写真は「編集」で編集画面へ。めくる画面は、表示するページだけを作る（何万件あっても重くならない）。
+struct AssetViewer: View {
+    let assets: PHFetchResult<PHAsset>
+    let link: AssetGridLink
     let onEdit: (Data) -> Void
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
-    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     @State private var index: Int
     @State private var isLoading = false
+    /// 下へなぞった量（0〜1）。背景の薄さ
+    @State private var dragProgress: CGFloat = 0
+    /// なぞっている間は上下のボタンを隠す
+    @State private var dragging = false
 
-    private func asset(_ i: Int) -> PHAsset? {
-        guard let assets, i >= 0, i < assets.count else { return nil }
-        return assets.object(at: i)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let assets {
-                    // 写真アプリと同じく、拡大中は写真の端まで動かしてから、さらに動かすと前後へめくれる
-                    PhotoPageView(assets: assets, index: $index) { dismiss() }
-                }
-            }
-            .background(Color(.systemBackground))
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("閉じる") { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    if let date = asset(index)?.creationDate {
-                        Text(date.formatted(date: .abbreviated, time: .shortened)).font(.footnote)
-                    }
-                }
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button {
-                        if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
-                    } label: {
-                        Label("写真アプリ", systemImage: "photo.on.rectangle")
-                    }
-                    Spacer()
-                    if asset(index)?.mediaType == .image {
-                        Button(isLoading ? "読み込み中…" : "編集") { edit() }
-                            .disabled(isLoading)
-                            .bold()
-                    }
-                }
-            }
-        }
-        .preferredColorScheme(appearance.scheme)
-    }
-
-    init(assets: PHFetchResult<PHAsset>?, start: Int, onEdit: @escaping (Data) -> Void) {
+    init(assets: PHFetchResult<PHAsset>, start: Int, link: AssetGridLink,
+         onEdit: @escaping (Data) -> Void, onClose: @escaping () -> Void) {
         self.assets = assets
-        self.start = start
+        self.link = link
         self.onEdit = onEdit
+        self.onClose = onClose
         _index = State(initialValue: start)
     }
 
+    private var asset: PHAsset? {
+        index >= 0 && index < assets.count ? assets.object(at: index) : nil
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground)
+                .opacity(1 - dragProgress)
+                .ignoresSafeArea()
+            PhotoPageView(assets: assets, index: $index, dismissal: dismissal)
+                .ignoresSafeArea()
+            if !dragging {
+                bars.transition(.opacity)
+            }
+        }
+    }
+
+    private var dismissal: PagerDismissal {
+        PagerDismissal(
+            began: { i in
+                link.reveal(i)
+                withAnimation(.easeOut(duration: 0.15)) { dragging = true }
+            },
+            progress: { value, duration in
+                if let duration {
+                    withAnimation(.easeOut(duration: duration)) { dragProgress = value }
+                } else {
+                    dragProgress = value
+                }
+            },
+            target: { i in link.frame(for: i) },
+            cancelled: { _ in
+                link.setHidden(nil)
+                withAnimation(.easeOut(duration: 0.15)) { dragging = false }
+            },
+            finished: {
+                link.setHidden(nil)
+                onClose()
+            })
+    }
+
+    private var bars: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                if let date = asset?.creationDate {
+                    Text(date.formatted(date: .abbreviated, time: .shortened)).font(.footnote)
+                }
+                HStack {
+                    Button("閉じる") { withAnimation(.easeOut(duration: 0.2)) { onClose() } }
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 44)
+            .background(.bar)
+            Spacer()
+            HStack {
+                Button {
+                    if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
+                } label: {
+                    Label("写真アプリ", systemImage: "photo.on.rectangle")
+                }
+                Spacer()
+                if asset?.mediaType == .image {
+                    Button(isLoading ? "読み込み中…" : "編集") { edit() }
+                        .disabled(isLoading)
+                        .bold()
+                }
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 49)
+            .background(.bar)
+        }
+    }
+
     private func edit() {
-        guard let item = asset(index) else { return }
+        guard let item = asset else { return }
         isLoading = true
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
@@ -186,7 +231,8 @@ struct AssetPage: View {
 
     var body: some View {
         ZStack {
-            Color(.systemBackground)
+            // 背景は写真の画面（AssetViewer）の側で描く（下へなぞったときに薄くするため）
+            Color.clear
             if asset.mediaType == .video {
                 if let player {
                     VideoPlayer(player: player)

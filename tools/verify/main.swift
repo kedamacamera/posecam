@@ -313,6 +313,24 @@ if let (name, ambient) = inputs.first, let person = personMask(ambient) {
     report.append(String(format: "direct flash %@: person luma %.3f -> %.3f, background luma %.3f -> %.3f",
                          name, meanLuma(flashPhoto, mask: person), meanLuma(result, mask: person),
                          meanLuma(flashPhoto, mask: background), meanLuma(result, mask: background)))
+    // ダイレクトフラッシュ 2（人物の周りの背景を暗く落とす）
+    let dark = DirectFlash.apply(photo: flashPhoto, ambient: ambient, exposureRatio: 1, darkBackground: true)
+    report.append(String(format: "direct flash 2 %@: person luma %.3f (flash 1 %.3f), background luma %.3f (flash 1 %.3f)",
+                         name, meanLuma(dark, mask: person), meanLuma(result, mask: person),
+                         meanLuma(dark, mask: background), meanLuma(result, mask: background)))
+    let dw = ambient.extent.width
+    savePNG(result.composited(over: dark.transformed(by: CGAffineTransform(translationX: dw, y: 0)))
+                .transformed(by: CGAffineTransform(scaleX: 1200 / (dw * 2), y: 1200 / (dw * 2))),
+            "directflash_1_2.png")
+    report.append("directflash_1_2.png: direct flash 1, direct flash 2")
+    // 強い遠近のゆがみ（右側だけ縦に縮む）は、手ぶれではないので位置合わせに使わない（nil になる）
+    let ph = ambient.extent.height
+    let skewed = flashPhoto.applyingFilter("CIPerspectiveTransform", parameters: [
+        "inputTopLeft": CIVector(x: 0, y: ph), "inputTopRight": CIVector(x: dw, y: ph * 0.95),
+        "inputBottomLeft": CIVector(x: 0, y: 0), "inputBottomRight": CIVector(x: dw, y: ph * 0.05),
+    ]).clampedToExtent().cropped(to: ambient.extent)
+    report.append("direct flash align, strong perspective: \(DirectFlash.warp(ambient, to: skewed) == nil ? "rejected" : "accepted")")
+    report.append("direct flash align, plain shift still accepted: \(DirectFlash.warp(ambient, to: shiftedPhoto) != nil)")
     let w = ambient.extent.width
     let sheet = flashPhoto.transformed(by: CGAffineTransform(translationX: w, y: 0))
         .composited(over: result.transformed(by: CGAffineTransform(translationX: w * 2, y: 0)))

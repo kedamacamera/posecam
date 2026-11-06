@@ -7,6 +7,8 @@ import UIKit
 /// 写真アプリと同じ UICollectionView で表示し、見えているマスの縮小画像だけを読み込む。
 struct AssetGridView: UIViewRepresentable {
     let assets: PHFetchResult<PHAsset>
+    /// 写真の画面から一覧へ戻るときに、マスの位置を調べる・マスを隠すためのもの
+    var link: AssetGridLink?
     let onSelect: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onSelect: onSelect) }
@@ -22,6 +24,8 @@ struct AssetGridView: UIViewRepresentable {
         view.delegate = context.coordinator
         view.prefetchDataSource = context.coordinator
         context.coordinator.assets = assets
+        context.coordinator.link = link
+        link?.collectionView = view
         return view
     }
 
@@ -37,6 +41,7 @@ struct AssetGridView: UIViewRepresentable {
                              UICollectionViewDataSourcePrefetching {
         var assets: PHFetchResult<PHAsset>?
         var onSelect: (Int) -> Void
+        weak var link: AssetGridLink?
         private let manager = PHCachingImageManager()
         private var thumbnailSize = CGSize(width: 200, height: 200)
 
@@ -64,6 +69,8 @@ struct AssetGridView: UIViewRepresentable {
             guard let assets, indexPath.item < assets.count else { return cell }
             let asset = assets.object(at: indexPath.item)
             cell.show(asset: asset, manager: manager, size: thumbnailSize)
+            // 写真の画面から戻ってくる途中のマスは隠しておく（戻ってきた写真がそこに収まって見えるように）
+            cell.alpha = link?.hiddenIndex == indexPath.item ? 0 : 1
             return cell
         }
 
@@ -135,5 +142,44 @@ struct AssetGridView: UIViewRepresentable {
                 self.imageView.image = image
             }
         }
+    }
+}
+
+/// 一覧（AssetGridView）と写真の画面のつなぎ。
+/// 写真の画面を下へなぞって戻るとき、そのマスを見える位置まで動かし、マスの位置（画面の座標）を返す
+final class AssetGridLink {
+    weak var collectionView: UICollectionView?
+    /// 隠しているマス
+    private(set) var hiddenIndex: Int?
+
+    /// index のマスが一覧の見えている範囲に入るよう動かし、マスを隠す
+    func reveal(_ index: Int) {
+        guard let view = collectionView, index >= 0, index < view.numberOfItems(inSection: 0) else { return }
+        let path = IndexPath(item: index, section: 0)
+        view.layoutIfNeeded()
+        if let attributes = view.layoutAttributesForItem(at: path) {
+            let visible = view.bounds.inset(by: view.adjustedContentInset)
+            if !visible.contains(attributes.frame) {
+                view.scrollToItem(at: path, at: .centeredVertically, animated: false)
+                view.layoutIfNeeded()
+            }
+        }
+        setHidden(index)
+    }
+
+    /// index のマスの位置（画面の座標）
+    func frame(for index: Int) -> CGRect? {
+        guard let view = collectionView, view.window != nil,
+              index >= 0, index < view.numberOfItems(inSection: 0),
+              let attributes = view.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) else { return nil }
+        return view.convert(attributes.frame, to: nil)
+    }
+
+    /// マスを隠す（nil で元に戻す）
+    func setHidden(_ index: Int?) {
+        guard let view = collectionView else { return }
+        if let old = hiddenIndex { view.cellForItem(at: IndexPath(item: old, section: 0))?.alpha = 1 }
+        hiddenIndex = index
+        if let index { view.cellForItem(at: IndexPath(item: index, section: 0))?.alpha = 0 }
     }
 }

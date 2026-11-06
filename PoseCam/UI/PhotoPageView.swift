@@ -2,23 +2,39 @@ import Photos
 import SwiftUI
 import UIKit
 
+/// 写真の画面を下へなぞって一覧へ戻るときの、画面との受け渡し。
+/// i は、なぞっているページの番号
+struct PagerDismissal {
+    /// なぞり始めた（一覧のそのマスを見える位置へ動かし、マスを隠しておく）
+    var began: (Int) -> Void = { _ in }
+    /// なぞった量（0〜1）。背景をこの割合で薄くして、下の一覧を透かす。
+    /// duration があるときは、その時間をかけてその値へ動かす（閉じる・元に戻すとき）
+    var progress: (CGFloat, Double?) -> Void = { _, _ in }
+    /// 戻る先（一覧のマスの位置、画面の座標）。nil ならその場で薄くして閉じる
+    var target: (Int) -> CGRect? = { _ in nil }
+    /// 途中でやめて元に戻した
+    var cancelled: (Int) -> Void = { _ in }
+    /// 一覧へ戻り終わった
+    var finished: () -> Void = {}
+}
+
 /// アルバムの写真・動画を左右にめくる画面（UIKit の UIPageViewController）。
 /// 写真は 1 枚ずつ拡大できるスクロール面（UIScrollView）に置く。iPhone の写真アプリと同じ仕組みで、
 /// 拡大中に指で動かすと、まず写真が動き、写真の端が画面の端に来てからさらに動かしたときだけ前後の写真へめくれる。
 /// 以前の SwiftUI の TabView では、拡大中に写真を動かすと同時に次の写真へめくれていた。
-/// 拡大していないときに下へなぞると、写真が指について動き、離すと一覧へ戻る（写真アプリと同じ）。
+/// 拡大していないときに下へなぞると、写真が指について動き、背景が薄くなって下の一覧が見え、
+/// 離すと写真が一覧のマスへ縮んで戻る（写真アプリと同じ）。背景は SwiftUI の側（AssetViewer）で描くので、ここは透明
 struct PhotoPageView: UIViewControllerRepresentable {
     let assets: PHFetchResult<PHAsset>
     @Binding var index: Int
-    /// 下へなぞって閉じるとき
-    var onDismiss: () -> Void = {}
+    var dismissal = PagerDismissal()
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeUIViewController(context: Context) -> UIPageViewController {
         let controller = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal,
                                               options: [.interPageSpacing: 16])
-        controller.view.backgroundColor = .systemBackground
+        controller.view.backgroundColor = .clear
         controller.dataSource = context.coordinator
         controller.delegate = context.coordinator
         if let first = context.coordinator.page(at: index) {
@@ -46,20 +62,32 @@ struct PhotoPageView: UIViewControllerRepresentable {
             state.current = parent.index
         }
 
+        /// ページ i の、下へなぞって閉じる操作の受け渡し（いつも最新の parent に渡す）
+        private func dismissal(for i: Int) -> SwipeDownToDismiss.Handlers {
+            SwipeDownToDismiss.Handlers(
+                began: { [weak self] in self?.parent.dismissal.began(i) },
+                progress: { [weak self] p, d in self?.parent.dismissal.progress(p, d) },
+                target: { [weak self] in self?.parent.dismissal.target(i) },
+                cancelled: { [weak self] in self?.parent.dismissal.cancelled(i) },
+                finished: { [weak self] in self?.parent.dismissal.finished() })
+        }
+
         func page(at i: Int) -> UIViewController? {
             guard i >= 0, i < parent.assets.count else { return nil }
             let asset = parent.assets.object(at: i)
             let controller: UIViewController
-            let dismiss: () -> Void = { [weak self] in self?.parent.onDismiss() }
             if asset.mediaType == .video {
                 let hosting = UIHostingController(rootView: VideoPageContent(asset: asset, index: i, state: state))
-                hosting.view.backgroundColor = .systemBackground
+                hosting.view.backgroundColor = .clear
+                // 動画は一覧のマスへ縮めず、その場で薄くして閉じる
+                var handlers = dismissal(for: i)
+                handlers.target = { nil }
                 hosting.view.addGestureRecognizer(SwipeDownToDismiss(moving: { [weak hosting] in hosting?.view },
-                                                                     canBegin: { true }, onDismiss: dismiss))
+                                                                     canBegin: { true }, handlers: handlers))
                 controller = hosting
             } else {
                 let photo = ZoomingPhotoController(asset: asset)
-                photo.onDismiss = dismiss
+                photo.dismissal = dismissal(for: i)
                 controller = photo
             }
             controller.view.tag = i
@@ -108,7 +136,7 @@ final class ZoomingPhotoController: UIViewController, UIScrollViewDelegate {
     private let imageView = UIImageView()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private var request: PHImageRequestID?
-    var onDismiss: () -> Void = {}
+    var dismissal = SwipeDownToDismiss.Handlers()
 
     init(asset: PHAsset) {
         self.asset = asset
@@ -119,7 +147,7 @@ final class ZoomingPhotoController: UIViewController, UIScrollViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        view.backgroundColor = .clear
         scrollView.frame = view.bounds
         scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         scrollView.delegate = self
@@ -148,7 +176,12 @@ final class ZoomingPhotoController: UIViewController, UIScrollViewDelegate {
                 guard let self else { return false }
                 return self.scrollView.zoomScale <= self.scrollView.minimumZoomScale + 0.01
             },
-            onDismiss: { [weak self] in self?.onDismiss() }))
+            handlers: SwipeDownToDismiss.Handlers(
+                began: { [weak self] in self?.dismissal.began() },
+                progress: { [weak self] p, d in self?.dismissal.progress(p, d) },
+                target: { [weak self] in self?.dismissal.target() },
+                cancelled: { [weak self] in self?.dismissal.cancelled() },
+                finished: { [weak self] in self?.dismissal.finished() })))
         load()
     }
 
@@ -221,17 +254,27 @@ final class ZoomingPhotoController: UIViewController, UIScrollViewDelegate {
     }
 }
 
-/// 下へなぞって閉じる。なぞっている間は対象が指について動き（少し小さく・薄くなる）、
-/// 画面の高さの 15% 以上下げるか、勢いよく下へ払って離すと閉じる。それ以外は元の位置へ戻る。
+/// 下へなぞって一覧へ戻る（写真アプリと同じ動き）。
+/// なぞっている間は写真が指について動き（少し小さくなる）、背景が薄くなって下の一覧が見えてくる。
+/// 画面の高さの 15% 以上下げるか、勢いよく下へ払って離すと、写真が一覧のマスの位置へ縮みながら戻って閉じる。
+/// それ以外は元の位置へ戻る
 final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
+    struct Handlers {
+        var began: () -> Void = {}
+        var progress: (CGFloat, Double?) -> Void = { _, _ in }
+        var target: () -> CGRect? = { nil }
+        var cancelled: () -> Void = {}
+        var finished: () -> Void = {}
+    }
+
     private let moving: () -> UIView?
     private let canBegin: () -> Bool
-    private let onDismiss: () -> Void
+    private let handlers: Handlers
 
-    init(moving: @escaping () -> UIView?, canBegin: @escaping () -> Bool, onDismiss: @escaping () -> Void) {
+    init(moving: @escaping () -> UIView?, canBegin: @escaping () -> Bool, handlers: Handlers) {
         self.moving = moving
         self.canBegin = canBegin
-        self.onDismiss = onDismiss
+        self.handlers = handlers
         super.init(target: nil, action: nil)
         addTarget(self, action: #selector(handle(_:)))
         delegate = self
@@ -254,23 +297,72 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
         let height = max(container.bounds.height, 1)
         let t = recognizer.translation(in: container)
         switch recognizer.state {
+        case .began:
+            handlers.began()
         case .changed:
-            let progress = min(1, max(0, t.y / height))
-            let scale = 1 - 0.25 * progress
-            target.transform = CGAffineTransform(translationX: t.x, y: max(0, t.y)).scaledBy(x: scale, y: scale)
-            target.alpha = 1 - 0.5 * progress
+            // 写真の大きさは下げた量に合わせて最大 35% 小さく、背景は画面の高さの 40% 下げたところで透明
+            let down = max(0, t.y)
+            let scale = 1 - 0.35 * min(1, down / height)
+            target.transform = CGAffineTransform(translationX: t.x, y: down).scaledBy(x: scale, y: scale)
+            handlers.progress(min(1, down / (height * 0.4)), nil)
         case .ended, .cancelled, .failed:
             let v = recognizer.velocity(in: container)
-            if recognizer.state == .ended, t.y > height * 0.15 || v.y > 900 {
-                onDismiss()
+            if recognizer.state == .ended, v.y > -200, t.y > height * 0.15 || v.y > 900 {
+                finish(target)
             } else {
+                handlers.progress(0, 0.25)
                 UIView.animate(withDuration: 0.25, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0) {
                     target.transform = .identity
-                    target.alpha = 1
+                } completion: { _ in
+                    self.handlers.cancelled()
                 }
             }
         default:
             break
+        }
+    }
+
+    /// 写真を一覧のマスの位置へ縮めて閉じる。マスの位置が分からない（動画など）ときは、その場で薄くして閉じる
+    private func finish(_ target: UIView) {
+        let duration = 0.32
+        guard let window = target.window else {
+            handlers.finished()
+            return
+        }
+        let start = target.convert(target.bounds, to: nil)
+        let image = (target as? UIImageView)?.image
+        guard let image, let end = handlers.target() else {
+            handlers.progress(1, 0.2)
+            UIView.animate(withDuration: 0.2) {
+                target.alpha = 0
+            } completion: { _ in
+                self.handlers.finished()
+            }
+            return
+        }
+        // 写真の今の位置に同じ写真を重ね、マスの位置・大きさへ動かす。
+        // マスは正方形で写真を中央で切り抜いて見せているので、枠を縮めながら中の写真は枠いっぱいに広げる
+        let flying = UIView(frame: start)
+        flying.clipsToBounds = true
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFill
+        imageView.frame = flying.bounds
+        imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        flying.addSubview(imageView)
+        window.addSubview(flying)
+        target.isHidden = true
+        handlers.progress(1, duration)
+        UIView.animate(withDuration: duration, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0,
+                       options: [.curveEaseOut]) {
+            flying.frame = end
+        } completion: { _ in
+            self.handlers.finished()
+            // 一覧のマスが表示し直されるまで一瞬残してから消す（ちらつかないように）
+            UIView.animate(withDuration: 0.12, delay: 0.05) {
+                flying.alpha = 0
+            } completion: { _ in
+                flying.removeFromSuperview()
+            }
         }
     }
 }

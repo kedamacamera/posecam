@@ -42,6 +42,8 @@ struct ContentView: View {
     /// シャッターの段・撮影モードの段の上端（画面の座標）。プレビューに重なっているかを決めるのに使う
     @State private var shutterRowTop: CGFloat = 0
     @State private var modeRowTop: CGFloat = 0
+    /// 実際に表示しているプレビューの下端（画面の座標）。計算した値ではなく、表示された位置を測る
+    @State private var measuredPreviewBottom: CGFloat?
     @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     @Environment(\.colorScheme) private var colorScheme
 
@@ -69,7 +71,8 @@ struct ContentView: View {
                             .padding(.horizontal, 12)
                             .padding(.top, 6)
                         Spacer(minLength: 0)
-                        bottomControls(previewBottom: previewBottom(screen: screen, topInset: insets.top),
+                        bottomControls(previewBottom: measuredPreviewBottom
+                                           ?? previewBottom(screen: screen, topInset: insets.top),
                                        bottomPadding: max(insets.bottom, 12))
                     }
 
@@ -130,6 +133,14 @@ struct ContentView: View {
             if crashReport == nil { camera.start() }
         }
         .onChange(of: selectedPose) { updateTemplate() }
+        // アルバム（写真の表示・編集）を開いている間はカメラを止める（裏で動き続けて熱くなり、電池が減っていた）
+        .onChange(of: showAlbum) {
+            if showAlbum {
+                camera.suspend()
+            } else if crashReport == nil {
+                camera.resume()
+            }
+        }
         .onChange(of: camera.focusResetCount) { focusPoint = nil }
         .onChange(of: camera.savingPhotos) {
             if camera.savingPhotos == 0 {
@@ -226,7 +237,9 @@ struct ContentView: View {
         }
         .frame(width: screen.width, height: height)
         .clipped()
-        .offset(y: top)
+        // 倍率ボタンの帯がプレビューの下端にかからないよう、表示されたプレビューの下端を測っておく
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { measuredPreviewBottom = $0 }
+        .padding(.top, top)
     }
 
     /// 美肌・スタイルのパネルで脚長を選んでいる
@@ -358,7 +371,11 @@ struct ContentView: View {
                         "iOS \(UIDevice.current.systemVersion)",
                     ] + Diagnostics.events).joined(separator: "\n")
                 }
-                Button("ライセンス") { showLicenses = true }
+                Button("ライセンス") {
+                    // メニューが閉じ切る前にシートを出すと、表示されないまま画面の操作を受け付けなくなることがある。
+                    // メニューが閉じてから出す
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showLicenses = true }
+                }
             } label: {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
             }
@@ -416,10 +433,18 @@ struct ContentView: View {
         return topInset + topBarHeight + min(screen.width / ratio, screen.height)
     }
 
-    /// 倍率ボタンがプレビューの下端にまたがるとき、プレビューの上に収まるまで持ち上げる量（負の値）
+    /// 倍率ボタンの帯（丸い黒い地を含む）がプレビューの下端にかかる・近すぎるときに動かす量。
+    /// 以前は「下端をまたいでいるか」を計算上のプレビューの位置で決めていて、実際の表示と数ポイント食い違うと
+    /// 動かさず、帯の黒い地の上側が映像に少しかかって見えていた。
+    /// 表示されたプレビューの下端を測り、帯との間を必ず gap 以上空ける。まずプレビューの外（下）へ下げ、
+    /// 下のボタンとの間が足りないときだけ映像の上へ上げる
     private func lensBarShift(previewBottom: CGFloat) -> CGFloat {
-        guard let frame = lensBarFrame, frame.minY < previewBottom, frame.maxY > previewBottom else { return 0 }
-        return -(frame.maxY - previewBottom) - 6
+        guard let frame = lensBarFrame else { return 0 }
+        let gap: CGFloat = 6
+        guard frame.maxY > previewBottom - gap, frame.minY < previewBottom + gap else { return 0 }
+        let down = previewBottom + gap - frame.minY
+        if frame.maxY + down <= controlsTop - 2 { return down }
+        return previewBottom - gap - frame.maxY
     }
 
     private func bottomControls(previewBottom: CGFloat, bottomPadding: CGFloat) -> some View {
@@ -574,23 +599,30 @@ struct ContentView: View {
         )
     }
 
-    /// 写真: オフ → オン → ダイレクト（背景を暗く落とす）→ オフ。動画・スナップはライトのオン・オフ
+    /// 写真: オフ → オン → ダイレクト 1 → ダイレクト 2 → オフ。動画・スナップはライトのオン・オフ。
+    /// ダイレクト 1 はフラッシュの届いた所（狭い部屋なら壁も）が明るく写る。
+    /// ダイレクト 2 は人物の周りの背景を暗く落とし、人だけが浮かび上がる
     private var flashButton: some View {
-        LabeledIconButton(systemImage: camera.flashOn ? (camera.directFlash && camera.mode == .photo
-                                                         ? "bolt.circle.fill" : "bolt.fill") : "bolt.slash",
-                          label: camera.mode != .photo ? "ライト"
-                              : camera.flashOn && camera.directFlash ? "ダイレクト" : "フラッシュ",
-                          active: camera.flashOn) {
+        let direct = camera.flashOn && camera.directFlash && camera.mode == .photo
+        return LabeledIconButton(systemImage: camera.flashOn ? (direct ? "bolt.circle.fill" : "bolt.fill") : "bolt.slash",
+                                 label: camera.mode != .photo ? "ライト"
+                                     : direct ? (camera.directFlashDark ? "ダイレクト2" : "ダイレクト1") : "フラッシュ",
+                                 active: camera.flashOn) {
             if camera.mode != .photo {
                 camera.flashOn.toggle()
             } else if !camera.flashOn {
                 camera.directFlash = false
+                camera.directFlashDark = false
                 camera.flashOn = true
             } else if !camera.directFlash {
                 camera.directFlash = true
+                camera.directFlashDark = false
+            } else if !camera.directFlashDark {
+                camera.directFlashDark = true
             } else {
                 camera.flashOn = false
                 camera.directFlash = false
+                camera.directFlashDark = false
             }
         }
         .frame(width: 48, height: 48)

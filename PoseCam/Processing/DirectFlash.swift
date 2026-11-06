@@ -47,7 +47,11 @@ enum DirectFlash {
     private static let factor: CGFloat = 0.25
 
     /// photo と ambient は同じ大きさ・同じ切り抜きで、原点は (0, 0)。exposureRatio は（写真の露出）/（コマの露出）。
-    static func apply(photo: CIImage, ambient: CIImage, exposureRatio: Double, ambientGain: Double = 0.125) -> CIImage {
+    /// darkBackground（ダイレクトフラッシュ 2）: 人物の周りの背景も暗く落とす。
+    /// 狭い部屋ではフラッシュが壁まで届くので、光の割合だけでは背景が暗くならず、部屋全体が明るく写っていた
+    /// （それはそれで良い写りなので、ダイレクトフラッシュ 1 として残す）
+    static func apply(photo: CIImage, ambient: CIImage, exposureRatio: Double, ambientGain: Double = 0.125,
+                      darkBackground: Bool = false) -> CIImage {
         guard let kernel else { return photo }
         let extent = photo.extent
         let aligned = align(ambient, to: photo) ?? ambient
@@ -70,7 +74,46 @@ enum DirectFlash {
             .cropped(to: extent)
         let relit = photo.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: gain])
             .cropped(to: extent)
-        return finish(relit, extent: extent)
+        let finished = finish(relit, extent: extent)
+        guard darkBackground, let mask = personMask(photo) else { return finished }
+        // 人物は 1 倍、背景は 0.35 倍（1.5 段暗く）。境目は人物の切り抜きをぼかしてなめらかにつなぐ
+        let backgroundGain: CGFloat = 0.35
+        let gainMap = mask.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 1 - backgroundGain, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 1 - backgroundGain, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: 1 - backgroundGain, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: backgroundGain, y: backgroundGain, z: backgroundGain, w: 1),
+        ])
+        return finished.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: gainMap])
+            .cropped(to: extent)
+    }
+
+    /// 人物の切り抜き（人物 1・背景 0、写真と同じ大きさ、境目はぼかす）。人が写っていなければ nil
+    static func personMask(_ photo: CIImage) -> CIImage? {
+        let extent = photo.extent
+        let scale = min(1, 1024 / max(extent.width, extent.height))
+        let small = photo.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .balanced
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        let handler = VNImageRequestHandler(ciImage: small, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let buffer = request.results?.first?.pixelBuffer else { return nil }
+        let raw = CIImage(cvPixelBuffer: buffer)
+        // 人がほとんど写っていない（料理・景色など）ときは暗くしない
+        var pixel = [Float](repeating: 0, count: 4)
+        let average = raw.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: raw.extent)])
+        context.render(average, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBAf, colorSpace: nil)
+        guard pixel[0] > 0.02 else { return nil }
+        let mask = raw
+            .transformed(by: CGAffineTransform(scaleX: extent.width / raw.extent.width,
+                                               y: extent.height / raw.extent.height))
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.006)
+            .cropped(to: extent)
+        return mask
     }
 
     /// フィルムのフラッシュ風の仕上げ（色の偏りの打ち消し・明るさ・トーンカーブ・彩度・粒子・周辺の落ち込み）
@@ -161,9 +204,17 @@ enum DirectFlash {
         // 手ぶれの範囲（四隅の動きが長辺の 8% 以内）を超える動きは、合わせ間違いとして使わない
         let w = extent.width, h = extent.height
         let limit = max(w, h) * 0.08
+        var mapped: [CGPoint] = []
         for p in [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: 0, y: h), CGPoint(x: w, y: h)] {
             guard let q = map(p), hypot(q.x - p.x, q.y - p.y) <= limit else { return nil }
+            mapped.append(q)
         }
+        // 手ぶれは、ほぼ平行移動・回転・わずかな拡大縮小で、四隅は平行四辺形のまま動く。
+        // 4 つ目の隅が、ほかの 3 つの隅から決まる位置から長辺の 1% 以上ずれる（強い遠近のゆがみ）ときは
+        // 合わせ間違いとして使わない。間違った遠近のゆがみで合わせると、画面の片側（右側だけなど）で
+        // 写真とコマがずれ、そちら側だけ明るさがおかしくなっていた
+        let expected = CGPoint(x: mapped[1].x + mapped[2].x - mapped[0].x, y: mapped[1].y + mapped[2].y - mapped[0].y)
+        guard hypot(mapped[3].x - expected.x, mapped[3].y - expected.y) <= max(w, h) * 0.01 else { return nil }
         return map
     }
 }

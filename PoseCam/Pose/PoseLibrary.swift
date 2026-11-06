@@ -1,6 +1,7 @@
 import Combine
 import CoreImage
 import Foundation
+import ImageIO
 import UIKit
 
 /// 組み込みポーズと、ユーザーが写真から登録したポーズを管理する。
@@ -18,6 +19,7 @@ final class PoseLibrary: ObservableObject {
         load()
         applyBundledShapes()
         prepareBuiltInShapes()
+        PoseImageCache.warmUp(names: builtInPoses.compactMap(\.imageName))
     }
 
     /// 形（骨格か輪郭）がまだないポーズは、選んでも何も表示されないので一覧に出さない
@@ -110,7 +112,7 @@ final class PoseLibrary: ObservableObject {
     private func prepareBuiltInShapes() {
         let poses = builtInPoses
         // 型の作り方を変えたら名前を変えて、古い結果を使わないようにする
-        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v5.json")
+        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v6.json")
 
         DispatchQueue.global(qos: .utility).async {
             var cache = (try? JSONDecoder().decode([String: PoseShape].self,
@@ -157,15 +159,47 @@ final class PoseLibrary: ObservableObject {
 
 /// 見本写真のサムネイル。毎回 JPEG を読み直さないよう、縮小したものを覚えておく。
 enum PoseImageCache {
-    private static let cache = NSCache<NSString, UIImage>()
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        // 組み込みポーズ全部（約 200 枚）と見本写真を覚えておけるだけの数
+        cache.countLimit = 600
+        return cache
+    }()
 
+    /// 覚えているサムネイル（なければ nil。読み込みはしない）
+    static func cachedThumbnail(named name: String) -> UIImage? {
+        cache.object(forKey: name as NSString)
+    }
+
+    /// サムネイルを作る。元の JPEG を全部は展開せず、縮小した画像だけを作る（ImageIO）。
+    /// 以前は画面の表示中（メインスレッド）に元の大きさで展開してから縮めていて、カテゴリの見出しをタップして
+    /// 一覧を遠くへ動かすと、間のポーズのサムネイルをまとめて作るあいだ操作が止まっていた。
+    /// いまはメインスレッド以外で作る（loadThumbnail・warmUp）
     static func thumbnail(named name: String) -> UIImage? {
         if let cached = cache.object(forKey: name as NSString) { return cached }
         guard let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
-              let image = UIImage(contentsOfFile: url.path),
-              let thumbnail = image.preparingThumbnail(of: CGSize(width: 160, height: 240)) else { return nil }
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 240,
+              ] as CFDictionary) else { return nil }
+        let thumbnail = UIImage(cgImage: cgImage)
         cache.setObject(thumbnail, forKey: name as NSString)
         return thumbnail
+    }
+
+    /// メインスレッド以外でサムネイルを作る
+    static func loadThumbnail(named name: String) async -> UIImage? {
+        if let cached = cachedThumbnail(named: name) { return cached }
+        return await Task.detached(priority: .userInitiated) { thumbnail(named: name) }.value
+    }
+
+    /// 起動後、組み込みポーズのサムネイルを先に作っておく（一覧を開いたときにすぐ出るように）
+    static func warmUp(names: [String]) {
+        DispatchQueue.global(qos: .utility).async {
+            for name in names { _ = thumbnail(named: name) }
+        }
     }
 
     /// 撮影画面の左下に出す見本写真（縦横比はそのまま、幅 360 ピクセル）

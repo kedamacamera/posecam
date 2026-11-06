@@ -29,6 +29,35 @@ enum Joint: String, CaseIterable, Codable {
         }
     }
 
+    /// 画面に出す名前（写っている人から見た左右）
+    var label: String {
+        switch self {
+        case .nose: return "鼻"
+        case .neck: return "首"
+        case .leftShoulder: return "左肩"
+        case .rightShoulder: return "右肩"
+        case .leftElbow: return "左ひじ"
+        case .rightElbow: return "右ひじ"
+        case .leftWrist: return "左手首"
+        case .rightWrist: return "右手首"
+        case .leftHip: return "左腰"
+        case .rightHip: return "右腰"
+        case .leftKnee: return "左ひざ"
+        case .rightKnee: return "右ひざ"
+        case .leftAnkle: return "左足首"
+        case .rightAnkle: return "右足首"
+        }
+    }
+
+    /// 写っている人から見た左側の関節か（鼻・首は nil）
+    var isLeft: Bool? {
+        switch self {
+        case .nose, .neck: return nil
+        case .leftShoulder, .leftElbow, .leftWrist, .leftHip, .leftKnee, .leftAnkle: return true
+        default: return false
+        }
+    }
+
     var visionName: VNHumanBodyPoseObservation.JointName {
         switch self {
         case .nose: return .nose

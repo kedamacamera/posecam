@@ -71,7 +71,8 @@ struct PoseShape: Codable {
 struct PhotoAnalysis {
     /// 写真の大きさ（ピクセル）
     let size: CGSize
-    let joints: [Joint: CGPoint]
+    /// 関節（写真から取り込む画面では、手で動かせる）
+    var joints: [Joint: CGPoint]
     /// 人物の輪郭。大きい順
     let outlines: [[CGPoint]]
     /// いちばん大きく写っている顔のパーツ（画像座標）
@@ -157,7 +158,13 @@ enum PoseImporter {
             points: Dictionary(uniqueKeysWithValues: analysis.joints.map { ($0.key.rawValue, convert($0.value)) }),
             outline: outlines.first,
             extraOutlines: outlines.count > 1 ? Array(outlines.dropFirst()) : nil,
-            face: analysis.face?.map(convert),
+            // 顔の高さは「枠の高さに対する割合」に直す（以前は写真の高さに対する割合のままで、
+            // 枠が写真より小さい・大きいと、顔の大きさの一致度の基準がその分ずれていた）
+            face: analysis.face.map { face in
+                var converted = face.map(convert)
+                converted.height = face.height * analysis.size.height / crop.height
+                return converted
+            },
             lines: analysis.lines.isEmpty ? nil : analysis.lines.map { $0.map(convert) })
     }
 

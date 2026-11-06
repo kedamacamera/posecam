@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>PoseCam ボーン入れ</title>
+<style>
+  :root {
+    --bg: #1b1c1f; --panel: #24262a; --line: #3a3d43; --text: #e8e8ea; --muted: #9a9ca3;
+    --accent: #ffd23f; --left: #4cc3ff; --right: #ff9a3c; --face: #4dff7a; --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
+  body { display: grid; grid-template-columns: 250px 1fr 330px; height: 100vh; overflow: hidden; }
+  aside, section { min-height: 0; }
+  #list-pane { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  #list-pane header { padding: 10px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
+  #list { overflow: auto; flex: 1; }
+  .item { padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 6px;
+    border-bottom: 1px solid #2c2e33; }
+  .item:hover { background: #2d3036; }
+  .item.active { background: #3b3416; }
+  .item small { color: var(--muted); }
+  .badge { color: var(--accent); font-size: 11px; white-space: nowrap; }
+  select, input[type=search] { width: 100%; background: #16171a; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 7px; font: inherit; }
+  #stage { position: relative; overflow: hidden; background: #111; }
+  #main { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #hint { position: absolute; left: 10px; bottom: 8px; right: 10px; color: var(--muted); font-size: 12px;
+    pointer-events: none; text-shadow: 0 1px 2px #000; }
+  #title { position: absolute; left: 10px; top: 8px; font-size: 15px; font-weight: 700; text-shadow: 0 1px 3px #000;
+    pointer-events: none; }
+  #side { background: var(--panel); border-left: 1px solid var(--line); overflow: auto; padding: 10px; display: grid;
+    gap: 10px; align-content: start; }
+  h3 { margin: 4px 0 2px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  #preview { width: 100%; aspect-ratio: 3 / 4; background: #000; border-radius: 6px; display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  button { background: #33363c; color: var(--text); border: 1px solid #484b52; border-radius: 6px; padding: 5px 9px;
+    font: inherit; cursor: pointer; }
+  button:hover { background: #3d4047; }
+  button.on { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 700; }
+  button.danger { color: var(--danger); }
+  button.primary { background: #2f6fed; border-color: #2f6fed; font-weight: 700; }
+  button:disabled { opacity: .4; cursor: default; }
+  input[type=range] { flex: 1; }
+  .status { color: var(--muted); font-size: 12px; }
+  .dirty { color: var(--accent); }
+  #toast { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); background: #000c; padding: 8px 14px;
+    border-radius: 8px; display: none; z-index: 10; }
+  kbd { background: #111; border: 1px solid #444; border-radius: 3px; padding: 0 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<aside id="list-pane">
+  <header>
+    <select id="category"><option value="">すべてのカテゴリ</option></select>
+    <input id="search" type="search" placeholder="名前で絞り込み">
+    <label class="row"><input id="only-edited" type="checkbox"> 手直ししたものだけ</label>
+  </header>
+  <div id="list"></div>
+</aside>
+
+<section id="stage">
+  <canvas id="main"></canvas>
+  <div id="title"></div>
+  <div id="hint"></div>
+</section>
+
+<aside id="side">
+  <div class="row">
+    <button id="save" class="primary">保存（Ctrl+S）</button>
+    <span id="state" class="status"></span>
+  </div>
+  <div>
+    <h3>モード</h3>
+    <div class="row">
+      <button id="mode-bones" class="on">関節・顔（B）</button>
+      <button id="mode-crop">枠（C）</button>
+      <button id="fit">全体を表示（F）</button>
+    </div>
+  </div>
+  <div>
+    <h3>アプリでの見え方（撮影画面 3:4）</h3>
+    <canvas id="preview" width="600" height="800"></canvas>
+    <div class="row" style="margin-top:6px">
+      <label class="row"><input id="pv-photo" type="checkbox" checked> 写真</label>
+      <label class="row"><input id="pv-outline" type="checkbox" checked> 輪郭</label>
+      <label class="row"><input id="pv-bones" type="checkbox" checked> 骨格</label>
+      <label class="row"><input id="pv-face" type="checkbox" checked> 顔</label>
+    </div>
+  </div>
+  <div>
+    <h3>関節</h3>
+    <div class="row" id="joint-tools"></div>
+  </div>
+  <div>
+    <h3>顔</h3>
+    <div class="row" id="face-tools"></div>
+    <div class="row" id="yaw-row" style="margin-top:6px">
+      <span>向き</span><input id="yaw" type="range" min="-90" max="90" step="1"><span id="yaw-value"></span>
+    </div>
+    <div class="status" id="face-info"></div>
+  </div>
+  <div>
+    <h3>元に戻す</h3>
+    <div class="row">
+      <button id="undo">1 つ戻す（Ctrl+Z）</button>
+      <button id="reset-bones">関節・顔を自動に</button>
+      <button id="reset-crop">枠を自動に</button>
+      <button id="reset-all" class="danger">この写真の手直しを全部消す</button>
+    </div>
+  </div>
+  <div class="status">
+    <kbd>↑</kbd><kbd>↓</kbd> 前後の写真 ／ ホイール 拡大縮小 ／ 右ドラッグ・Space+ドラッグ 移動 ／
+    <kbd>Delete</kbd> 選んだ関節を消す
+  </div>
+</aside>
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const JOINTS = {
+  nose: "鼻", neck: "首", leftShoulder: "左肩", rightShoulder: "右肩", leftElbow: "左ひじ", rightElbow: "右ひじ",
+  leftWrist: "左手首", rightWrist: "右手首", leftHip: "左腰", rightHip: "右腰", leftKnee: "左ひざ", rightKnee: "右ひざ",
+  leftAnkle: "左足首", rightAnkle: "右足首",
+};
+const BONES = [["neck", "nose"], ["leftShoulder", "rightShoulder"], ["leftShoulder", "leftElbow"],
+  ["leftElbow", "leftWrist"], ["rightShoulder", "rightElbow"], ["rightElbow", "rightWrist"],
+  ["leftShoulder", "leftHip"], ["rightShoulder", "rightHip"], ["leftHip", "rightHip"], ["leftHip", "leftKnee"],
+  ["leftKnee", "leftAnkle"], ["rightHip", "rightKnee"], ["rightKnee", "rightAnkle"]];
+const ASPECT = 3 / 4;
+
+const $ = (id) => document.getElementById(id);
+const main = $("main"), mctx = main.getContext("2d");
+const preview = $("preview"), pctx = preview.getContext("2d");
+
+let items = [], analysis = {}, edits = {}, savedText = "{}";
+let current = null, image = null;
+const images = {};
+let view = { s: 1, ox: 0, oy: 0 };
+let mode = "bones", selected = null, hover = null, drag = null, spaceDown = false;
+const undoStack = [];
+
+// MARK: - データ
+
+function record() { return analysis[current]; }
+function edit() { return edits[current] || {}; }
+function joints() { return edit().joints || record().joints || {}; }
+function face() { const e = edit(); return "face" in e ? e.face : (record().face || null); }
+function crop() { return edit().crop || record().crop; }
+function size() { return record().size; }
+const clone = (v) => JSON.parse(JSON.stringify(v));
+
+function pushUndo() {
+  undoStack.push({ name: current, prev: edits[current] ? clone(edits[current]) : null });
+  if (undoStack.length > 200) undoStack.shift();
+}
+function setEdit(key, value) {
+  const e = edits[current] ? edits[current] : (edits[current] = {});
+  e[key] = value;
+  changed();
+}
+function removeEdit(key) {
+  if (!edits[current]) return;
+  delete edits[current][key];
+  if (Object.keys(edits[current]).length === 0) delete edits[current];
+  changed();
+}
+function editableJoints() {
+  if (!edits[current] || !edits[current].joints) setEdit("joints", clone(record().joints || {}));
+  return edits[current].joints;
+}
+function changed() {
+  updateState();
+  // 一覧の「手直し」の印が変わったときだけ一覧を描き直す（ドラッグ中に毎回描き直すと重い）
+  const badge = Object.keys(edits).sort().join("|");
+  if (badge !== changed.badge) { changed.badge = badge; renderList(false); }
+  draw();
+}
+function isDirty() { return JSON.stringify(edits) !== savedText; }
+
+// MARK: - 座標
+
+// 写真の上の座標（0...1）→ キャンバス
+function toCanvas(p) { const [w, h] = size(); return [view.ox + p[0] * w * view.s, view.oy + p[1] * h * view.s]; }
+function toPhoto(x, y) { const [w, h] = size(); return [(x - view.ox) / view.s / w, (y - view.oy) / view.s / h]; }
+function pxToCanvas(x, y) { return [view.ox + x * view.s, view.oy + y * view.s]; }
+
+function fitView() {
+  if (!current) return;
+  const [w, h] = size();
+  const r = main.getBoundingClientRect();
+  const s = Math.min((r.width - 40) / w, (r.height - 60) / h);
+  view = { s, ox: (r.width - w * s) / 2, oy: (r.height - h * s) / 2 + 10 };
+  draw();
+}
+
+// 顔の上の丸（中心から、傾きの向きに顔の高さの 0.65 倍）。roll は画面で反時計回りが正
+function ringPoint(f) {
+  const [w, h] = size();
+  const c = toCanvas(f.center);
+  const len = f.height * h * view.s * 0.65;
+  const a = -f.roll * Math.PI / 180 - Math.PI / 2;
+  return [c[0] + Math.cos(a) * len, c[1] + Math.sin(a) * len];
+}
+
+// 顔を中心ごと動かし、中心のまわりに拡大・回転する（ピクセルで計算）。rot は画面で時計回りが正（ラジアン）
+function transformFace(f, center, scale, rot) {
+  const [w, h] = size();
+  const c0 = [f.center[0] * w, f.center[1] * h], c1 = [center[0] * w, center[1] * h];
+  const cos = Math.cos(rot), sin = Math.sin(rot);
+  const map = (p) => {
+    const dx = p[0] * w - c0[0], dy = p[1] * h - c0[1];
+    return [(c1[0] + scale * (dx * cos - dy * sin)) / w, (c1[1] + scale * (dx * sin + dy * cos)) / h];
+  };
+  const out = clone(f);
+  out.center = center;
+  out.height = f.height * scale;
+  out.roll = f.roll - rot * 180 / Math.PI;
+  out.contour = (f.contour || []).map(map);
+  out.mouth = (f.mouth || []).map(map);
+  for (const k of ["leftEye", "rightEye", "nose"]) if (f[k]) out[k] = map(f[k]);
+  return out;
+}
+
+// MARK: - 描画
+
+function jointColor(name) {
+  if (name === selected) return "#ffd23f";
+  if (name.startsWith("left")) return "#4cc3ff";
+  if (name.startsWith("right")) return "#ff9a3c";
+  return "#ffffff";
+}
+
+function drawFace(ctx, f, map, color, width) {
+  if (!f) return;
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width; ctx.lineJoin = "round"; ctx.lineCap = "round";
+  const poly = (pts, close) => {
+    if (!pts || pts.length < 2) return;
+    ctx.beginPath(); pts.forEach((p, i) => { const q = map(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+    if (close) ctx.closePath(); ctx.stroke();
+  };
+  if (f.contour && f.contour.length > 2) poly(f.contour, false);
+  else {
+    const c = map(f.center), top = map([f.center[0], f.center[1] - f.height / 2]);
+    const rh = Math.abs(c[1] - top[1]);
+    ctx.beginPath(); ctx.ellipse(c[0], c[1], rh * (Math.abs(f.yaw) > 45 ? 0.6 : 0.78), rh, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  poly(f.mouth, true);
+  for (const k of ["leftEye", "rightEye"]) if (f[k]) { const q = map(f[k]); ctx.beginPath(); ctx.arc(q[0], q[1], width * 1.8, 0, 7); ctx.fill(); }
+  if (f.nose) { const q = map(f.nose); ctx.beginPath(); ctx.arc(q[0], q[1], width * 1.3, 0, 7); ctx.stroke(); }
+}
+
+function drawOutlines(ctx, map, color, width, fill) {
+  for (const o of record().outlines || []) {
+    if (o.length < 3) continue;
+    ctx.beginPath(); o.forEach((p, i) => { const q = map(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+  }
+}
+
+function draw() {
+  const r = main.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (main.width !== Math.round(r.width * dpr) || main.height !== Math.round(r.height * dpr)) {
+    main.width = Math.round(r.width * dpr); main.height = Math.round(r.height * dpr);
+  }
+  const ctx = mctx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!current || !image) { drawPreview(); return; }
+  const [w, h] = size();
+  ctx.drawImage(image, view.ox, view.oy, w * view.s, h * view.s);
+
+  // 枠の外を暗く
+  const [cx, cy, cw, ch] = crop();
+  const a = pxToCanvas(cx, cy), b = pxToCanvas(cx + cw, cy + ch);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, r.width, r.height); ctx.rect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  ctx.fillStyle = mode === "crop" ? "rgba(0,0,0,.55)" : "rgba(0,0,0,.35)"; ctx.fill("evenodd");
+  ctx.restore();
+  ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = mode === "crop" ? 2 : 1.2; ctx.setLineDash(mode === "crop" ? [] : [6, 4]);
+  ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.setLineDash([]);
+  if (mode === "crop") for (const p of cropCorners()) { ctx.fillStyle = "#ffd23f"; ctx.fillRect(p[0] - 6, p[1] - 6, 12, 12); }
+
+  drawOutlines(ctx, toCanvas, "rgba(255,255,255,.7)", 1.2, "rgba(255,255,255,.05)");
+
+  const js = joints();
+  ctx.lineWidth = 3; ctx.lineCap = "round";
+  for (const [p, q] of BONES) {
+    if (!js[p] || !js[q]) continue;
+    const u = toCanvas(js[p]), v = toCanvas(js[q]);
+    ctx.strokeStyle = "rgba(0,220,255,.9)"; ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+  }
+  const f = face();
+  drawFace(ctx, f, toCanvas, "#4dff7a", 2);
+  if (mode === "bones") {
+    for (const name of Object.keys(js)) {
+      const c = toCanvas(js[name]);
+      ctx.beginPath(); ctx.arc(c[0], c[1], name === selected ? 8 : 6.5, 0, 7);
+      ctx.fillStyle = jointColor(name) + "66"; ctx.fill();
+      ctx.strokeStyle = jointColor(name); ctx.lineWidth = 2; ctx.stroke();
+      if (name === selected || name === hover) {
+        ctx.font = "bold 12px sans-serif"; ctx.fillStyle = "#000"; ctx.fillText(JOINTS[name], c[0] + 11, c[1] - 9);
+        ctx.fillStyle = "#fff"; ctx.fillText(JOINTS[name], c[0] + 10, c[1] - 10);
+      }
+    }
+    if (f) {
+      const c = toCanvas(f.center), q = ringPoint(f);
+      ctx.setLineDash([4, 3]); ctx.strokeStyle = "#4dff7a"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c[0], c[1], 11, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+      ctx.fillStyle = "#4dff7a"; ctx.beginPath(); ctx.arc(q[0], q[1], 7, 0, 7); ctx.fill();
+    }
+  }
+  drawPreview();
+}
+
+// アプリの撮影画面に重なる見え方（枠の中だけ）
+function drawPreview() {
+  const ctx = pctx, PW = preview.width, PH = preview.height;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, PW, PH);
+  if (!current || !image) return;
+  const [w, h] = size(), [cx, cy, cw, ch] = crop();
+  const map = (p) => [(p[0] * w - cx) / cw * PW, (p[1] * h - cy) / ch * PH];
+  if ($("pv-photo").checked) {
+    const o = map([0, 0]), e = map([1, 1]);
+    ctx.globalAlpha = 0.85; ctx.drawImage(image, o[0], o[1], e[0] - o[0], e[1] - o[1]); ctx.globalAlpha = 1;
+  }
+  if ($("pv-outline").checked) drawOutlines(ctx, map, "rgba(255,255,255,.95)", 4, "rgba(255,255,255,.15)");
+  if ($("pv-bones").checked) {
+    const js = joints();
+    ctx.setLineDash([12, 8]); ctx.lineWidth = 4; ctx.strokeStyle = "rgba(255,255,255,.9)";
+    for (const [p, q] of BONES) {
+      if (!js[p] || !js[q]) continue;
+      const u = map(js[p]), v = map(js[q]);
+      ctx.beginPath(); ctx.moveTo(u[0], u[1]); ctx.lineTo(v[0], v[1]); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  if ($("pv-face").checked) drawFace(ctx, face(), map, "rgba(255,255,255,.95)", 3.5);
+}
+
+function cropCorners() {
+  const [cx, cy, cw, ch] = crop();
+  return [pxToCanvas(cx, cy), pxToCanvas(cx + cw, cy), pxToCanvas(cx, cy + ch), pxToCanvas(cx + cw, cy + ch)];
+}
+
+// MARK: - マウス
+
+function hit(x, y) {
+  const near = (p, r) => Math.hypot(p[0] - x, p[1] - y) <= r;
+  if (mode === "crop") {
+    const corners = cropCorners();
+    for (let i = 0; i < 4; i++) if (near(corners[i], 12)) return { kind: "corner", index: i };
+    const [cx, cy, cw, ch] = crop(), p = toPhoto(x, y), [w, h] = size();
+    if (p[0] * w >= cx && p[0] * w <= cx + cw && p[1] * h >= cy && p[1] * h <= cy + ch) return { kind: "crop" };
+    return null;
+  }
+  const f = face();
+  if (f && near(ringPoint(f), 11)) return { kind: "ring" };
+  if (f && near(toCanvas(f.center), 13)) return { kind: "faceCenter" };
+  let best = null, bestD = 13;
+  for (const [name, p] of Object.entries(joints())) {
+    const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
+    if (d <= bestD) { best = name; bestD = d; }
+  }
+  return best ? { kind: "joint", name: best } : null;
+}
+
+function local(e) { const r = main.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+
+main.addEventListener("contextmenu", (e) => e.preventDefault());
+main.addEventListener("mousedown", (e) => {
+  if (!current) return;
+  const [x, y] = local(e);
+  if (e.button !== 0 || spaceDown) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
+  const h = hit(x, y);
+  if (!h) { selected = null; drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; draw(); updateTools(); return; }
+  pushUndo();
+  if (h.kind === "joint") {
+    selected = h.name;
+    const c = toCanvas(joints()[h.name]);
+    drag = { kind: "joint", name: h.name, dx: c[0] - x, dy: c[1] - y };
+  } else if (h.kind === "faceCenter" || h.kind === "ring") {
+    drag = { kind: h.kind, start: clone(face()), x, y };
+  } else if (h.kind === "crop" || h.kind === "corner") {
+    drag = { kind: h.kind, index: h.index, start: crop().slice(), x, y };
+  }
+  updateTools(); draw();
+});
+window.addEventListener("mousemove", (e) => {
+  if (!current) return;
+  const [x, y] = local(e);
+  if (!drag) {
+    const h = hit(x, y);
+    const name = h && h.kind === "joint" ? h.name : null;
+    main.style.cursor = h ? (h.kind === "crop" ? "move" : "grab") : (spaceDown ? "grab" : "crosshair");
+    if (name !== hover) { hover = name; draw(); }
+    return;
+  }
+  const [w, h] = size();
+  if (drag.kind === "pan") {
+    view.ox = drag.ox + x - drag.x; view.oy = drag.oy + y - drag.y;
+  } else if (drag.kind === "joint") {
+    editableJoints()[drag.name] = toPhoto(x + drag.dx, y + drag.dy);
+  } else if (drag.kind === "faceCenter") {
+    const c = toCanvas(drag.start.center);
+    setEdit("face", transformFace(drag.start, toPhoto(c[0] + x - drag.x, c[1] + y - drag.y), 1, 0));
+  } else if (drag.kind === "ring") {
+    const c = toCanvas(drag.start.center), r0 = ringPoint(drag.start);
+    const v0 = [r0[0] - c[0], r0[1] - c[1]], v1 = [v0[0] + x - drag.x, v0[1] + y - drag.y];
+    const s = Math.max(0.3, Math.min(3, Math.hypot(v1[0], v1[1]) / Math.max(Math.hypot(v0[0], v0[1]), 1)));
+    const rot = Math.atan2(v1[1], v1[0]) - Math.atan2(v0[1], v0[0]);
+    setEdit("face", transformFace(drag.start, drag.start.center, s, rot));
+  } else if (drag.kind === "crop") {
+    const [cx, cy, cw, ch] = drag.start;
+    setEdit("crop", [cx + (x - drag.x) / view.s, cy + (y - drag.y) / view.s, cw, ch]);
+  } else if (drag.kind === "corner") {
+    // 対角の隅を固定して、3:4 のまま大きさを変える
+    const [cx, cy, cw, ch] = drag.start;
+    const fixed = [[cx + cw, cy + ch], [cx, cy + ch], [cx + cw, cy], [cx, cy]][drag.index];
+    const p = toPhoto(x, y), px = p[0] * w, py = p[1] * h;
+    let nh = Math.max(Math.abs(py - fixed[1]), Math.abs(px - fixed[0]) / ASPECT, 40);
+    const nw = nh * ASPECT;
+    const nx = px < fixed[0] ? fixed[0] - nw : fixed[0], ny = py < fixed[1] ? fixed[1] - nh : fixed[1];
+    setEdit("crop", [nx, ny, nw, nh]);
+  }
+  if (drag.kind !== "pan") changed(); else draw();
+});
+window.addEventListener("mouseup", () => {
+  if (drag && drag.kind !== "pan") {
+    // 動かしていなければ戻す履歴は残さない
+    const last = undoStack[undoStack.length - 1];
+    if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
+  }
+  drag = null; updateTools();
+});
+main.addEventListener("wheel", (e) => {
+  if (!current) return;
+  e.preventDefault();
+  const [x, y] = local(e);
+  const k = Math.exp(-e.deltaY * 0.0015);
+  view.ox = x - (x - view.ox) * k; view.oy = y - (y - view.oy) * k; view.s *= k;
+  draw();
+}, { passive: false });
+
+// MARK: - 一覧
+
+function renderList(scroll) {
+  const cat = $("category").value, q = $("search").value.trim(), onlyEdited = $("only-edited").checked;
+  const list = $("list");
+  list.innerHTML = "";
+  for (const it of visibleItems()) {
+    const div = document.createElement("div");
+    div.className = "item" + (it.name === current ? " active" : "");
+    div.innerHTML = `<span>${it.label}<br><small>${it.name}</small></span>` +
+      (edits[it.name] ? `<span class="badge">● 手直し</span>` : "");
+    div.onclick = () => select(it.name);
+    list.appendChild(div);
+    if (scroll && it.name === current) setTimeout(() => div.scrollIntoView({ block: "nearest" }), 0);
+  }
+}
+function visibleItems() {
+  const cat = $("category").value, q = $("search").value.trim(), onlyEdited = $("only-edited").checked;
+  return items.filter((it) => (!cat || it.category === cat) && (!q || (it.label + it.name).includes(q))
+    && (!onlyEdited || edits[it.name]));
+}
+
+function select(name) {
+  current = name; selected = null; hover = null;
+  const it = items.find((i) => i.name === name);
+  $("title").textContent = it ? `${it.label}（${it.name}）` : name;
+  image = images[name];
+  if (!image) {
+    const img = new Image();
+    img.onload = () => { images[name] = img; if (current === name) { image = img; fitView(); } };
+    img.src = "/photo/" + encodeURIComponent(name);
+  } else fitView();
+  renderList(true); updateTools(); draw();
+}
+
+function step(delta) {
+  const list = visibleItems();
+  const i = list.findIndex((it) => it.name === current);
+  const next = list[Math.max(0, Math.min(list.length - 1, i + delta))];
+  if (next) select(next.name);
+}
+
+// MARK: - 右側の操作
+
+function updateTools() {
+  const jt = $("joint-tools"); jt.innerHTML = "";
+  const ft = $("face-tools"); ft.innerHTML = "";
+  if (!current) return;
+  const js = joints();
+  if (selected) {
+    const b = document.createElement("button");
+    b.className = "danger"; b.textContent = `${JOINTS[selected]}を消す`;
+    b.onclick = () => { pushUndo(); delete editableJoints()[selected]; selected = null; changed(); updateTools(); };
+    jt.appendChild(b);
+  }
+  for (const name of Object.keys(JOINTS)) {
+    if (js[name]) continue;
+    const b = document.createElement("button");
+    b.textContent = "＋" + JOINTS[name];
+    b.title = "枠の中央に置きます。ドラッグして合わせてください";
+    b.onclick = () => {
+      pushUndo();
+      const [cx, cy, cw, ch] = crop(), [w, h] = size();
+      editableJoints()[name] = [(cx + cw / 2) / w, (cy + ch / 2) / h];
+      selected = name; mode = "bones"; updateMode(); changed(); updateTools();
+    };
+    jt.appendChild(b);
+  }
+  if (!jt.children.length) jt.innerHTML = '<span class="status">関節をクリックして選ぶと、消すボタンが出ます</span>';
+  const f = face();
+  if (f) {
+    const del = document.createElement("button");
+    del.className = "danger"; del.textContent = "顔を消す";
+    del.onclick = () => { pushUndo(); setEdit("face", null); updateTools(); };
+    ft.appendChild(del);
+  } else {
+    const add = document.createElement("button");
+    add.textContent = "＋顔";
+    add.onclick = () => {
+      pushUndo();
+      const [cx, cy, cw, ch] = crop(), [w, h] = size();
+      const center = js.nose ? js.nose.slice() : [(cx + cw / 2) / w, (cy + ch * 0.25) / h];
+      setEdit("face", { center, height: ch * 0.12 / h, yaw: 0, roll: 0, contour: [], mouth: [] });
+      updateTools();
+    };
+    ft.appendChild(add);
+  }
+  $("yaw-row").style.display = f ? "" : "none";
+  if (f) { $("yaw").value = Math.round(f.yaw); $("yaw-value").textContent = Math.round(f.yaw) + "°"; }
+  $("face-info").textContent = f
+    ? `傾き ${f.roll.toFixed(1)}°（画面で反時計回りが +）・高さ ${(f.height * 100).toFixed(1)}%（写真の高さに対して）`
+    : "顔なし（一致度は顔を使わずに判定します）";
+  const e = edits[current] || {};
+  $("reset-bones").disabled = !("joints" in e) && !("face" in e);
+  $("reset-crop").disabled = !("crop" in e);
+  $("reset-all").disabled = !edits[current];
+  $("undo").disabled = !undoStack.length;
+}
+
+$("yaw").addEventListener("pointerdown", () => pushUndo());
+$("yaw").addEventListener("input", () => {
+  const f = face(); if (!f) return;
+  const g = clone(f); g.yaw = Number($("yaw").value);
+  setEdit("face", g); $("yaw-value").textContent = g.yaw + "°";
+});
+
+function updateMode() {
+  $("mode-bones").classList.toggle("on", mode === "bones");
+  $("mode-crop").classList.toggle("on", mode === "crop");
+  $("hint").textContent = mode === "bones"
+    ? "関節の丸をドラッグして合わせます。顔: 点線の丸で位置、緑の丸で大きさ・傾き。右側に撮影画面での見え方が出ます。"
+    : "黄色い枠の中をドラッグで位置、四隅のドラッグで大きさ（3:4 のまま）。枠の中がそのまま撮影画面になります。";
+  draw();
+}
+$("mode-bones").onclick = () => { mode = "bones"; updateMode(); };
+$("mode-crop").onclick = () => { mode = "crop"; selected = null; updateMode(); updateTools(); };
+$("fit").onclick = fitView;
+for (const id of ["pv-photo", "pv-outline", "pv-bones", "pv-face"]) $(id).onchange = drawPreview;
+
+$("undo").onclick = undo;
+function undo() {
+  const last = undoStack.pop();
+  if (!last) return;
+  if (last.prev) edits[last.name] = last.prev; else delete edits[last.name];
+  if (last.name !== current) select(last.name);
+  changed(); updateTools();
+}
+$("reset-bones").onclick = () => { pushUndo(); removeEdit("joints"); removeEdit("face"); updateTools(); };
+$("reset-crop").onclick = () => { pushUndo(); removeEdit("crop"); updateTools(); };
+$("reset-all").onclick = () => { pushUndo(); delete edits[current]; changed(); updateTools(); };
+
+// MARK: - 保存
+
+function updateState() {
+  const n = Object.keys(edits).length;
+  $("state").innerHTML = isDirty()
+    ? `<span class="dirty">未保存の変更あり</span>（手直し ${n} 枚）`
+    : `保存済み（手直し ${n} 枚）`;
+}
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => (t.style.display = "none"), 2600);
+}
+async function save() {
+  const body = JSON.stringify({ edits });
+  try {
+    const res = await fetch("/api/save", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    savedText = JSON.stringify(edits);
+    updateState();
+    toast(`保存しました（手直し ${json.edited} 枚・builtin_shapes.json の ${json.shapes} ポーズを作り直し）`);
+  } catch (err) {
+    toast("保存できませんでした: " + err.message);
+  }
+}
+$("save").onclick = save;
+window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+window.addEventListener("keydown", (e) => {
+  // 保存は、絞り込みの欄に入力中でも効くようにする
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+  if (e.target.tagName === "INPUT" && e.target.type !== "range" && e.target.type !== "checkbox") return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
+  if (e.key === "ArrowDown") { e.preventDefault(); step(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); step(-1); }
+  else if (e.key === " ") { spaceDown = true; e.preventDefault(); }
+  else if (e.key === "b" || e.key === "B") { mode = "bones"; updateMode(); }
+  else if (e.key === "c" || e.key === "C") { mode = "crop"; selected = null; updateMode(); updateTools(); }
+  else if (e.key === "f" || e.key === "F") fitView();
+  else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
+    pushUndo(); delete editableJoints()[selected]; selected = null; changed(); updateTools();
+  }
+});
+window.addEventListener("keyup", (e) => { if (e.key === " ") spaceDown = false; });
+window.addEventListener("resize", () => draw());
+for (const id of ["category", "search", "only-edited"]) $(id).addEventListener("input", () => renderList(true));
+
+// MARK: - 読み込み
+
+(async function load() {
+  const res = await fetch("/api/data");
+  const json = await res.json();
+  if (json.error) { $("title").textContent = json.error; return; }
+  items = json.items; analysis = json.analysis; edits = json.edits; savedText = JSON.stringify(edits);
+  const cats = [...new Set(items.map((i) => i.category))].filter(Boolean);
+  for (const c of cats) { const o = document.createElement("option"); o.value = o.textContent = c; $("category").appendChild(o); }
+  updateMode(); updateState();
+  if (items.length) select(items[0].name);
+})();
+</script>
+</body>
+</html>

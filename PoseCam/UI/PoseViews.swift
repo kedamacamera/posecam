@@ -386,6 +386,8 @@ struct PoseThumbnail: View {
     let template: PoseTemplate
     let isSelected: Bool
     var isFavorite = false
+    /// 見本写真のサムネイル（作り終わるまでは nil。作るのはメインスレッド以外）
+    @State private var image: UIImage?
 
     static let size = CGSize(width: 58, height: 80)
 
@@ -393,10 +395,15 @@ struct PoseThumbnail: View {
         VStack(spacing: 4) {
             Group {
                 // 組み込みポーズは見本写真、写真から登録したポーズは輪郭を表示する
-                if let name = template.imageName, let image = PoseImageCache.thumbnail(named: name) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
+                if let name = template.imageName {
+                    if let image = image ?? PoseImageCache.cachedThumbnail(named: name) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Color.clear
+                            .task(id: name) { image = await PoseImageCache.loadThumbnail(named: name) }
+                    }
                 } else {
                     Canvas { context, size in
                         let outlines = template.allOutlines
@@ -575,8 +582,6 @@ struct PoseStrip: View {
         }
         // 画面の中央にあるポーズで見出しを決める（中央を越えた時点で、前後のカテゴリへ切り替わる）
         .scrollPosition(id: $visibleItem, anchor: .center)
-        // 見出しのタップで合わせている間は、惰性・指でのスクロールを止める
-        .scrollDisabled(isJumping)
         .onChange(of: visibleItem) {
             guard !isJumping, let visibleItem,
                   let category = items.first(where: { $0.id == visibleItem })?.category,
@@ -588,28 +593,28 @@ struct PoseStrip: View {
     }
 
     /// 見出しをタップしたとき、そのカテゴリの先頭のポーズを中央へ動かす。
-    /// スワイプの惰性で一覧が動いている間にタップすると、惰性の動きが勝って、タップしたカテゴリへ移らないことがあった
-    /// （0.5 秒後に 1 回だけ合わせ直していたが、惰性がそれより長く続くと外れていた）。
-    /// 合わせている間は一覧のスクロールを止め、惰性が収まるまで（1.5 秒）何度か確かめて合わせ直す。
+    /// 以前は、スワイプの惰性に負けないよう 1.5 秒のあいだ一覧のスクロールを止めて何度も合わせ直していたため、
+    /// タップ後しばらく一覧を触れず、見出しのタップも効かないように見えていた（サムネイルの作成で
+    /// メインスレッドが止まっていたのも重なっていた）。
+    /// いまは一覧を止めず、すぐに動かして、0.35 秒後に 1 回だけ（惰性で外れていれば）合わせ直す。
+    /// その間に別の見出しをタップすれば、そちらが優先される
     private func jump(to category: String) {
         guard let first = items.first(where: { $0.category == category }) else { return }
         jumpGeneration += 1
         let generation = jumpGeneration
         isJumping = true
         activeCategory = category
-        rowProxy?.scrollTo(first.id, anchor: .center)
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.25)) { visibleItem = first.id }
+        withAnimation(.easeOut(duration: 0.25)) {
+            rowProxy?.scrollTo(first.id, anchor: .center)
+            visibleItem = first.id
         }
-        for delay in [0.3, 0.6, 1.0, 1.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard jumpGeneration == generation, activeCategory == category else { return }
-                if items.first(where: { $0.id == visibleItem })?.category != category {
-                    rowProxy?.scrollTo(first.id, anchor: .center)
-                    visibleItem = first.id
-                }
-                if delay == 1.5 { isJumping = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard jumpGeneration == generation else { return }
+            if items.first(where: { $0.id == visibleItem })?.category != category {
+                rowProxy?.scrollTo(first.id, anchor: .center)
+                visibleItem = first.id
             }
+            isJumping = false
         }
     }
 

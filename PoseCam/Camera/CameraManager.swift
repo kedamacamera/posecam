@@ -145,6 +145,8 @@ final class CameraManager: NSObject, ObservableObject {
             updateMotionWatch()
         }
     }
+    /// ダイレクトフラッシュ 2: 人物の周りの背景も暗く落とす（1 はフラッシュの届いた所はそのまま明るい）
+    @Published var directFlashDark = false
     @Published var autoShutter = false {
         didSet { updatePoseNeeded() }
     }
@@ -222,7 +224,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 撮り終わったら連続撮影の終わりの合図をする写真（uniqueID）
     private let endSignalPhotoID = Locked<Int64?>(nil)
     /// ダイレクトフラッシュで撮る写真ごとの、発光直前のコマ（写真の uniqueID ごと）
-    private let ambientFrames = Locked<[Int64: (image: CIImage, exif: [String: Any])]>([:])
+    private let ambientFrames = Locked<[Int64: (image: CIImage, exif: [String: Any], dark: Bool)]>([:])
 
     // sessionQueue 専用
     private var videoInput: AVCaptureDeviceInput?
@@ -308,6 +310,30 @@ final class CameraManager: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    /// アルバム・写真の編集を開いている間、カメラを止める（裏で動かし続けると熱くなり、電池が減る）。
+    /// 撮影中（シャッターを押してから写真が届くまで）は、写真が届いてから止める。
+    /// 写真の加工・保存はカメラと関係なく続く。start() で動かし直す
+    func suspend(attempt: Int = 0) {
+        stopRecordingIfNeeded()
+        if (isCapturing || isSequenceRunning) && attempt < 20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.suspend(attempt: attempt + 1) }
+            return
+        }
+        sessionQueue.async {
+            guard self.session.isRunning else { return }
+            self.setTorch(false)
+            self.session.stopRunning()
+            Diagnostics.mark("カメラを止めた（アルバム）")
+        }
+    }
+
+    /// suspend() で止めたカメラを動かし直す（動画・スナップのライトも元に戻す）
+    func resume() {
+        start()
+        // start() はカメラの許可を確かめてから動かし始めるので、動き出してからライトを付け直す
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.applyTorch() }
     }
 
     private func configureIfNeeded() {
@@ -932,8 +958,10 @@ final class CameraManager: NSObject, ObservableObject {
     /// 撮影 1 回ぶんの設定。シャッターを押した時点の値で固定する。
     private struct ShotOptions {
         let flash: Bool
-        /// ダイレクトフラッシュ（背景を暗く落とす）
+        /// ダイレクトフラッシュ
         let direct: Bool
+        /// ダイレクトフラッシュ 2（人物の周りの背景も暗く落とす）
+        var directDark = false
         let mute: Bool
         /// iOS が消音を許可していない機種で、映像のコマを写真として保存する
         let silent: Bool
@@ -957,7 +985,8 @@ final class CameraManager: NSObject, ObservableObject {
         let total = burstCount
         let interval = Self.burstInterval
         let delay = timerSeconds > 0 ? Double(timerSeconds) : (total > 1 ? interval : 0)
-        let options = ShotOptions(flash: flashOn, direct: flashOn && directFlash, mute: muteShutter,
+        let options = ShotOptions(flash: flashOn, direct: flashOn && directFlash,
+                                  directDark: flashOn && directFlash && directFlashDark, mute: muteShutter,
                                   silent: usesSilentFrames, fast: total > 1)
         showCountdown(timerSeconds)
         // 撮影のタイマーと同じ基準の時刻から、円の残りを計算する
@@ -1089,7 +1118,7 @@ final class CameraManager: NSObject, ObservableObject {
                 // カメラのコマの入れ物はすぐ次のコマに使い回されるので、縮小した自前の画像に写しておく
                 // （写しておかないと、写真の加工のときには中身が変わっていて書き出しに失敗していた）
                 var frames = ambientFrames.value
-                frames[photoSettings.uniqueID] = (ambient, latestExifBox.value)
+                frames[photoSettings.uniqueID] = (ambient, latestExifBox.value, options.directDark)
                 ambientFrames.value = frames
             }
         }
@@ -1163,14 +1192,14 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func processPhoto(_ data: Data, metadata: [String: Any], settings: ProcessingSettings, aspect: CGFloat,
-                              ambient: (image: CIImage, exif: [String: Any])?) -> (jpeg: Data, thumbnail: UIImage?)? {
+                              ambient: (image: CIImage, exif: [String: Any], dark: Bool)?) -> (jpeg: Data, thumbnail: UIImage?)? {
         guard let source = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
-        var flash: (image: CIImage, ratio: Double)?
+        var flash: (image: CIImage, ratio: Double, dark: Bool)?
         if let ambient {
             // 写真とコマの露出（シャッター速度 × ISO）の比で、コマの明るさを写真の明るさにそろえる
             if let photoExposure = PhotoMetadata.exposure(of: metadata),
                let frameExposure = PhotoMetadata.exposure(ofExif: ambient.exif), frameExposure > 0 {
-                flash = (ambient.image, photoExposure / frameExposure)
+                flash = (ambient.image, photoExposure / frameExposure, ambient.dark)
             } else {
                 Diagnostics.log("ダイレクトフラッシュ: 露出の情報がないので通常のフラッシュで保存")
             }
@@ -1197,7 +1226,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// ambient: ダイレクトフラッシュで、発光直前のコマと露出の比。
     private func processStill(_ source: CIImage, settings: ProcessingSettings, aspect: CGFloat,
                               metadata: [String: Any], upscaleTo: CGSize?,
-                              ambient: (image: CIImage, ratio: Double)? = nil) -> (jpeg: Data, thumbnail: UIImage?)? {
+                              ambient: (image: CIImage, ratio: Double, dark: Bool)? = nil) -> (jpeg: Data, thumbnail: UIImage?)? {
         let normalized = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
                                                                   y: -source.extent.minY))
         var image = FrameGeometry(sourceSize: normalized.extent.size, aspect: aspect, maxLongSide: nil)
@@ -1218,7 +1247,8 @@ final class CameraManager: NSObject, ObservableObject {
             let cropped = FrameGeometry(sourceSize: frame.extent.size, aspect: aspect, maxLongSide: nil).apply(frame)
             let fitted = cropped.transformed(by: CGAffineTransform(scaleX: image.extent.width / cropped.extent.width,
                                                                    y: image.extent.height / cropped.extent.height))
-            image = DirectFlash.apply(photo: image, ambient: fitted, exposureRatio: ambient.ratio)
+            image = DirectFlash.apply(photo: image, ambient: fitted, exposureRatio: ambient.ratio,
+                                      darkBackground: ambient.dark)
         }
 
         let wantsMasks = settings.needsSkinMask
