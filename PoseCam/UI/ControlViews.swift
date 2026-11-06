@@ -224,20 +224,18 @@ struct LensBar: View {
                     .contentShape(Rectangle())
                     .gesture(dragGesture)
                     .transition(.opacity)
-            } else if let activeLens {
-                Text(activeLens)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .shadow(color: .black.opacity(0.6), radius: 2)
             }
-            HStack(spacing: 6) {
+            // 倍率ボタンは同じ大きさの丸を 1 本の帯にまとめる（選んだ丸だけ大きくすると、帯の外へはみ出していた）。
+            // いま使っているレンズの名前は、帯の左に楕円で囲んで出す
+            HStack(spacing: 4) {
                 ForEach(options) { option in
                     let active = option.displayFactor == activeFactor
                     Text(active ? ZoomFormat.short(zoom) + "×" : ZoomFormat.short(option.displayFactor))
                         .font(.system(size: active ? 12 : 11, weight: .bold))
                         .foregroundStyle(active ? Color.yellow : .white)
-                        .frame(width: active ? 40 : 32, height: active ? 40 : 32)
-                        .background(Circle().fill(Color.black.opacity(0.45)))
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.white.opacity(active ? 0.18 : 0)))
+                        .contentShape(Circle())
                         .onTapGesture { onSelect(option.displayFactor) }
                         .gesture(
                             LongPressGesture(minimumDuration: 0.3)
@@ -247,6 +245,23 @@ struct LensBar: View {
                                 }
                                 .sequenced(before: dragGesture)
                         )
+                }
+            }
+            .padding(3)
+            .background(Capsule().fill(Color.black.opacity(0.45)))
+            .overlay(alignment: .leading) {
+                if let activeLens {
+                    Text(activeLens)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.black.opacity(0.45)))
+                        .overlay(Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.8))
+                        .alignmentGuide(.leading) { $0[.trailing] + 8 }
+                        .allowsHitTesting(false)
                 }
             }
         }

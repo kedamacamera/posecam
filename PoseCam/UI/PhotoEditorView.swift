@@ -2,7 +2,8 @@ import CoreImage
 import ImageIO
 import SwiftUI
 
-/// 写真の編集。傾き補正（射影変換）・縦横の伸縮・肌の補正をかけて、新しい写真として保存する（元の写真は残る）。
+/// 写真の編集。傾き補正（射影変換）・縦横の伸縮・美肌とスタイル・フィルターをかけて、新しい写真として保存する
+/// （元の写真は残る）。美肌・スタイルとフィルターは、撮影画面と同じパネル・同じ加工を使う。
 ///
 /// 傾き補正（Snapseed の「射影変換」と同じ）で画面の端にできるすき間は、
 /// - 既定では、すき間が入らない範囲まで自動で切り抜き、元の大きさに戻す
@@ -16,7 +17,7 @@ struct PhotoEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     private enum Tool: String, CaseIterable, Identifiable {
-        case tilt = "傾き", stretch = "伸縮", skin = "肌"
+        case tilt = "傾き", stretch = "伸縮", beauty = "美肌・スタイル", filter = "フィルター"
         var id: String { rawValue }
     }
 
@@ -30,10 +31,14 @@ struct PhotoEditorView: View {
     @State private var stretchX = 0.0
     @State private var stretchY = 0.0
     @State private var fill = false
-    @State private var skin = ProcessingSettings(smoothing: 0, brightening: 0)
-    /// 画面用の小さな画像と、その肌・顔のマスク（読み込み時に 1 回だけ求める）
+    /// 美肌・スタイルとフィルター（撮影画面と同じ設定。最初はどれもかけない）
+    @State private var settings = ProcessingSettings(smoothing: 0, brightening: 0)
+    @State private var beautyItem: BeautyItem = .smoothing
+    /// 押している間だけ、美肌・スタイルを外して比べる
+    @State private var showOriginal = false
+    /// 画面用の小さな画像と、その肌・顔のマスクと骨格（読み込み時に 1 回だけ求める）
     @State private var small: CIImage?
-    @State private var smallMasks: BeautyMasks?
+    @State private var smallAnalysis: PoseDetector.Result?
     @State private var isSaving = false
     @State private var message: String?
     @State private var renderTask: Task<Void, Never>?
@@ -55,7 +60,7 @@ struct PhotoEditorView: View {
                         Image(uiImage: preview)
                             .resizable()
                             .scaledToFit()
-                            .overlay(tool == .skin || zoom > 1.01 ? nil : GridOverlay(style: .thirds))
+                            .overlay(tool == .tilt && zoom <= 1.01 ? GridOverlay(style: .thirds) : nil)
                             .scaleEffect(zoom)
                             .offset(pan)
                     } else {
@@ -92,36 +97,42 @@ struct PhotoEditorView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
 
-                VStack(spacing: 6) {
+                Group {
                     switch tool {
                     case .tilt:
-                        slider("縦", value: $vertical, range: -1...1)
-                        slider("横", value: $horizontal, range: -1...1)
-                        slider("回転", value: $rotation, range: -15...15)
-                        Picker("すき間", selection: $fill) {
-                            Text("切り抜く").tag(false)
-                            Text("反転で埋める").tag(true)
+                        VStack(spacing: 6) {
+                            slider("縦", value: $vertical, range: -1...1)
+                            slider("横", value: $horizontal, range: -1...1)
+                            slider("回転", value: $rotation, range: -15...15)
+                            Picker("すき間", selection: $fill) {
+                                Text("切り抜く").tag(false)
+                                Text("反転で埋める").tag(true)
+                            }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
+                        .padding(.horizontal)
                     case .stretch:
-                        slider("横幅", value: $stretchX, range: -1...1)
-                        slider("縦幅", value: $stretchY, range: -1...1)
-                    case .skin:
-                        slider("美肌", value: $skin.smoothing, range: 0...1, zero: 0)
-                        slider("美白", value: $skin.brightening, range: 0...1, zero: 0)
-                        slider("赤み", value: $skin.redness, range: 0...1, zero: 0)
-                        slider("シミ", value: $skin.blemish, range: 0...1, zero: 0)
-                        slider("青ひげ", value: $skin.beard, range: 0...1, zero: 0)
+                        // 右へ動かすと広く・高く、左へ動かすと狭く・低くなる（写真の縦横の大きさが変わる）
+                        VStack(spacing: 6) {
+                            slider("横幅", value: $stretchX, range: -1...1)
+                            slider("縦幅", value: $stretchY, range: -1...1)
+                        }
+                        .padding(.horizontal)
+                    case .beauty:
+                        // 撮影画面と同じパネル（項目を選んで 1 本のスライダーで強さを決める）
+                        BeautyPanel(settings: $settings, showOriginal: $showOriginal, selected: $beautyItem)
+                    case .filter:
+                        FilterStrip(selection: $settings.filter, strength: $settings.filterStrength)
                     }
                 }
-                .frame(height: 150, alignment: .top)
-                .padding(.horizontal)
+                .frame(height: 140, alignment: .top)
 
                 if let message {
                     Text(message).font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .padding(.bottom)
+            // 一番下の操作が、画面の下端（ホームに戻る・アプリの切り替えの操作をする所）に近すぎないようにする
+            .padding(.bottom, 28)
             .background(Color.black.ignoresSafeArea())
             .navigationTitle("編集")
             .navigationBarTitleDisplayMode(.inline)
@@ -136,6 +147,8 @@ struct PhotoEditorView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // スライダーを動かしている指が下端に触れても、アプリの切り替えにならないようにする（下端を 2 回なぞると切り替わる）
+        .defersSystemGestures(on: .bottom)
         // 撮影画面の上に開いたとき、下の画面が透けて重なって見えないようにする
         .presentationBackground(Color.black)
         .task { load() }
@@ -145,7 +158,8 @@ struct PhotoEditorView: View {
         .onChange(of: stretchX) { schedulePreview() }
         .onChange(of: stretchY) { schedulePreview() }
         .onChange(of: fill) { schedulePreview() }
-        .onChange(of: skin) { schedulePreview() }
+        .onChange(of: settings) { schedulePreview() }
+        .onChange(of: showOriginal) { schedulePreview() }
     }
 
     private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>,
@@ -173,6 +187,14 @@ struct PhotoEditorView: View {
                     stretchX: stretchX, stretchY: stretchY)
     }
 
+    /// 美肌・スタイル・フィルター・脚長をかける（撮影したときと同じ処理）
+    private static func applyEffects(_ image: CIImage, settings: ProcessingSettings,
+                                     analysis: PoseDetector.Result?) -> CIImage {
+        guard settings.needsMasks || settings.filter != .none || settings.legLength > 0.01 else { return image }
+        let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis?.pose, manual: nil) : nil
+        return processor.process(image, settings: settings, legs: legs, masks: analysis?.masks)
+    }
+
     private func load() {
         guard let image = CIImage(data: data, options: [.applyOrientationProperty: true]) else {
             message = "写真を読み込めませんでした"
@@ -190,10 +212,10 @@ struct PhotoEditorView: View {
         small = reduced
         schedulePreview()
         Task.detached(priority: .userInitiated) {
-            let masks = PoseDetector().analyze(ciImage: reduced, wantsMasks: true).masks
+            let analysis = PoseDetector().analyze(ciImage: reduced, wantsMasks: true, wantsPerson: true)
             await MainActor.run {
-                smallMasks = masks
-                if skin.needsSkinMask { schedulePreview() }
+                smallAnalysis = analysis
+                schedulePreview()
             }
         }
     }
@@ -201,12 +223,10 @@ struct PhotoEditorView: View {
     private func schedulePreview() {
         guard let small else { return }
         renderTask?.cancel()
-        let geometry = self.geometry, fill = self.fill, skin = self.skin, masks = smallMasks
+        let geometry = self.geometry, fill = self.fill, analysis = smallAnalysis
+        let settings = showOriginal ? self.settings.withoutBeauty : self.settings
         renderTask = Task.detached(priority: .userInitiated) {
-            var image = small
-            if skin.needsSkinMask, let masks {
-                image = Self.processor.process(image, settings: skin, legs: nil, masks: masks)
-            }
+            let image = Self.applyEffects(small, settings: settings, analysis: analysis)
             let output = geometry.apply(to: image, fill: fill)
             guard !Task.isCancelled,
                   let cgImage = Self.context.createCGImage(output, from: output.extent) else { return }
@@ -218,12 +238,14 @@ struct PhotoEditorView: View {
     private func save() {
         guard let source else { return }
         isSaving = true
-        let geometry = self.geometry, fill = self.fill, skin = self.skin, properties = self.properties
+        let geometry = self.geometry, fill = self.fill, settings = self.settings, properties = self.properties
         Task.detached(priority: .userInitiated) {
-            var image = source
-            if skin.needsSkinMask, let masks = PoseDetector().analyze(ciImage: source, wantsMasks: true).masks {
-                image = Self.processor.process(image, settings: skin, legs: nil, masks: masks)
+            var analysis = PoseDetector.Result()
+            if settings.needsMasks || settings.legLength > 0.01 {
+                analysis = PoseDetector().analyze(ciImage: source, wantsMasks: settings.needsSkinMask,
+                                                  wantsPerson: settings.needsPersonMask)
             }
+            let image = Self.applyEffects(source, settings: settings, analysis: analysis)
             let output = geometry.apply(to: image, fill: fill)
             guard let jpeg = PhotoMetadata.jpeg(output, metadata: properties, context: Self.context) else {
                 await MainActor.run { isSaving = false; message = "保存できませんでした" }
@@ -240,7 +262,7 @@ struct PhotoEditorView: View {
 }
 
 /// 射影変換の設定。vertical / horizontal は -1...1（端の長さを最大 ±30% 変える）、回転は度、
-/// stretchX / stretchY は -1...1（横幅・縦幅を最大 ±30% 伸び縮みさせる）。
+/// stretchX / stretchY は -1...1（写真の横幅・縦幅を最大 ±30% 伸び縮みさせる。写真の大きさも変わる）。
 struct Perspective {
     var vertical: Double
     var horizontal: Double
@@ -248,11 +270,20 @@ struct Perspective {
     var stretchX: Double = 0
     var stretchY: Double = 0
 
-    /// image は原点が (0, 0)。出力は元と同じ大きさ。
-    /// fill が false のときは、すき間が入らない範囲まで切り抜いて元の大きさに引き伸ばす。
-    func apply(to image: CIImage, fill: Bool) -> CIImage {
-        let w = image.extent.width, h = image.extent.height
+    /// image は原点が (0, 0)。
+    /// 伸縮は、まず写真そのものの横幅・縦幅を変える（以前は伸ばした後に元の縦横比で切り抜き直していたため、
+    /// 横幅を縮めると縦に伸びたように見え、縦横が入れ替わったように感じられた）。
+    /// そのうえで傾き補正をかけ、出力は伸縮後の大きさ。
+    /// fill が false のときは、すき間が入らない範囲まで切り抜いて伸縮後の大きさに引き伸ばす。
+    func apply(to input: CIImage, fill: Bool) -> CIImage {
+        let w0 = input.extent.width, h0 = input.extent.height
+        let w = max(1, (w0 * (1 + CGFloat(stretchX) * 0.3)).rounded())
+        let h = max(1, (h0 * (1 + CGFloat(stretchY) * 0.3)).rounded())
+        let image = (w == w0 && h == h0) ? input
+            : input.transformed(by: CGAffineTransform(scaleX: w / w0, y: h / h0))
+                .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
         let target = CGRect(x: 0, y: 0, width: w, height: h)
+        guard vertical != 0 || horizontal != 0 || rotationDegrees != 0 else { return image }
         let corners = destinationCorners(width: w, height: h)
         // 元の四隅（左下・右下・左上・右上。Core Image は左下原点）→ 変形後の四隅
         let sourceCorners = [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: 0, y: h), CGPoint(x: w, y: h)]
@@ -319,10 +350,9 @@ struct Perspective {
         return low
     }
 
-    /// 変形後の四隅（左下・右下・左上・右上）。中心はそのままで、伸縮・台形にしてから回転する。
+    /// 変形後の四隅（左下・右下・左上・右上）。中心はそのままで、台形にしてから回転する（伸縮は apply で先に済ませる）。
     private func destinationCorners(width w: CGFloat, height h: CGFloat) -> [CGPoint] {
         let v = CGFloat(vertical) * 0.3, s = CGFloat(horizontal) * 0.3
-        let sx = 1 + CGFloat(stretchX) * 0.3, sy = 1 + CGFloat(stretchY) * 0.3
         // 縦: 上の辺を広げ下の辺を縮める（正の値で、上すぼまりのビルをまっすぐにする向き）
         // 横: 左の辺を伸ばし右の辺を縮める
         let local = [
@@ -330,7 +360,7 @@ struct Perspective {
             CGPoint(x: w / 2 * (1 - v), y: -h / 2 * (1 - s)),
             CGPoint(x: -w / 2 * (1 + v), y: h / 2 * (1 + s)),
             CGPoint(x: w / 2 * (1 + v), y: h / 2 * (1 - s)),
-        ].map { CGPoint(x: $0.x * sx, y: $0.y * sy) }
+        ]
         let angle = CGFloat(rotationDegrees) * .pi / 180
         return local.map { p in
             CGPoint(x: p.x * cos(angle) - p.y * sin(angle) + w / 2,

@@ -17,7 +17,7 @@ import Vision
 /// コマと写真の間には（発光前の測光のぶん）時間があり、手ぶれ・体の動きでずれる。ずれたまま比べると、
 /// 椅子や体の縁に黒い影・白い縁が出ていたので、
 /// 1. コマを写真に重なるよう位置合わせしてから比べる（Vision の画像の位置合わせ）
-/// 2. 暗くする割合は縮めた画像で求め、写真の輪郭に沿って引き伸ばす（境目が写真の縁とずれない）
+/// 2. 暗くする割合は縮めた画像で求め、なめらかに引き伸ばす（軽い）
 /// 3. 写真の方がコマより大きく暗い所（動いた所）は、広い範囲の割合を使う
 /// さらに、フラッシュらしい硬さ（パキッとした感じ）を出すため、輪郭のコントラスト（明瞭度）と全体のコントラストを上げる。
 enum DirectFlash {
@@ -47,12 +47,11 @@ enum DirectFlash {
             arguments: [blur(photoSmall, longSide * 0.004), blur(ambientSmall, longSide * 0.004),
                         blur(photoSmall, longSide * 0.05), blur(ambientSmall, longSide * 0.05),
                         Float(exposureRatio), Float(ambientGain)]) else { return photo }
-        // 写真の明るさの輪郭に沿って元の大きさへ引き伸ばす
-        let gain = photo.applyingFilter("CIEdgePreserveUpsampleFilter", parameters: [
-            "inputSmallImage": gainSmall,
-            "inputSpatialSigma": 3.0,
-            "inputLumaSigma": 0.08,
-        ]).cropped(to: extent)
+        // 元の大きさへなめらかに引き伸ばす（輪郭に沿わせる CIEdgePreserveUpsampleFilter は、
+        // 値が負になる・人の周りに色の付いた縁が出るので使わない。位置合わせ済みなので、なめらかで十分）
+        let gain = gainSmall.clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: extent.width / small.width, y: extent.height / small.height))
+            .cropped(to: extent)
         let relit = photo.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: gain])
             .cropped(to: extent)
         // 明瞭度（大きめの半径のアンシャープマスク）とコントラストで硬い光にし、周辺の落ち込みを少し足す

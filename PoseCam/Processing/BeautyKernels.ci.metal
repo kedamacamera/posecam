@@ -97,7 +97,7 @@ float4 rednessRemoval(sampler src, sampler skinSum, sampler skinWeight, float st
 /// photoLow: フラッシュ写真をぼかしたもの、ambientLow: 発光直前のコマ（周りの光だけ）をぼかしたもの。
 /// ratio: コマの明るさを写真の露出にそろえる倍率。ambientGain: 周りの光を何倍にするか（0.25 で 2 段暗く）。
 /// 写真の明るさのうち周りの光の割合 f を求め、明るさの倍率 (1 - f) + f * ambientGain を灰色の値で返す
-/// ＝フラッシュの光はそのまま、周りの光だけを減らす。縮めた画像で計算し、写真の輪郭に沿って引き伸ばしてから掛ける。
+/// ＝フラッシュの光はそのまま、周りの光だけを減らす。縮めた画像で計算し、引き伸ばしてから掛ける。
 float4 directFlash(sampler photoLow, sampler ambientLow, sampler photoCoarse, sampler ambientCoarse,
                    float ratio, float ambientGain, destination dest) {
     float2 coord = dest.coord();
@@ -149,10 +149,10 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float2 beardC = float2(beardAverage.b - beardY, beardAverage.r - beardY) / beardY;
     float2 nearC = float2(near.b - nearY, near.r - nearY) / nearY;
 
-    // 打ち消す向き: ひげの色 → 頬の色。青みを減らす向きだけにし、赤みは青みを減らす量の半分までしか足さない
+    // 打ち消す向き: ひげの色 → 頬の色。青みを減らす向きだけにし、赤みは青みを減らす量までしか足さない
     float2 axis = averageC - beardC;
     axis.x = min(axis.x, 0.0);
-    axis.y = clamp(axis.y, 0.0, -0.5 * axis.x);
+    axis.y = clamp(axis.y, 0.0, -axis.x);
     float length2 = dot(axis, axis);
     if (length2 < 0.000004) {
         return debug > 0.5 ? float4(0.0, weightSum * 10.0, 0.0, 1.0) : color;

@@ -26,6 +26,14 @@ struct ContentView: View {
     /// 水平器
     @AppStorage("showLevel") private var showLevel = true
     @State private var zoomAtGestureStart: CGFloat?
+    /// タップしてピント・露出を合わせた所（プレビューの中の位置）。nil なら枠を出さない
+    @State private var focusPoint: CGPoint?
+    @State private var focusDimmed = false
+    @State private var focusDimTask: Task<Void, Never>?
+    @State private var biasAtPanStart: Float?
+    /// 本体のボタンを押し続けたときの短い動画
+    @State private var hardwareHoldTask: Task<Void, Never>?
+    @State private var hardwareQuickVideo = false
     @State private var crashReport: CrashReport? = Diagnostics.previousCrash
 
     private let topBarHeight: CGFloat = 50
@@ -111,6 +119,7 @@ struct ContentView: View {
             if crashReport == nil { camera.start() }
         }
         .onChange(of: selectedPose) { updateTemplate() }
+        .onChange(of: camera.focusResetCount) { focusPoint = nil }
         .onChange(of: showsLegRange) { camera.showsLegRange = showsLegRange }
         .onChange(of: mirrorPose) { updateTemplate() }
         .onChange(of: scenePhase) {
@@ -159,17 +168,47 @@ struct ContentView: View {
 
         return ZStack {
             CameraPreview(renderer: camera.renderer)
-            if let template = camera.template {
-                TemplateLayer(feed: camera.poseFeed, template: template, opacity: poseOpacity)
+            Group {
+                if let template = camera.template {
+                    TemplateLayer(feed: camera.poseFeed, template: template, opacity: poseOpacity)
+                }
+                if camera.showSkeleton {
+                    SkeletonLayer(feed: camera.poseFeed)
+                }
+                if gridStyle != .off {
+                    GridOverlay(style: gridStyle)
+                }
+                if showLevel {
+                    LevelView()
+                }
             }
-            if camera.showSkeleton {
-                SkeletonLayer(feed: camera.poseFeed)
+            .allowsHitTesting(false)
+            // タップ（ピント・露出）・長押し（AE/AF ロック）・上下（露出）・つまむ（ズーム）・本体のボタン（シャッター）
+            CameraGestureView(hardwareShutterEnabled: hardwareShutterEnabled,
+                              onTap: { point, size in handleTap(point, size) },
+                              onLongPress: { point, size in handleLongPress(point, size) },
+                              onVerticalPan: { dy in handlePan(dy) },
+                              onPinch: { scale in
+                                  guard let scale else { zoomAtGestureStart = nil; return }
+                                  let start = zoomAtGestureStart ?? camera.displayZoom
+                                  zoomAtGestureStart = start
+                                  camera.setDisplayZoom(start * scale)
+                              },
+                              onHardwareButton: { pressed in hardwareButton(pressed) })
+            if let focusPoint {
+                FocusIndicator(point: focusPoint, locked: camera.isFocusLocked, bias: camera.exposureBias,
+                               dimmed: focusDimmed)
             }
-            if gridStyle != .off {
-                GridOverlay(style: gridStyle)
-            }
-            if showLevel {
-                LevelView()
+            if camera.isFocusLocked {
+                Text("AE/AF ロック")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.yellow))
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 50)
+                    .allowsHitTesting(false)
             }
             if showsLegRange {
                 LegRangeOverlay(feed: camera.poseFeed, settings: $camera.settings)
@@ -177,21 +216,95 @@ struct ContentView: View {
         }
         .frame(width: screen.width, height: height)
         .clipped()
-        .contentShape(Rectangle())
-        .gesture(
-            MagnifyGesture()
-                .onChanged { value in
-                    let start = zoomAtGestureStart ?? camera.displayZoom
-                    zoomAtGestureStart = start
-                    camera.setDisplayZoom(start * value.magnification)
-                }
-                .onEnded { _ in zoomAtGestureStart = nil }
-        )
         .offset(y: top)
     }
 
     /// 美肌・スタイルのパネルで脚長を選んでいる
     private var showsLegRange: Bool { panel == .beauty && beautyItem == .legLength }
+
+    // MARK: - ピント・露出・本体のボタン
+
+    /// アルバム・編集などの画面を開いている間は、音量ボタンをふつうの音量ボタンに戻す
+    private var hardwareShutterEnabled: Bool {
+        camera.cameraAuthorized && !showAlbum && editing == nil && !showLibrary && !showLicenses
+            && !showEditPicker && camera.snapClip == nil && crashReport == nil
+    }
+
+    /// タップ: パネルが開いていれば閉じる。閉じていれば、その所にピントと露出を合わせる
+    private func handleTap(_ point: CGPoint, _ size: CGSize) {
+        if panel != nil {
+            withAnimation(.easeOut(duration: 0.18)) { panel = nil }
+            return
+        }
+        camera.focus(at: point, in: size, lock: false)
+        showFocus(at: point)
+    }
+
+    /// 長押し: ピントと露出を合わせて固定する（AE/AF ロック）
+    private func handleLongPress(_ point: CGPoint, _ size: CGSize) {
+        if panel != nil {
+            withAnimation(.easeOut(duration: 0.18)) { panel = nil }
+            return
+        }
+        camera.focus(at: point, in: size, lock: true)
+        showFocus(at: point)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    /// 枠が出ている間、上下になぞると露出を補正する（上で明るく。120 ポイントで 1 段）
+    private func handlePan(_ dy: CGFloat?) {
+        guard focusPoint != nil else { return }
+        guard let dy else {
+            biasAtPanStart = nil
+            scheduleFocusDim()
+            return
+        }
+        let start = biasAtPanStart ?? camera.exposureBias
+        biasAtPanStart = start
+        focusDimTask?.cancel()
+        focusDimmed = false
+        camera.setExposureBias(start - Float(dy / 120))
+    }
+
+    private func showFocus(at point: CGPoint) {
+        focusPoint = point
+        focusDimmed = false
+        scheduleFocusDim()
+    }
+
+    private func scheduleFocusDim() {
+        focusDimTask?.cancel()
+        focusDimTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            focusDimmed = true
+        }
+    }
+
+    /// 本体のボタン（音量・イヤホン・リモコン・AirPods）。離したらシャッター。
+    /// 写真モードで押し続けると、画面のシャッターの長押しと同じく短い動画を撮り、離すと止める
+    private func hardwareButton(_ pressed: Bool) {
+        if pressed {
+            hardwareHoldTask?.cancel()
+            hardwareQuickVideo = false
+            guard camera.mode == .photo, !camera.isSequenceRunning, !camera.isRecording else { return }
+            hardwareHoldTask = Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled else { return }
+                hardwareQuickVideo = true
+                camera.startQuickVideo()
+            }
+            return
+        }
+        hardwareHoldTask?.cancel()
+        hardwareHoldTask = nil
+        if hardwareQuickVideo {
+            hardwareQuickVideo = false
+            camera.stopQuickVideo()
+        } else if !(camera.isRecording && camera.isQuickVideo) {
+            camera.shutterPressed()
+        }
+    }
 
     // MARK: - 上部
 
@@ -286,6 +399,20 @@ struct ContentView: View {
                         onZoom: { camera.setDisplayZoom($0) })
             }
 
+            if panel != nil {
+                // パネルを開いている間は、下のパネルの切り替えボタンを隠して画面を広くし、代わりに閉じる印を出す
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { panel = nil }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 22)
+                        .background(Capsule().fill(Color.black.opacity(0.45)))
+                }
+                .transition(.opacity)
+            }
+
             if let panel {
                 Group {
                     switch panel {
@@ -317,7 +444,10 @@ struct ContentView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            PanelChips(panel: $panel)
+            if panel == nil {
+                PanelChips(panel: $panel)
+                    .transition(.opacity)
+            }
 
             HStack {
                 flashButton

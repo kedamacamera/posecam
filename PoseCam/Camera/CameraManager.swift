@@ -96,6 +96,12 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var lastThumbnail: UIImage?
     @Published private(set) var cameraAuthorized = true
     @Published private(set) var statusMessage: String?
+    /// タップで合わせたピント・露出を固定している（AE/AF ロック）
+    @Published private(set) var isFocusLocked = false
+    /// 露出の補正（EV）
+    @Published private(set) var exposureBias: Float = 0
+    /// ピント・露出が画面全体の自動に戻るたびに 1 増える（画面のピントの枠を消す）
+    @Published private(set) var focusResetCount = 0
 
     @Published private(set) var lensOptions: [LensOption] = [LensOption(displayFactor: 1)]
     /// いま実際に使われているレンズ（超広角・広角・望遠）
@@ -309,6 +315,13 @@ final class CameraManager: NSObject, ObservableObject {
                 if !self.session.isRunning { self.session.startRunning() }
             }
         }
+        // タップで合わせた後に被写体が大きく変わったら、画面全体の自動に戻す（ロック中は通知しない）
+        NotificationCenter.default.addObserver(forName: AVCaptureDevice.subjectAreaDidChangeNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self, !self.isFocusLocked else { return }
+            self.resetFocus()
+            self.focusResetCount += 1
+        }
         Diagnostics.mark("構成: 完了")
     }
 
@@ -317,6 +330,8 @@ final class CameraManager: NSObject, ObservableObject {
         guard newMode != mode, !isRecording, !isSequenceRunning else { return }
         mode = newMode
         modeBox.value = newMode
+        resetFocus()
+        focusResetCount += 1
         let position = self.position
         let torch = flashOn && newMode != .photo
         let zoom = displayZoom
@@ -388,6 +403,9 @@ final class CameraManager: NSObject, ObservableObject {
         guard !isRecording, !isSequenceRunning else { return }
         let newPosition: AVCaptureDevice.Position = position == .back ? .front : .back
         position = newPosition
+        isFocusLocked = false
+        exposureBias = 0
+        focusResetCount += 1
         let torch = flashOn && mode != .photo
         let preset: AVCaptureSession.Preset = mode == .photo ? .photo : .hd1920x1080
         let silent = mode == .photo && usesSilentFrames
@@ -771,6 +789,73 @@ final class CameraManager: NSObject, ObservableObject {
             }
             device.unlockForConfiguration()
         } catch {}
+    }
+
+    // MARK: - ピント・露出
+
+    /// 画面をタップした所にピントと露出を合わせる（lock が true なら合わせた後に固定する: AE/AF ロック）。
+    /// point はプレビューの中の位置、size はプレビューの大きさ（どちらもポイント）。
+    /// プレビューは「選んだ比率に中央で切り抜いたコマ」をそのまま表示しているので、切り抜きを戻して元のコマの位置にし、
+    /// さらにカメラの向き（横向きのセンサー）の座標に直す。
+    func focus(at point: CGPoint, in size: CGSize, lock: Bool) {
+        guard size.width > 0, size.height > 0, let source = latestSourceBox.value?.extent.size,
+              source.width > 0, source.height > 0 else { return }
+        let crop = FrameGeometry(sourceSize: source, aspect: aspectBox.value, maxLongSide: nil).cropRect
+        let cx = min(max(point.x / size.width, 0), 1), cy = min(max(point.y / size.height, 0), 1)
+        // 元のコマ（縦向き・左上原点）の中の位置
+        let sx = (crop.minX + cx * crop.width) / source.width
+        let sy = (source.height - crop.maxY + cy * crop.height) / source.height
+        // コマは 90 度回して縦向きにしてあり、インカメラはさらに左右を反転している
+        let interest = position == .front ? CGPoint(x: sy, y: sx) : CGPoint(x: sy, y: 1 - sx)
+        isFocusLocked = lock
+        exposureBias = 0
+        sessionQueue.async {
+            guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = interest
+                // .autoFocus は 1 回合わせたら固定になる
+                let mode: AVCaptureDevice.FocusMode = lock ? .autoFocus : .continuousAutoFocus
+                if device.isFocusModeSupported(mode) { device.focusMode = mode }
+            }
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = interest
+                let mode: AVCaptureDevice.ExposureMode = lock ? .autoExpose : .continuousAutoExposure
+                if device.isExposureModeSupported(mode) { device.exposureMode = mode }
+            }
+            device.setExposureTargetBias(0, completionHandler: nil)
+            // 被写体が大きく変わったら、標準のカメラと同じく中央に戻す
+            device.isSubjectAreaChangeMonitoringEnabled = !lock
+            device.unlockForConfiguration()
+        }
+    }
+
+    /// 露出の補正（EV）。-2...+2 の範囲で、カメラが対応する範囲に収める
+    func setExposureBias(_ value: Float) {
+        let clamped = min(max(value, -2), 2)
+        exposureBias = clamped
+        sessionQueue.async {
+            guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
+            let v = min(max(clamped, device.minExposureTargetBias), device.maxExposureTargetBias)
+            device.setExposureTargetBias(v, completionHandler: nil)
+            device.unlockForConfiguration()
+        }
+    }
+
+    /// ピント・露出を画面全体の自動に戻す（被写体が変わったとき・カメラを切り替えたとき）
+    func resetFocus() {
+        isFocusLocked = false
+        exposureBias = 0
+        sessionQueue.async {
+            guard let device = self.videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
+            let center = CGPoint(x: 0.5, y: 0.5)
+            if device.isFocusPointOfInterestSupported { device.focusPointOfInterest = center }
+            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+            if device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = center }
+            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
+            device.setExposureTargetBias(0, completionHandler: nil)
+            device.isSubjectAreaChangeMonitoringEnabled = false
+            device.unlockForConfiguration()
+        }
     }
 
     // MARK: - シャッター
