@@ -250,7 +250,7 @@ for (name, original) in inputs.prefix(4) where !name.hasSuffix("_redspots") {
     context.render(diff, toBitmap: &maxPixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
                    format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
     report.append(String(format: "beard_%@: face region %@, max diff vs whole image R %.4f G %.4f B %.4f", name,
-                         masks.faceRegion.map { NSCoder.string(for: $0) } ?? "nil",
+                         masks.faceRegion.map { "\($0)" } ?? "nil",
                          maxPixel[0], maxPixel[1], maxPixel[2]))
     report.append("beard_\(name): original, stubble added, beard 100, beard mask, debug (R=w, G=ref skin x10, B=bluish x10), smoothing 80 + beard + contour 80")
 }
