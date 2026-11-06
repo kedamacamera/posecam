@@ -159,9 +159,14 @@ float4 beardConceal(sampler src, sampler local, sampler skinSum, sampler skinWei
     float y = dot(color.rgb, lumaWeights);
     float cb = color.b - y;
     float cr = color.r - y;
-    // 色み（青み）は周りの肌の色へ、明るさは暗い分の 7 割を戻す
-    float newCb = cb + (averageCb - nearCb) * w;
-    float newCr = cr + (averageCr - nearCr) * w;
+    // その画素自身が暗い（髪の毛・もみあげ）ときは変えない。ぼかした明るさだけで判定すると、
+    // 肌との境目の髪が肌の色へ寄せられて赤茶色になっていた。
+    // 色みを動かす量も、その画素の明るさに比例させる（暗い画素に明るい肌と同じ量を足すと色が浮く）
+    float own = clamp(y / max(nearY, 0.001), 0.0, 1.0);
+    w *= smoothstep(0.08, 0.15, y / max(averageY, 0.001));
+    // 色み（青み）は周りの肌の色へ
+    float newCb = cb + (averageCb - nearCb) * w * own;
+    float newCr = cr + (averageCr - nearCr) * w * own;
     // 明るさは暗い分の 4 割だけ戻す（戻しすぎると、あごの周りだけ明るく浮いて見える）
     // 影の所（あご下・口元）は明るさを戻すと平たく浮いて見えるので、色みだけを直す
     float lift = 0.4 * smoothstep(0.35, 0.55, ratioY);
