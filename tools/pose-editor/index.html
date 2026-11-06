@@ -121,12 +121,12 @@
 "use strict";
 
 const JOINTS = {
-  nose: "鼻", neck: "首", leftShoulder: "左肩", rightShoulder: "右肩", leftElbow: "左ひじ", rightElbow: "右ひじ",
+  nose: "鼻", neck: "首", head: "頭の付け根", leftShoulder: "左肩", rightShoulder: "右肩", leftElbow: "左ひじ", rightElbow: "右ひじ",
   leftWrist: "左手首", rightWrist: "右手首", leftHip: "左腰", rightHip: "右腰", leftKnee: "左ひざ", rightKnee: "右ひざ",
   leftAnkle: "左足首", rightAnkle: "右足首",
 };
-// 首と鼻はつながない（アプリの Joint.bones と同じ。頭の向き・傾きは顔で表す）
-const BONES = [["leftShoulder", "rightShoulder"], ["leftShoulder", "leftElbow"],
+// アプリの Joint.bones と同じ。首の角度は首→頭の付け根（両耳の中点）で表し、首と鼻はつながない
+const BONES = [["neck", "head"], ["leftShoulder", "rightShoulder"], ["leftShoulder", "leftElbow"],
   ["leftElbow", "leftWrist"], ["rightShoulder", "rightElbow"], ["rightElbow", "rightWrist"],
   ["leftShoulder", "leftHip"], ["rightShoulder", "rightHip"], ["leftHip", "rightHip"], ["leftHip", "leftKnee"],
   ["leftKnee", "leftAnkle"], ["rightHip", "rightKnee"], ["rightKnee", "rightAnkle"]];

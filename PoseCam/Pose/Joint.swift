@@ -4,6 +4,9 @@ import Vision
 /// 骨格の関節。left / right は「写っている人から見た」左右（Vision と同じ定義）。
 enum Joint: String, CaseIterable, Codable {
     case nose, neck
+    /// 頭の付け根（両耳の中点。片方の耳しか見えないときはその耳）。首の付け根（neck）からこの点への線で首の角度を表す。
+    /// 耳は頭が回る軸の近くにあるので、顔を横に向けてもほとんど動かず、鼻と違って首の傾きをそのまま表せる
+    case head
     case leftShoulder, rightShoulder
     case leftElbow, rightElbow
     case leftWrist, rightWrist
@@ -13,7 +16,7 @@ enum Joint: String, CaseIterable, Codable {
 
     var mirrored: Joint {
         switch self {
-        case .nose, .neck: return self
+        case .nose, .neck, .head: return self
         case .leftShoulder: return .rightShoulder
         case .rightShoulder: return .leftShoulder
         case .leftElbow: return .rightElbow
@@ -34,6 +37,7 @@ enum Joint: String, CaseIterable, Codable {
         switch self {
         case .nose: return "鼻"
         case .neck: return "首"
+        case .head: return "頭の付け根"
         case .leftShoulder: return "左肩"
         case .rightShoulder: return "右肩"
         case .leftElbow: return "左ひじ"
@@ -52,14 +56,16 @@ enum Joint: String, CaseIterable, Codable {
     /// 写っている人から見た左側の関節か（鼻・首は nil）
     var isLeft: Bool? {
         switch self {
-        case .nose, .neck: return nil
+        case .nose, .neck, .head: return nil
         case .leftShoulder, .leftElbow, .leftWrist, .leftHip, .leftKnee, .leftAnkle: return true
         default: return false
         }
     }
 
-    var visionName: VNHumanBodyPoseObservation.JointName {
+    /// Vision の関節の名前（頭の付け根は Vision にないので nil。両耳から求める）
+    var visionName: VNHumanBodyPoseObservation.JointName? {
         switch self {
+        case .head: return nil
         case .nose: return .nose
         case .neck: return .neck
         case .leftShoulder: return .leftShoulder
@@ -79,8 +85,10 @@ enum Joint: String, CaseIterable, Codable {
 
     /// 描画に使う骨（関節の組）。
     /// 首と鼻はつながない。鼻は顔を横に向けるだけで首の真上から大きく外れ、首から鼻への線が
-    /// 実際の頭の傾きと関係なく傾いて見えていた。頭の向き・傾きは顔（FaceShape の yaw・roll）で表す
+    /// 実際の頭の傾きと関係なく傾いて見えていた。首の角度は首の付け根→頭の付け根（両耳の中点）で、
+    /// 顔の向き・傾きは顔（FaceShape の yaw・roll）で表す
     static let bones: [(Joint, Joint)] = [
+        (.neck, .head),
         (.leftShoulder, .rightShoulder),
         (.leftShoulder, .leftElbow), (.leftElbow, .leftWrist),
         (.rightShoulder, .rightElbow), (.rightElbow, .rightWrist),
@@ -106,7 +114,7 @@ enum PoseSpace {
     }
 
     private static let upperJoints: Set<Joint> = [
-        .nose, .neck, .leftShoulder, .rightShoulder, .leftElbow, .rightElbow,
+        .nose, .neck, .head, .leftShoulder, .rightShoulder, .leftElbow, .rightElbow,
         .leftWrist, .rightWrist, .leftHip, .rightHip,
     ]
 

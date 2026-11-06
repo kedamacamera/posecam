@@ -112,7 +112,7 @@ final class PoseLibrary: ObservableObject {
     private func prepareBuiltInShapes() {
         let poses = builtInPoses
         // 型の作り方を変えたら名前を変えて、古い結果を使わないようにする
-        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v6.json")
+        let cacheURL = Self.documents.appendingPathComponent("builtin_pose_shapes_v7.json")
 
         DispatchQueue.global(qos: .utility).async {
             var cache = (try? JSONDecoder().decode([String: PoseShape].self,
