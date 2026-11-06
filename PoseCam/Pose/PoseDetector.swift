@@ -301,15 +301,6 @@ final class PoseDetector {
                   point.confidence > minimumConfidence else { continue }
             result[joint] = CGPoint(x: point.location.x, y: 1 - point.location.y)
         }
-        // 頭の付け根: 両耳の中点（横顔で片方しか見えないときはその耳）
-        let ears = [VNHumanBodyPoseObservation.JointName.leftEar, .rightEar].compactMap { name -> CGPoint? in
-            guard let point = try? observation.recognizedPoint(name), point.confidence > minimumConfidence else { return nil }
-            return CGPoint(x: point.location.x, y: 1 - point.location.y)
-        }
-        if !ears.isEmpty {
-            result[.head] = CGPoint(x: ears.map(\.x).reduce(0, +) / CGFloat(ears.count),
-                                    y: ears.map(\.y).reduce(0, +) / CGFloat(ears.count))
-        }
         return result
     }
 
