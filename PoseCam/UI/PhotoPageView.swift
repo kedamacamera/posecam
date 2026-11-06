@@ -50,7 +50,7 @@ struct PhotoPageView: UIViewControllerRepresentable {
             guard i >= 0, i < parent.assets.count else { return nil }
             let asset = parent.assets.object(at: i)
             let controller: UIViewController
-            let dismiss = { [weak self] in self?.parent.onDismiss() }
+            let dismiss: () -> Void = { [weak self] in self?.parent.onDismiss() }
             if asset.mediaType == .video {
                 let hosting = UIHostingController(rootView: VideoPageContent(asset: asset, index: i, state: state))
                 hosting.view.backgroundColor = .systemBackground
