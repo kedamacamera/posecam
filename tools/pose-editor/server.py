@@ -93,6 +93,13 @@ def convert_shape(record, edit):
         f["height"] = face["height"] * height / ch
         for key in ("contour", "mouth"):
             f[key] = [iso(p) for p in face.get(key) or []]
+        # ペンで描いた鼻・口の線（あるときだけ。アプリは表示にだけ使う）
+        for key in ("noseLines", "mouthLines"):
+            lines_ = [[iso(p) for p in line] for line in face.get(key) or [] if len(line) > 1]
+            if lines_:
+                f[key] = lines_
+            else:
+                f.pop(key, None)
         for key in ("leftEye", "rightEye", "nose"):
             if face.get(key) is not None:
                 f[key] = iso(face[key])

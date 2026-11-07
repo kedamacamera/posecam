@@ -194,7 +194,14 @@ enum PoseDrawing {
             let rect = CGRect(x: center.x - w / 2, y: center.y - h / 2, width: w, height: h)
             context.stroke(Path(ellipseIn: rect), with: .color(color), style: style)
         }
-        if face.mouth.count > 2 {
+        let drawnMouth = (face.mouthLines ?? []).filter { $0.count > 1 }
+        let drawnNose = (face.noseLines ?? []).filter { $0.count > 1 }
+        if !drawnMouth.isEmpty {
+            // ボーン入れツールでペンで描いた口の線
+            for line in drawnMouth {
+                context.stroke(smoothOpenPath(line.map(transform)), with: .color(color), style: style)
+            }
+        } else if face.mouth.count > 2 {
             var mouth = Path()
             mouth.addLines(face.mouth.map(transform))
             mouth.closeSubpath()
@@ -206,7 +213,7 @@ enum PoseDrawing {
             var axis = Path()
             axis.move(to: left)
             axis.addLine(to: right)
-            if let nose = face.nose {
+            if drawnNose.isEmpty, let nose = face.nose {
                 axis.move(to: CGPoint(x: (left.x + right.x) / 2, y: (left.y + right.y) / 2))
                 axis.addLine(to: transform(nose))
             }
@@ -214,7 +221,13 @@ enum PoseDrawing {
             for p in [left, right] {
                 context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(color))
             }
-        } else {
+        }
+        if !drawnNose.isEmpty {
+            // ボーン入れツールでペンで描いた鼻の線（自動の鼻の形の代わり）
+            for line in drawnNose {
+                context.stroke(smoothOpenPath(line.map(transform)), with: .color(color), style: style)
+            }
+        } else if face.leftEye == nil || face.rightEye == nil {
             // 横顔・斜めの顔: 目が取れないので、鼻の形（くの字）を、顔の向いている側に描く。
             // 以前は中心からの線と丸で向きを表していたが、目が下がって見えるため鼻と分かる形にした
             let angle = face.yaw * .pi / 180

@@ -27,6 +27,10 @@ struct FaceShape: Codable, Equatable {
     var nose: CGPoint?
     /// 唇の外側の輪郭（取れたときだけ）
     var mouth: [CGPoint] = []
+    /// ボーン入れツールでペンで描いた鼻・口の線（1 本ずつ。あれば自動の鼻の形・唇の輪郭の代わりに描く）。
+    /// 表示だけに使い、一致度には使わない
+    var noseLines: [[CGPoint]]?
+    var mouthLines: [[CGPoint]]?
 
     func map(_ transform: (CGPoint) -> CGPoint) -> FaceShape {
         var result = self
@@ -36,6 +40,8 @@ struct FaceShape: Codable, Equatable {
         result.rightEye = rightEye.map(transform)
         result.nose = nose.map(transform)
         result.mouth = mouth.map(transform)
+        result.noseLines = noseLines?.map { $0.map(transform) }
+        result.mouthLines = mouthLines?.map { $0.map(transform) }
         return result
     }
 

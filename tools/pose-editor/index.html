@@ -58,6 +58,28 @@
   .dirty { color: var(--accent); }
   #toast { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); background: #000c; padding: 8px 14px;
     border-radius: 8px; display: none; z-index: 10; }
+  /* 関節・顔のパーツの図。入っている部位は色つき、ない部位は灰色の点線 */
+  #figure { display: flex; gap: 6px; }
+  .fig { position: relative; }
+  #fig-body { width: 176px; height: 335px; }
+  .fig-face-col { width: 128px; display: flex; flex-direction: column; gap: 5px; }
+  #fig-face { width: 128px; height: 190px; }
+  .fig svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .fig button { position: absolute; transform: translate(-50%, -50%); padding: 2px 6px; font-size: 11px;
+    border-radius: 11px; white-space: nowrap; min-height: 24px; }
+  .fig button.off, #draw-tools button.off { background: #1d1f23; border: 1px dashed #5a5d63; color: #7d8087; }
+  .fig button.has-l { background: #4cc3ff33; border-color: #4cc3ff; color: #fff; }
+  .fig button.has-r { background: #ff9a3c33; border-color: #ff9a3c; color: #fff; }
+  .fig button.has-c { background: #ffffff26; border-color: #ffffff; color: #fff; }
+  .fig button.has-f, #draw-tools button.has-f { background: #4dff7a2e; border-color: #4dff7a; color: #fff; }
+  .fig button.picked { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #draw-tools { display: grid; gap: 5px; }
+  #draw-tools button { min-height: 34px; }
+  #draw-tools button.drawing { background: var(--accent); color: #111; border: 1px solid var(--accent); font-weight: 700; }
+  .legend { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 14px; height: 10px; border-radius: 5px; margin-left: 4px; }
+  .sw.on { background: #4dff7a2e; border: 1px solid #4dff7a; }
+  .sw.off { background: #1d1f23; border: 1px dashed #5a5d63; }
   kbd { background: #111; border: 1px solid #444; border-radius: 3px; padding: 0 4px; font-size: 11px; }
 </style>
 </head>
@@ -128,12 +150,20 @@
     <div class="status">2 人以上写っている写真は、人ごとに関節と顔を入れます。写真の上で別の人の関節を押しても切り替わります。</div>
   </div>
   <div>
-    <h3>関節</h3>
-    <div class="row" id="joint-tools"></div>
+    <h3>関節・顔のパーツ</h3>
+    <div class="status legend"><span class="sw on"></span>入っている（アプリで使う・表示する）
+      <span class="sw off"></span>なし（未使用）</div>
+    <div id="figure">
+      <div class="fig" id="fig-body"></div>
+      <div class="fig-face-col">
+        <div class="fig" id="fig-face"></div>
+        <div id="draw-tools"></div>
+      </div>
+    </div>
+    <div class="status">押すと足す・消すが切り替わります。体の図は正面を向いた人（本人の右が写真の左）。</div>
   </div>
   <div>
-    <h3>顔</h3>
-    <div class="row" id="face-tools"></div>
+    <h3>顔の向き</h3>
     <div class="row" id="yaw-row" style="margin-top:6px">
       <span>左右の向き</span><input id="yaw" type="range" min="-90" max="90" step="1"><span id="yaw-value"></span>
     </div>
@@ -199,6 +229,8 @@ function edit() { return edits[current] || {}; }
 let person = 0;
 // 複数選択: multi がオンのとき、ドラッグで囲んだ点（picks）をまとめて動かす
 let multi = false, picks = [];
+// ペンで鼻・口の線を描くとき "nose" か "mouth"（描いていないときは null）
+let pen = null;
 const refKey = (r) => JSON.stringify(r);
 // 選べる点すべて（全員の関節・顔の中心・目・鼻・口・あごの輪郭）
 function handles() {
@@ -209,7 +241,7 @@ function handles() {
     if (!f) continue;
     out.push({ ref: { person: i, type: "face" }, p: f.center });
     for (const key of ["leftEye", "rightEye", "nose"]) if (f[key]) out.push({ ref: { person: i, type: "part", key }, p: f[key] });
-    if (f.mouth && f.mouth.length > 2) out.push({ ref: { person: i, type: "mouth" }, p: mouthCenter(f) });
+    if (FACE_PARTS.mouth.has(f)) out.push({ ref: { person: i, type: "mouth" }, p: mouthCenter(f) });
     contourHandles(f).forEach((p, index) => out.push({ ref: { person: i, type: "contour", index }, p }));
   }
   return out;
@@ -299,12 +331,13 @@ const FACE_PARTS = {
   eyes: { label: "目", has: (f) => f.leftEye && f.rightEye,
     add: (f) => { f.leftEye = facePoint(f, -0.2, -0.08); f.rightEye = facePoint(f, 0.2, -0.08); },
     remove: (f) => { delete f.leftEye; delete f.rightEye; } },
-  nose: { label: "鼻", has: (f) => !!f.nose,
+  // 鼻・口は、点（自動の形）とペンで描いた線のどちらかがあれば「入っている」。消すと両方消す
+  nose: { label: "鼻", has: (f) => !!f.nose || hasLines(f, "nose"),
     add: (f) => { f.nose = facePoint(f, Math.sin(f.yaw * Math.PI / 180) * 0.3, 0.08); },
-    remove: (f) => { delete f.nose; } },
-  mouth: { label: "口", has: (f) => f.mouth && f.mouth.length > 2,
+    remove: (f) => { delete f.nose; delete f.noseLines; } },
+  mouth: { label: "口", has: (f) => (f.mouth && f.mouth.length > 2) || hasLines(f, "mouth"),
     add: (f) => { f.mouth = []; for (let i = 0; i < 12; i++) { const t = i / 12 * Math.PI * 2; f.mouth.push(facePoint(f, Math.cos(t) * 0.16, 0.26 + Math.sin(t) * 0.05)); } },
-    remove: (f) => { f.mouth = []; } },
+    remove: (f) => { f.mouth = []; delete f.mouthLines; } },
   contour: { label: "あごの輪郭", has: (f) => f.contour && f.contour.length > 2,
     add: (f) => { f.contour = []; for (let i = 0; i < CONTOUR_POINTS; i++) { const t = Math.PI - i / (CONTOUR_POINTS - 1) * Math.PI; f.contour.push(facePoint(f, Math.cos(t) * 0.4, Math.sin(t) * 0.5)); } },
     remove: (f) => { f.contour = []; } },
@@ -355,7 +388,18 @@ function smoothOpen(ctx, pts) {
   }
   ctx.stroke();
 }
+// 口を形ごと動かす（自動の唇の輪郭とペンで描いた口の線の両方）
+function moveMouth(g, start, move) {
+  g.mouth = (start.mouth || []).map(move);
+  if (start.mouthLines) g.mouthLines = start.mouthLines.map((s) => s.map(move));
+}
+// ペンで描いた鼻・口の線（face.noseLines・face.mouthLines。1 本ずつの点の列）
+function hasLines(f, part) { const l = f && f[part + "Lines"]; return !!(l && l.some((s) => s.length > 1)); }
 function mouthCenter(f) {
+  if (!(f.mouth && f.mouth.length > 2)) {
+    const pts = (f.mouthLines || []).flat();
+    if (pts.length) return [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
+  }
   const m = f.mouth; return [m.reduce((a, p) => a + p[0], 0) / m.length, m.reduce((a, p) => a + p[1], 0) / m.length];
 }
 
@@ -384,6 +428,7 @@ function transformFace(f, center, scale, rot) {
   out.contour = (f.contour || []).map(map);
   out.mouth = (f.mouth || []).map(map);
   for (const k of ["leftEye", "rightEye", "nose"]) if (f[k]) out[k] = map(f[k]);
+  for (const k of ["noseLines", "mouthLines"]) if (f[k]) out[k] = f[k].map((s) => s.map(map));
   return out;
 }
 
@@ -410,9 +455,14 @@ function drawFace(ctx, f, map, color, width) {
     const rh = Math.abs(c[1] - top[1]);
     ctx.beginPath(); ctx.ellipse(c[0], c[1], rh * (Math.abs(f.yaw) > 45 ? 0.6 : 0.78), rh, 0, 0, Math.PI * 2); ctx.stroke();
   }
-  poly(f.mouth, true);
+  // ペンで描いた線があれば、自動の口の形・鼻の形の代わりに描く（アプリの PoseDrawing.drawFace と同じ）
+  const lines = (part) => (f[part + "Lines"] || []).filter((s) => s.length > 1);
+  if (lines("mouth").length) for (const s of lines("mouth")) smoothOpen(ctx, s.map(map));
+  else poly(f.mouth, true);
   for (const k of ["leftEye", "rightEye"]) if (f[k]) { const q = map(f[k]); ctx.beginPath(); ctx.arc(q[0], q[1], width * 1.8, 0, 7); ctx.fill(); }
-  if (f.leftEye && f.rightEye) {
+  if (lines("nose").length) {
+    for (const s of lines("nose")) smoothOpen(ctx, s.map(map));
+  } else if (f.leftEye && f.rightEye) {
     if (f.nose) { const q = map(f.nose); ctx.beginPath(); ctx.arc(q[0], q[1], width * 1.3, 0, 7); ctx.stroke(); }
   } else {
     // 目がない（横顔・斜め・手で足した顔）ときは、アプリと同じく、顔の向いている側に鼻の形（くの字）を描く
@@ -546,6 +596,10 @@ function draw() {
       ctx.fillStyle = "#ff5fd2"; ctx.fillText(label, c[0] - 24, c[1] + rh + 16);
     }
   }
+  if (drag && drag.kind === "stroke" && drag.pts.length > 1) {
+    ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2.5; ctx.lineCap = ctx.lineJoin = "round";
+    ctx.beginPath(); drag.pts.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]))); ctx.stroke();
+  }
   if (multi) {
     const keys = new Set(picks.map(refKey));
     ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2.5;
@@ -655,11 +709,60 @@ function endDrag() {
     for (const hd of inside) if (!keys.has(refKey(hd.ref))) { keys.add(refKey(hd.ref)); picks.push(hd.ref); }
     drag = null; updateMulti(); draw(); return;
   }
+  if (drag.kind === "stroke") {
+    // 描いた線を、形が変わらない程度に点を間引いて、選んでいる人の顔に足す
+    const pts = simplifyLine(drag.pts, 0.8);
+    const f = face();
+    if (pts.length > 1 && f) {
+      const g = clone(f), key = pen + "Lines";
+      g[key] = (g[key] || []).concat([pts.map((q) => toPhoto(q[0], q[1]))]);
+      setFace(g);
+    } else draw();
+  }
   if (drag.kind !== "pan" && drag.kind !== "pinch") {
     const last = undoStack[undoStack.length - 1];
     if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
   }
   drag = null; updateTools();
+}
+
+// 線の点を間引く（Ramer–Douglas–Peucker。キャンバスのピクセルで eps 以内のずれは捨てる）
+function simplifyLine(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  const a = pts[0], b = pts[pts.length - 1];
+  let worst = -1, worstD = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+    const d = len < 1e-6 ? Math.hypot(p[0] - a[0], p[1] - a[1]) : Math.abs(dx * (a[1] - p[1]) - dy * (a[0] - p[0])) / len;
+    if (d > worstD) { worstD = d; worst = i; }
+  }
+  if (worstD <= eps) return [a, b];
+  return simplifyLine(pts.slice(0, worst + 1), eps).slice(0, -1).concat(simplifyLine(pts.slice(worst), eps));
+}
+// 消しゴム側で触れた、描いた線（鼻・口どちらも）を 1 本ずつ消す
+function eraseLines(x, y) {
+  const f = face(); if (!f) return;
+  const r = 8 + slop, g = clone(f);
+  let hitAny = false;
+  for (const key of ["noseLines", "mouthLines"]) {
+    if (!g[key]) continue;
+    const keep = g[key].filter((s) => {
+      const c = s.map(toCanvas);
+      for (let i = 0; i < c.length; i++) {
+        const p = c[i], q = c[Math.min(i + 1, c.length - 1)], dx = q[0] - p[0], dy = q[1] - p[1];
+        const t = Math.max(0, Math.min(1, ((x - p[0]) * dx + (y - p[1]) * dy) / Math.max(dx * dx + dy * dy, 1e-6)));
+        if (Math.hypot(p[0] + dx * t - x, p[1] + dy * t - y) <= r) return false;
+      }
+      return true;
+    });
+    if (keep.length !== g[key].length) { hitAny = true; if (keep.length) g[key] = keep; else delete g[key]; }
+  }
+  if (hitAny) { setFace(g); updateTools(); }
+}
+function setPen(part) {
+  pen = pen === part ? null : part;
+  if (pen) { multi = false; picks = []; selected = null; mode = "bones"; updateMulti(); }
+  updateMode(); updateTools();
 }
 
 // MARK: - 複数選択
@@ -712,7 +815,7 @@ function multiMove(x, y) {
         g = clone(st.face);
         for (const r of mine) {
           if (r.type === "part" && g[r.key]) g[r.key] = move(st.face[r.key]);
-          else if (r.type === "mouth") g.mouth = st.face.mouth.map(move);
+          else if (r.type === "mouth") moveMouth(g, st.face, move);
           else if (r.type === "contour" && g.contour[r.index]) g.contour[r.index] = move(st.face.contour[r.index]);
         }
       }
@@ -742,6 +845,16 @@ main.addEventListener("pointerdown", (e) => {
       return;
     }
     if (touches.size > 2) return;
+  }
+  // 鼻・口を描いているとき: ペン先・左ドラッグで線を描く。消しゴム側でなぞると描いた線を消す
+  if (pen && mode === "bones" && face()) {
+    const eraser = e.pointerType === "pen" && (e.buttons & 32);
+    if (!eraser && (e.button !== 0 || (e.buttons & 2) || spaceDown)) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
+    pushUndo();
+    if (eraser) { drag = { kind: "erase" }; eraseLines(x, y); return; }
+    drag = { kind: "stroke", pts: [[x, y]] };
+    draw();
+    return;
   }
   // 消しゴム側（buttons の 32）で関節に触れたら消す
   if (e.pointerType === "pen" && (e.buttons & 32)) {
@@ -779,6 +892,7 @@ main.addEventListener("pointermove", (e) => {
   if (!drag) {
     // ペンは画面から浮かせたままでも、近くの関節が光る
     slop = slopFor(e);
+    if (pen) { main.style.cursor = "crosshair"; return; }
     const h = hit(x, y);
     const name = h && h.kind === "joint" ? h.name : null;
     main.style.cursor = h ? (h.kind === "crop" ? "move" : "grab") : (spaceDown ? "grab" : "crosshair");
@@ -797,6 +911,17 @@ main.addEventListener("pointermove", (e) => {
     return;
   }
   if (e.pointerType === "touch" && touches.size > 1) return;
+  if (drag.kind === "stroke") {
+    // ペンの細かい動きも拾う（getCoalescedEvents があるブラウザだけ）
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for (const ev of evs.length ? evs : [e]) {
+      const q = local(ev), l = drag.pts[drag.pts.length - 1];
+      if (Math.hypot(q[0] - l[0], q[1] - l[1]) >= 1.5) drag.pts.push(q);
+    }
+    draw();
+    return;
+  }
+  if (drag.kind === "erase") { eraseLines(x, y); return; }
   if (drag.kind === "rect") { drag.x = x; drag.y = y; draw(); return; }
   if (drag.kind === "multi") { multiMove(x, y); return; }
   if (drag.kind === "pan") {
@@ -811,7 +936,7 @@ main.addEventListener("pointermove", (e) => {
     const d = [(x - drag.x) / view.s / w, (y - drag.y) / view.s / h], move = (p) => [p[0] + d[0], p[1] + d[1]];
     const g = clone(drag.start);
     if (drag.kind === "facePart") g[drag.key] = move(g[drag.key]);
-    else if (drag.kind === "mouth") g.mouth = g.mouth.map(move);
+    else if (drag.kind === "mouth") moveMouth(g, drag.start, move);
     else g.contour[drag.index] = move(g.contour[drag.index]);
     setFace(g);
   } else if (drag.kind === "ring") {
@@ -914,6 +1039,7 @@ $("stage-ok").onclick = toggleOk;
 
 function select(name) {
   current = name; selected = null; hover = null; person = 0; picks = [];
+  if (pen) { pen = null; updateMode(); }
   const it = items.find((i) => i.name === name);
   $("title").textContent = it ? `${it.label}（${it.name}）` : name;
   image = images[name];
@@ -934,9 +1060,99 @@ function step(delta) {
 
 // MARK: - 右側の操作
 
+// 関節・顔のパーツの図。体の図は正面を向いた人（本人の右が写真の左）。ボタンを押すと足す・消すが切り替わる
+const BODY_POS = { nose: [88, 14], rightEar: [46, 34], leftEar: [130, 34], neck: [88, 60],
+  rightShoulder: [42, 86], leftShoulder: [134, 86], rightElbow: [24, 142], leftElbow: [152, 142],
+  rightWrist: [22, 200], leftWrist: [154, 200], rightHip: [64, 194], leftHip: [112, 194],
+  rightKnee: [60, 258], leftKnee: [116, 258], rightAnkle: [56, 318], leftAnkle: [120, 318] };
+const FACE_POS = { eyes: [64, 80], nose: [64, 106], mouth: [64, 132], contour: [64, 164] };
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function figButton(parent, pos, text, cls, title, onclick) {
+  const b = document.createElement("button");
+  b.textContent = text; b.className = cls; b.title = title;
+  b.style.left = pos[0] + "px"; b.style.top = pos[1] + "px";
+  b.onclick = onclick;
+  parent.appendChild(b);
+  return b;
+}
+function buildFigure() {
+  const js = joints(), f = face(), color = PERSON_COLORS[person % PERSON_COLORS.length];
+  // 体
+  const body = $("fig-body");
+  let svg = `<svg viewBox="0 0 176 335" xmlns="${SVG_NS}"><circle cx="88" cy="30" r="21" fill="none" stroke="#3a3d43" stroke-width="2"/>` +
+    `<path d="M88 51 V60 M42 86 L88 60 L134 86" fill="none" stroke="#3a3d43" stroke-width="2"/>`;
+  for (const [a, b] of BONES) {
+    const p = BODY_POS[a], q = BODY_POS[b], on = js[a] && js[b];
+    svg += `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${on ? color : "#4a4d53"}" stroke-width="${on ? 3 : 2}"` +
+      `${on ? "" : ' stroke-dasharray="4 4"'} stroke-linecap="round"/>`;
+  }
+  body.innerHTML = svg + "</svg>";
+  for (const [name, pos] of Object.entries(BODY_POS)) {
+    const has = !!js[name], side = name.startsWith("left") ? "l" : name.startsWith("right") ? "r" : "c";
+    figButton(body, pos, JOINTS[name], (has ? "has-" + side : "off") + (name === selected ? " picked" : ""),
+      has ? `${JOINTS[name]}（入っている）。押すと消す` : `${JOINTS[name]}（なし）。押すと枠の中央に足すので、ドラッグして合わせる`,
+      () => {
+        pushUndo();
+        if (has) { delete editableJoints()[name]; if (selected === name) selected = null; }
+        else {
+          const [cx, cy, cw, ch] = crop(), [w, h] = size();
+          editableJoints()[name] = [(cx + cw / 2) / w, (cy + ch / 2) / h];
+          selected = name; mode = "bones"; updateMode();
+        }
+        changed(); updateTools();
+      });
+  }
+  // 顔
+  const fc = $("fig-face");
+  const g = (k) => !!f && FACE_PARTS[k].has(f);
+  const tone = (on) => on ? "#4dff7a" : "#4a4d53";
+  fc.innerHTML = `<svg viewBox="0 0 128 190" xmlns="${SVG_NS}">` +
+    `<ellipse cx="64" cy="96" rx="46" ry="62" fill="none" stroke="${f ? "#4dff7a88" : "#3a3d43"}" stroke-width="2"${f ? "" : ' stroke-dasharray="4 4"'}/>` +
+    `<circle cx="36" cy="80" r="4" fill="${tone(g("eyes"))}"/><circle cx="92" cy="80" r="4" fill="${tone(g("eyes"))}"/>` +
+    `<path d="M30 142 Q64 180 98 142" fill="none" stroke="${tone(g("contour"))}" stroke-width="2"/></svg>`;
+  figButton(fc, [64, 14], "顔", f ? "has-f" : "off",
+    f ? "顔（入っている）。押すと顔を消す" : "顔（なし）。押すと足す",
+    () => {
+      pushUndo();
+      if (f) { setFace(null); pen = null; updateMode(); }
+      else {
+        const [cx, cy, cw, ch] = crop(), [w, h] = size();
+        const center = js.nose ? js.nose.slice() : [(cx + cw / 2) / w, (cy + ch * 0.25) / h];
+        setFace({ center, height: ch * 0.12 / h, yaw: 0, roll: 0, contour: [], mouth: [] });
+      }
+      updateTools();
+    });
+  for (const [key, pos] of Object.entries(FACE_POS)) {
+    const part = FACE_PARTS[key], has = g(key);
+    const drawn = (key === "nose" || key === "mouth") && !!f && hasLines(f, key);
+    const b = figButton(fc, pos, (key === "contour" ? "あご" : part.label) + (drawn ? "（線）" : ""), has ? "has-f" : "off",
+      !f ? "先に顔を入れてください" : has ? `${part.label}（入っている）。押すと消す` : `${part.label}（なし）。押すと足す`,
+      () => { pushUndo(); const h2 = clone(f); (has ? part.remove : part.add)(h2); setFace(h2); updateTools(); });
+    b.disabled = !f;
+  }
+  // 鼻・口をペンで描く
+  const dt = $("draw-tools"); dt.innerHTML = "";
+  if (!f && pen) { pen = null; updateMode(); }
+  for (const [part, label] of [["nose", "鼻"], ["mouth", "口"]]) {
+    const drawn = !!f && hasLines(f, part);
+    const b = document.createElement("button");
+    b.textContent = pen === part ? `${label}を描き中（押すと終わり）` : `${label}を描く`;
+    b.className = pen === part ? "drawing" : drawn ? "has-f" : "off";
+    b.disabled = !f;
+    b.title = f ? `写真の上にペンで${label}の線を描きます（何本でも）。消しゴム側でなぞると線を消します` : "先に顔を入れてください";
+    b.onclick = () => setPen(part);
+    dt.appendChild(b);
+    if (drawn) {
+      const del = document.createElement("button");
+      del.className = "danger"; del.textContent = `描いた${label}を消す`;
+      del.onclick = () => { pushUndo(); const h2 = clone(f); delete h2[part + "Lines"]; setFace(h2); updateTools(); };
+      dt.appendChild(del);
+    }
+  }
+}
+
 function updateTools() {
-  const jt = $("joint-tools"); jt.innerHTML = "";
-  const ft = $("face-tools"); ft.innerHTML = "";
   if (!current) return;
   if (person >= personCount()) person = 0;
   const pt = $("person-tools"); pt.innerHTML = "";
@@ -969,54 +1185,8 @@ function updateTools() {
     del.onclick = () => { pushUndo(); editableOthers().splice(person - 1, 1); person = 0; selected = null; changed(); updateTools(); };
     pt.appendChild(del);
   }
-  const js = joints();
-  // 関節ごとにボタンを 1 つ、決まった位置に置く。ない関節は「＋左耳」、ある関節は「左耳を消す」。
-  // 以前は選んだ関節だけに「消す」を出していたので、続けて足すと前に足した関節のボタンが消えていた
-  for (const name of Object.keys(JOINTS)) {
-    const b = document.createElement("button");
-    if (js[name]) {
-      b.className = "danger" + (name === selected ? " picked" : "");
-      b.textContent = `${JOINTS[name]}を消す`;
-      b.onclick = () => { pushUndo(); delete editableJoints()[name]; if (selected === name) selected = null; changed(); updateTools(); };
-    } else {
-      b.textContent = "＋" + JOINTS[name];
-      b.title = "枠の中央に置きます。ドラッグして合わせてください";
-      b.onclick = () => {
-        pushUndo();
-        const [cx, cy, cw, ch] = crop(), [w, h] = size();
-        editableJoints()[name] = [(cx + cw / 2) / w, (cy + ch / 2) / h];
-        selected = name; mode = "bones"; updateMode(); changed(); updateTools();
-      };
-    }
-    jt.appendChild(b);
-  }
+  buildFigure();
   const f = face();
-  if (f) {
-    const del = document.createElement("button");
-    del.className = "danger"; del.textContent = "顔を消す";
-    del.onclick = () => { pushUndo(); setFace(null); updateTools(); };
-    ft.appendChild(del);
-    // 目・鼻・口・あごの輪郭を足す・消す（2 人目を足したときなど、1 人目の顔の形を写しただけなので直せるように）
-    for (const part of Object.values(FACE_PARTS)) {
-      const b = document.createElement("button");
-      const has = part.has(f);
-      b.textContent = has ? `${part.label}を消す` : `＋${part.label}`;
-      if (has) b.className = "danger";
-      b.onclick = () => { pushUndo(); const g = clone(f); (has ? part.remove : part.add)(g); setFace(g); updateTools(); };
-      ft.appendChild(b);
-    }
-  } else {
-    const add = document.createElement("button");
-    add.textContent = "＋顔";
-    add.onclick = () => {
-      pushUndo();
-      const [cx, cy, cw, ch] = crop(), [w, h] = size();
-      const center = js.nose ? js.nose.slice() : [(cx + cw / 2) / w, (cy + ch * 0.25) / h];
-      setFace({ center, height: ch * 0.12 / h, yaw: 0, roll: 0, contour: [], mouth: [] });
-      updateTools();
-    };
-    ft.appendChild(add);
-  }
   $("yaw-row").style.display = $("yaw-help").style.display = f ? "" : "none";
   if (f) { $("yaw").value = Math.round(f.yaw); $("yaw-value").textContent = Math.round(f.yaw) + "°"; }
   $("face-info").textContent = f
@@ -1043,19 +1213,21 @@ $("yaw").addEventListener("input", () => {
 function updateMode() {
   $("mode-bones").classList.toggle("on", mode === "bones");
   $("mode-crop").classList.toggle("on", mode === "crop");
-  $("hint").textContent = mode === "bones"
+  $("hint").textContent = pen && mode === "bones"
+    ? `${pen === "nose" ? "鼻" : "口"}の線をペン先（マウスは左ドラッグ）で描きます。何本でも描けます。消しゴム側でなぞると描いた線を消します。終わるときは右の「描き中」を押すか Esc。`
+    : mode === "bones"
     ? "関節の丸をドラッグして合わせます。顔: 点線の丸で位置、緑の丸で大きさ・傾き、白い縁の点で目・鼻・口（◇で口ごと）・あごの輪郭。右側に撮影画面での見え方が出ます。"
     : "黄色い枠の中をドラッグで位置、四隅のドラッグで大きさ（3:4 のまま）。枠の中がそのまま撮影画面になります。";
   draw();
 }
 $("mode-bones").onclick = () => { mode = "bones"; updateMode(); };
-$("mode-crop").onclick = () => { mode = "crop"; selected = null; updateMode(); updateTools(); };
+$("mode-crop").onclick = () => { mode = "crop"; selected = null; pen = null; updateMode(); updateTools(); };
 $("fit").onclick = fitView;
 function updateMulti() {
   $("multi").classList.toggle("on", multi);
   $("multi").textContent = multi ? `複数選択 オン（${picks.length} 点）` : "複数選択";
 }
-$("multi").onclick = () => { multi = !multi; picks = []; selected = null; mode = "bones"; updateMode(); updateMulti(); updateTools(); };
+$("multi").onclick = () => { multi = !multi; picks = []; pen = null; selected = null; mode = "bones"; updateMode(); updateMulti(); updateTools(); };
 for (const id of ["pv-photo", "pv-outline", "pv-bones", "pv-face"]) $(id).onchange = drawPreview;
 
 $("undo").onclick = undo;
@@ -1106,9 +1278,10 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); step(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); step(-1); }
   else if (e.key === " ") { spaceDown = true; e.preventDefault(); }
+  else if (e.key === "Escape" && pen) { setPen(pen); }
   else if (e.key === "Enter" && !["BUTTON", "SELECT"].includes(e.target.tagName)) { e.preventDefault(); toggleOk(); }
   else if (e.key === "b" || e.key === "B") { mode = "bones"; updateMode(); }
-  else if (e.key === "c" || e.key === "C") { mode = "crop"; selected = null; updateMode(); updateTools(); }
+  else if (e.key === "c" || e.key === "C") { mode = "crop"; selected = null; pen = null; updateMode(); updateTools(); }
   else if (e.key === "f" || e.key === "F") fitView();
   else if ((e.key === "Delete" || e.key === "Backspace") && multi && picks.some((r) => r.type === "joint")) {
     pushUndo();
