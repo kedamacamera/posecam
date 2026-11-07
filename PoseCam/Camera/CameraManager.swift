@@ -191,6 +191,8 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     let renderer = PreviewRenderer()
+    /// リモートモニター（もう一台のスマホに撮影画面を映す）
+    let remote = RemoteHost()
 
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "posecam.session")
@@ -1758,10 +1760,13 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         if let recorded = handleRecording(processed, at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) {
             // 録画中は、録画用に描いたコマをそのまま表示する（加工を 2 回描くと GPU が追いつかずコマ落ちしていた）
             let extent = processed.extent
-            renderer.display(CIImage(cvPixelBuffer: recorded)
-                .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY)))
+            let shown = CIImage(cvPixelBuffer: recorded)
+                .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+            renderer.display(shown)
+            remote.offer(shown, context: renderer.ciContext)
         } else {
             renderer.display(processed)
+            remote.offer(processed, context: renderer.ciContext)
         }
     }
 

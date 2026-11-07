@@ -29,6 +29,11 @@ targets:
         NSMicrophoneUsageDescription: 動画撮影時の録音にマイクを使用します。
         NSPhotoLibraryAddUsageDescription: 撮影した写真・動画を写真アプリに保存します。
         NSPhotoLibraryUsageDescription: アプリ内のアルバムで写真・動画を表示し、編集できるようにします。
+        # リモートモニター（もう一台のスマホに撮影画面を映す）
+        NSLocalNetworkUsageDescription: リモートモニターで、近くのスマホに撮影画面を映し、そこからシャッターを押せるようにします。
+        NSBonjourServices:
+          - _posecam-mon._tcp
+          - _posecam-mon._udp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.posecam

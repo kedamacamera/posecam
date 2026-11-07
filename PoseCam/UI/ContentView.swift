@@ -17,6 +17,9 @@ struct ContentView: View {
     @State private var showLibrary = false
     @State private var showLicenses = false
     @State private var showAlbum = false
+    /// リモートモニターの画面（撮る側）と、この iPhone をモニターにした画面
+    @State private var showRemote = false
+    @State private var showMonitor = false
     /// 構図のガイドの線
     @AppStorage("gridStyle") private var gridStyle: GridStyle = .off
     /// 水平器
@@ -131,6 +134,24 @@ struct ContentView: View {
         .onAppear {
             // 前回カメラ起動中に落ちていたら、記録を見せるまでカメラは起動しない
             if crashReport == nil { camera.start() }
+            camera.remote.onCommand = { handleRemote($0) }
+        }
+        // モニターに送るガイドの絵と状態（見ているモニターがあるときだけ作る）
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                updateRemote()
+            }
+        }
+        // この iPhone をモニターにしている間は、カメラを止める（撮る側としての送信もやめる）
+        .onChange(of: showMonitor) {
+            if showMonitor {
+                camera.remote.disconnectMonitor()
+                camera.remote.stopWeb()
+                camera.suspend()
+            } else if crashReport == nil {
+                camera.resume()
+            }
         }
         .onChange(of: selectedPose) { updateTemplate() }
         // アルバム（写真の表示・編集）を開いている間はカメラを止める（裏で動き続けて熱くなり、電池が減っていた）
@@ -171,6 +192,12 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showAlbum) {
             AlbumView()
+        }
+        .sheet(isPresented: $showRemote) {
+            RemoteSheet(remote: camera.remote) { showMonitor = true }
+        }
+        .fullScreenCover(isPresented: $showMonitor) {
+            RemoteMonitorView { showMonitor = false }
         }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
@@ -249,7 +276,7 @@ struct ContentView: View {
 
     /// アルバム・編集などの画面を開いている間は、音量ボタンをふつうの音量ボタンに戻す
     private var hardwareShutterEnabled: Bool {
-        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses
+        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses && !showRemote && !showMonitor
             && camera.snapClip == nil && crashReport == nil
     }
 
@@ -366,6 +393,11 @@ struct ContentView: View {
                     Label("外観（ダーク・ライト）", systemImage: "circle.lefthalf.filled")
                 }
                 .pickerStyle(.menu)
+                Button {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showRemote = true }
+                } label: {
+                    Label("リモートモニター", systemImage: "rectangle.on.rectangle")
+                }
                 Button("動作の記録をコピー") {
                     UIPasteboard.general.string = ([
                         "iOS \(UIDevice.current.systemVersion)",
@@ -390,6 +422,7 @@ struct ContentView: View {
                 MatchBadge(feed: camera.poseFeed)
             }
             Spacer()
+            RemoteStatusBadge(remote: camera.remote)
             if let progress = camera.burstProgress {
                 Badge(text: progress)
             }
@@ -631,6 +664,66 @@ struct ContentView: View {
     private func next(after value: Int, in values: [Int]) -> Int {
         guard let index = values.firstIndex(of: value) else { return values[0] }
         return values[(index + 1) % values.count]
+    }
+
+    // MARK: - リモートモニター
+
+    /// モニター（アプリ・ブラウザ）から届いた操作
+    private func handleRemote(_ command: RemoteCommand) {
+        switch command {
+        case .shutter:
+            if !(camera.isRecording && camera.isQuickVideo) { camera.shutterPressed() }
+        case .flip:
+            if !camera.isRecording && !camera.isSequenceRunning { camera.flipCamera() }
+        case .timer:
+            camera.timerSeconds = next(after: camera.timerSeconds, in: [0, 3, 6, 10])
+        }
+    }
+
+    /// 1 秒に 10 回: モニターへ送る状態と、映像に重ねるガイド（型・骨格・グリッド）の絵を作る
+    private func updateRemote() {
+        let remote = camera.remote
+        guard remote.isStreaming else { return }
+        let showsScore = camera.template.map { !$0.isObject } ?? false
+        let score = camera.poseFeed.score ?? 0
+        remote.updateState(RemoteState(
+            score: showsScore ? Int(score) : nil,
+            matched: showsScore && score >= CameraManager.matchThreshold,
+            countdown: camera.countdown,
+            recording: camera.isRecording,
+            recordingSeconds: camera.recordingSeconds,
+            busy: camera.isCapturing || camera.isSequenceRunning,
+            timerSeconds: camera.timerSeconds,
+            mode: camera.mode.rawValue,
+            canFlip: !camera.isRecording && !camera.isSequenceRunning))
+
+        let size = remote.frameSizeBox.value
+        let template = camera.template
+        guard size.width > 0, template != nil || camera.showSkeleton || gridStyle != .off else {
+            remote.setOverlay(nil)
+            return
+        }
+        // この画面と同じ線の太さに見えるよう、画面の幅で描いてからコマの大きさに拡大する
+        let width: CGFloat = 390
+        let overlay = ZStack {
+            if let template {
+                PoseTemplateOverlay(template: template,
+                                    matched: score >= CameraManager.matchThreshold,
+                                    opacity: poseOpacity)
+            }
+            if camera.showSkeleton {
+                SkeletonLayer(feed: camera.poseFeed, template: template?.isObject == true ? nil : template)
+            }
+            if gridStyle != .off {
+                GridOverlay(style: gridStyle)
+            }
+        }
+        .frame(width: width, height: width * size.height / size.width)
+        .environment(\.colorScheme, .dark)
+        let renderer = ImageRenderer(content: overlay)
+        renderer.scale = size.width / width
+        renderer.isOpaque = false
+        remote.setOverlay(renderer.cgImage)
     }
 
     private func updateTemplate() {
