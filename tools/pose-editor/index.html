@@ -109,6 +109,7 @@
       <button id="mode-bones" class="on">関節・顔（B）</button>
       <button id="mode-crop">枠（C）</button>
       <button id="fit">全体を表示（F）</button>
+      <button id="multi" title="ドラッグで囲んだ点（関節・顔のパーツ）をまとめて動かします。点を押すと選択に足したり外したりできます">複数選択</button>
     </div>
   </div>
   <div>
@@ -196,6 +197,24 @@ function edit() { return edits[current] || {}; }
 // 2 人以上の写真では人ごとに骨格と顔がある。person は選んでいる人（0 が 1 人目。1 人目は joints・face、
 // 2 人目以降は others の [{points, face}]）
 let person = 0;
+// 複数選択: multi がオンのとき、ドラッグで囲んだ点（picks）をまとめて動かす
+let multi = false, picks = [];
+const refKey = (r) => JSON.stringify(r);
+// 選べる点すべて（全員の関節・顔の中心・目・鼻・口・あごの輪郭）
+function handles() {
+  const out = [];
+  for (let i = 0; i < personCount(); i++) {
+    for (const [name, p] of Object.entries(personJoints(i))) out.push({ ref: { person: i, type: "joint", name }, p });
+    const f = personFace(i);
+    if (!f) continue;
+    out.push({ ref: { person: i, type: "face" }, p: f.center });
+    for (const key of ["leftEye", "rightEye", "nose"]) if (f[key]) out.push({ ref: { person: i, type: "part", key }, p: f[key] });
+    if (f.mouth && f.mouth.length > 2) out.push({ ref: { person: i, type: "mouth" }, p: mouthCenter(f) });
+    contourHandles(f).forEach((p, index) => out.push({ ref: { person: i, type: "contour", index }, p }));
+  }
+  return out;
+}
+function withPerson(i, fn) { const keep = person; person = i; try { fn(); } finally { person = keep; } }
 function others() { const e = edit(); return "others" in e ? e.others : (record().others || []); }
 function personCount() { return 1 + others().length; }
 function personJoints(i) {
@@ -287,9 +306,44 @@ const FACE_PARTS = {
     add: (f) => { f.mouth = []; for (let i = 0; i < 12; i++) { const t = i / 12 * Math.PI * 2; f.mouth.push(facePoint(f, Math.cos(t) * 0.16, 0.26 + Math.sin(t) * 0.05)); } },
     remove: (f) => { f.mouth = []; } },
   contour: { label: "あごの輪郭", has: (f) => f.contour && f.contour.length > 2,
-    add: (f) => { f.contour = []; for (let i = 0; i <= 16; i++) { const t = Math.PI - i / 16 * Math.PI; f.contour.push(facePoint(f, Math.cos(t) * 0.4, Math.sin(t) * 0.5)); } },
+    add: (f) => { f.contour = []; for (let i = 0; i < CONTOUR_POINTS; i++) { const t = Math.PI - i / (CONTOUR_POINTS - 1) * Math.PI; f.contour.push(facePoint(f, Math.cos(t) * 0.4, Math.sin(t) * 0.5)); } },
     remove: (f) => { f.contour = []; } },
 };
+// あごの輪郭は、自動の解析では 17 点あって直しにくいので、手で動かす点は 8 点にする。
+// 表示は元の点のまま、動かした時点でその顔の輪郭を 8 点（線の長さで等間隔に取り直したもの）に置き換える
+const CONTOUR_POINTS = 8;
+function resample(pts, n) {
+  const len = [0];
+  for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const total = len[len.length - 1], out = [];
+  for (let k = 0; k < n; k++) {
+    const target = total * k / (n - 1);
+    let i = 1; while (i < pts.length - 1 && len[i] < target) i++;
+    const t = len[i] > len[i - 1] ? (target - len[i - 1]) / (len[i] - len[i - 1]) : 0;
+    out.push([pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t]);
+  }
+  return out;
+}
+function contourHandles(f) {
+  const c = f && f.contour;
+  if (!c || c.length < 3) return [];
+  return c.length === CONTOUR_POINTS ? c : resample(c, CONTOUR_POINTS);
+}
+function withContour8(f) {
+  const g = clone(f);
+  if (g.contour && g.contour.length > 2 && g.contour.length !== CONTOUR_POINTS) g.contour = resample(g.contour, CONTOUR_POINTS);
+  return g;
+}
+// 点を通るなめらかな開いた線（アプリの PoseDrawing.smoothOpenPath と同じ）
+function smoothOpen(ctx, pts) {
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(i - 1, 0)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(i + 2, pts.length - 1)];
+    ctx.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6,
+                      p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
+  }
+  ctx.stroke();
+}
 function mouthCenter(f) {
   const m = f.mouth; return [m.reduce((a, p) => a + p[0], 0) / m.length, m.reduce((a, p) => a + p[1], 0) / m.length];
 }
@@ -339,7 +393,7 @@ function drawFace(ctx, f, map, color, width) {
     ctx.beginPath(); pts.forEach((p, i) => { const q = map(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
     if (close) ctx.closePath(); ctx.stroke();
   };
-  if (f.contour && f.contour.length > 2) poly(f.contour, false);
+  if (f.contour && f.contour.length > 2) smoothOpen(ctx, f.contour.map(map));
   else {
     const c = map(f.center), top = map([f.center[0], f.center[1] - f.height / 2]);
     const rh = Math.abs(c[1] - top[1]);
@@ -460,7 +514,7 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(p[0], p[1] - 6); ctx.lineTo(p[0] + 6, p[1]); ctx.lineTo(p[0], p[1] + 6); ctx.lineTo(p[0] - 6, p[1]);
         ctx.closePath(); ctx.fill(); ctx.stroke();
       }
-      for (const pt of f.contour || []) { const p = toCanvas(pt); ctx.fillRect(p[0] - 3, p[1] - 3, 6, 6); ctx.strokeRect(p[0] - 3, p[1] - 3, 6, 6); }
+      for (const pt of contourHandles(f)) { const p = toCanvas(pt); ctx.fillRect(p[0] - 4, p[1] - 4, 8, 8); ctx.strokeRect(p[0] - 4, p[1] - 4, 8, 8); }
       // 左右の向き: 顔の中心から、向いている側へピンクの矢印（長さは sin(向き)）
       const top = toCanvas([f.center[0], f.center[1] - f.height / 2]), rh = Math.abs(c[1] - top[1]);
       const dx = Math.sin(f.yaw * Math.PI / 180) * rh * 1.4;
@@ -473,6 +527,17 @@ function draw() {
       ctx.font = "bold 12px sans-serif"; const label = `向き ${Math.round(f.yaw)}°`;
       ctx.fillStyle = "#000"; ctx.fillText(label, c[0] - 23, c[1] + rh + 17);
       ctx.fillStyle = "#ff5fd2"; ctx.fillText(label, c[0] - 24, c[1] + rh + 16);
+    }
+  }
+  if (multi) {
+    const keys = new Set(picks.map(refKey));
+    ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2.5;
+    for (const hd of handles()) if (keys.has(refKey(hd.ref))) {
+      const c = toCanvas(hd.p); ctx.beginPath(); ctx.arc(c[0], c[1], 10, 0, 7); ctx.stroke();
+    }
+    if (drag && drag.kind === "rect") {
+      ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5;
+      ctx.strokeRect(drag.x0, drag.y0, drag.x - drag.x0, drag.y - drag.y0); ctx.setLineDash([]);
     }
   }
   drawPreview();
@@ -530,7 +595,8 @@ function hit(x, y) {
   if (f) {
     for (const key of ["leftEye", "rightEye", "nose"]) if (f[key] && near(toCanvas(f[key]), 8)) return { kind: "facePart", key };
     if (FACE_PARTS.mouth.has(f) && near(toCanvas(mouthCenter(f)), 8)) return { kind: "mouth" };
-    for (let i = 0; i < (f.contour || []).length; i++) if (near(toCanvas(f.contour[i]), 6)) return { kind: "contour", index: i };
+    const ch = contourHandles(f);
+    for (let i = 0; i < ch.length; i++) if (near(toCanvas(ch[i]), 8)) return { kind: "contour", index: i };
   }
   if (f && near(toCanvas(f.center), 13)) return { kind: "faceCenter" };
   let best = null, bestD = 13 + slop;
@@ -563,11 +629,80 @@ function zoomAt(x, y, k) {
 // 動かし終わり。動かしていなければ戻す履歴は残さない
 function endDrag() {
   if (!drag) return;
+  if (drag.kind === "rect") {
+    // 囲んだ点を選ぶ（Shift・Ctrl を押しながらなら、今の選択に足す）
+    const x0 = Math.min(drag.x0, drag.x), x1 = Math.max(drag.x0, drag.x), y0 = Math.min(drag.y0, drag.y), y1 = Math.max(drag.y0, drag.y);
+    const inside = handles().filter((hd) => { const c = toCanvas(hd.p); return c[0] >= x0 && c[0] <= x1 && c[1] >= y0 && c[1] <= y1; });
+    const keys = new Set(drag.add ? picks.map(refKey) : []);
+    picks = drag.add ? picks.slice() : [];
+    for (const hd of inside) if (!keys.has(refKey(hd.ref))) { keys.add(refKey(hd.ref)); picks.push(hd.ref); }
+    drag = null; updateMulti(); draw(); return;
+  }
   if (drag.kind !== "pan" && drag.kind !== "pinch") {
     const last = undoStack[undoStack.length - 1];
     if (last && last.name === current && JSON.stringify(last.prev) === JSON.stringify(edits[current] || null)) undoStack.pop();
   }
   drag = null; updateTools();
+}
+
+// MARK: - 複数選択
+
+function pickedAt(x, y) {
+  const r = 9 + slop;
+  let best = null, bestD = r;
+  for (const hd of handles()) {
+    const c = toCanvas(hd.p), d = Math.hypot(c[0] - x, c[1] - y);
+    if (d <= bestD) { best = hd; bestD = d; }
+  }
+  return best;
+}
+function multiDown(x, y, add) {
+  const hd = pickedAt(x, y);
+  const key = hd && refKey(hd.ref);
+  if (hd && picks.some((r) => refKey(r) === key)) {
+    // 選んだ点を押したら、選んだ点をまとめて動かす。あごの輪郭は先に 8 点にしておく
+    pushUndo();
+    const people = [...new Set(picks.map((r) => r.person))];
+    for (const i of people) withPerson(i, () => {
+      const f = face();
+      if (f && f.contour && f.contour.length > 2 && f.contour.length !== CONTOUR_POINTS) setFace(withContour8(f));
+    });
+    const start = {};
+    for (const i of people) start[i] = { joints: clone(personJoints(i)), face: personFace(i) ? clone(personFace(i)) : null };
+    drag = { kind: "multi", x, y, start, moved: false };
+  } else if (hd) {
+    // 選んでいない点を押したら、選択に足す（Shift・Ctrl なしなら、その点だけを選ぶ）
+    picks = add ? picks.concat([hd.ref]) : [hd.ref];
+    updateMulti(); draw();
+  } else {
+    drag = { kind: "rect", x0: x, y0: y, x, y, add };
+  }
+}
+function multiMove(x, y) {
+  const [w, h] = size(), d = [(x - drag.x) / view.s / w, (y - drag.y) / view.s / h];
+  const move = (p) => [p[0] + d[0], p[1] + d[1]];
+  for (const [key, st] of Object.entries(drag.start)) {
+    const i = Number(key), mine = picks.filter((r) => r.person === i);
+    withPerson(i, () => {
+      const names = mine.filter((r) => r.type === "joint").map((r) => r.name);
+      if (names.length) { const js = editableJoints(); for (const n of names) if (st.joints[n]) js[n] = move(st.joints[n]); }
+      if (!st.face) return;
+      let g;
+      if (mine.some((r) => r.type === "face")) {
+        // 顔の中心を選んでいれば、顔をまるごと動かす
+        g = transformFace(st.face, move(st.face.center), 1, 0);
+      } else {
+        g = clone(st.face);
+        for (const r of mine) {
+          if (r.type === "part" && g[r.key]) g[r.key] = move(st.face[r.key]);
+          else if (r.type === "mouth") g.mouth = st.face.mouth.map(move);
+          else if (r.type === "contour" && g.contour[r.index]) g.contour[r.index] = move(st.face.contour[r.index]);
+        }
+      }
+      if (mine.some((r) => r.type !== "joint")) setFace(g);
+    });
+  }
+  changed();
 }
 
 // マウス・ペン（液タブ）・指をまとめて pointer イベントで扱う。
@@ -604,6 +739,7 @@ main.addEventListener("pointerdown", (e) => {
   }
   // 右ボタン・ペンのサイドボタン・Space を押しながらは移動
   if (e.button !== 0 || (e.buttons & 2) || spaceDown) { drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; return; }
+  if (multi && mode === "bones") { multiDown(x, y, e.shiftKey || e.ctrlKey); return; }
   const h = hit(x, y);
   if (!h) { selected = null; drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; draw(); updateTools(); return; }
   if (h.person !== undefined) { person = h.person; selected = null; }
@@ -613,7 +749,7 @@ main.addEventListener("pointerdown", (e) => {
     const c = toCanvas(joints()[h.name]);
     drag = { kind: "joint", name: h.name, dx: c[0] - x, dy: c[1] - y };
   } else if (["faceCenter", "ring", "facePart", "mouth", "contour"].includes(h.kind)) {
-    drag = { kind: h.kind, key: h.key, index: h.index, start: clone(face()), x, y };
+    drag = { kind: h.kind, key: h.key, index: h.index, start: withContour8(face()), x, y };
   } else if (h.kind === "crop" || h.kind === "corner") {
     drag = { kind: h.kind, index: h.index, start: crop().slice(), x, y };
   }
@@ -644,6 +780,8 @@ main.addEventListener("pointermove", (e) => {
     return;
   }
   if (e.pointerType === "touch" && touches.size > 1) return;
+  if (drag.kind === "rect") { drag.x = x; drag.y = y; draw(); return; }
+  if (drag.kind === "multi") { multiMove(x, y); return; }
   if (drag.kind === "pan") {
     view.ox = drag.ox + x - drag.x; view.oy = drag.oy + y - drag.y;
   } else if (drag.kind === "joint") {
@@ -758,7 +896,7 @@ $("ok-button").onclick = toggleOk;
 $("stage-ok").onclick = toggleOk;
 
 function select(name) {
-  current = name; selected = null; hover = null; person = 0;
+  current = name; selected = null; hover = null; person = 0; picks = [];
   const it = items.find((i) => i.name === name);
   $("title").textContent = it ? `${it.label}（${it.name}）` : name;
   image = images[name];
@@ -896,6 +1034,11 @@ function updateMode() {
 $("mode-bones").onclick = () => { mode = "bones"; updateMode(); };
 $("mode-crop").onclick = () => { mode = "crop"; selected = null; updateMode(); updateTools(); };
 $("fit").onclick = fitView;
+function updateMulti() {
+  $("multi").classList.toggle("on", multi);
+  $("multi").textContent = multi ? `複数選択 オン（${picks.length} 点）` : "複数選択";
+}
+$("multi").onclick = () => { multi = !multi; picks = []; selected = null; mode = "bones"; updateMode(); updateMulti(); updateTools(); };
 for (const id of ["pv-photo", "pv-outline", "pv-bones", "pv-face"]) $(id).onchange = drawPreview;
 
 $("undo").onclick = undo;
@@ -950,6 +1093,11 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "b" || e.key === "B") { mode = "bones"; updateMode(); }
   else if (e.key === "c" || e.key === "C") { mode = "crop"; selected = null; updateMode(); updateTools(); }
   else if (e.key === "f" || e.key === "F") fitView();
+  else if ((e.key === "Delete" || e.key === "Backspace") && multi && picks.some((r) => r.type === "joint")) {
+    pushUndo();
+    for (const r of picks.filter((r) => r.type === "joint")) withPerson(r.person, () => { delete editableJoints()[r.name]; });
+    picks = picks.filter((r) => r.type !== "joint"); updateMulti(); changed(); updateTools();
+  }
   else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
     pushUndo(); delete editableJoints()[selected]; selected = null; changed(); updateTools();
   }

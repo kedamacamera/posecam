@@ -146,6 +146,21 @@ enum PoseDrawing {
         return path
     }
 
+    /// 点を通るなめらかな開いた曲線（Catmull-Rom。両端は端の点を繰り返す）。
+    static func smoothOpenPath(_ points: [CGPoint]) -> Path {
+        var path = Path()
+        let n = points.count
+        guard n > 1 else { return path }
+        path.move(to: points[0])
+        for i in 0..<(n - 1) {
+            let p0 = points[max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[min(i + 2, n - 1)]
+            path.addCurve(to: p2,
+                          control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6),
+                          control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
+        }
+        return path
+    }
+
     private static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
     private static func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { lerp(a, b, 0.5) }
     private static func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
@@ -171,9 +186,8 @@ enum PoseDrawing {
         let bottom = transform(CGPoint(x: face.center.x, y: face.center.y + face.height / 2))
         let h = abs(bottom.y - top.y)
         if face.contour.count > 2 {
-            var jaw = Path()
-            jaw.addLines(face.contour.map(transform))
-            context.stroke(jaw, with: .color(color), style: style)
+            // 点を通るなめらかな線（ボーン入れツールで直したあごは 8 点なので、直線でつなぐと角ばる）
+            context.stroke(smoothOpenPath(face.contour.map(transform)), with: .color(color), style: style)
         } else {
             // 顔の枠（横顔では少し細い楕円）
             let w = h * (abs(face.yaw) > 45 ? 0.6 : 0.78)
