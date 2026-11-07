@@ -309,9 +309,9 @@ const FACE_PARTS = {
     add: (f) => { f.contour = []; for (let i = 0; i < CONTOUR_POINTS; i++) { const t = Math.PI - i / (CONTOUR_POINTS - 1) * Math.PI; f.contour.push(facePoint(f, Math.cos(t) * 0.4, Math.sin(t) * 0.5)); } },
     remove: (f) => { f.contour = []; } },
 };
-// あごの輪郭は、自動の解析では 17 点あって直しにくいので、手で動かす点は 8 点にする。
-// 表示は元の点のまま、動かした時点でその顔の輪郭を 8 点（線の長さで等間隔に取り直したもの）に置き換える
-const CONTOUR_POINTS = 8;
+// あごの輪郭は、自動の解析では 17 点あって直しにくいので、手で動かす点は 9 点にする（真ん中の 5 点目があご先）。
+// 表示は元の点のまま、動かした時点でその顔の輪郭を 9 点（線の長さで等間隔に取り直したもの）に置き換える
+const CONTOUR_POINTS = 9;
 function resample(pts, n) {
   const len = [0];
   for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
