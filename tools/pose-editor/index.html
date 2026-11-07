@@ -329,6 +329,17 @@ function contourHandles(f) {
   if (!c || c.length < 3) return [];
   return c.length === CONTOUR_POINTS ? c : resample(c, CONTOUR_POINTS);
 }
+// あご先の点の番号（顔の傾きに沿った「下」の向きに、いちばん出ている点）
+function chinIndex(f, pts) {
+  if (!pts.length) return -1;
+  const [w, h] = size(), a = -f.roll * Math.PI / 180, down = [-Math.sin(a), Math.cos(a)];
+  let best = 0, bestV = -Infinity;
+  pts.forEach((p, i) => {
+    const v = (p[0] - f.center[0]) * w * down[0] + (p[1] - f.center[1]) * h * down[1];
+    if (v > bestV) { bestV = v; best = i; }
+  });
+  return best;
+}
 function withContour8(f) {
   const g = clone(f);
   if (g.contour && g.contour.length > 2 && g.contour.length !== CONTOUR_POINTS) g.contour = resample(g.contour, CONTOUR_POINTS);
@@ -514,7 +525,13 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(p[0], p[1] - 6); ctx.lineTo(p[0] + 6, p[1]); ctx.lineTo(p[0], p[1] + 6); ctx.lineTo(p[0] - 6, p[1]);
         ctx.closePath(); ctx.fill(); ctx.stroke();
       }
-      for (const pt of contourHandles(f)) { const p = toCanvas(pt); ctx.fillRect(p[0] - 4, p[1] - 4, 8, 8); ctx.strokeRect(p[0] - 4, p[1] - 4, 8, 8); }
+      // あごの輪郭の点。あご先（顔の傾きに沿って、いちばん下の点）だけ赤くする
+      const handlesC = contourHandles(f), chin = chinIndex(f, handlesC);
+      handlesC.forEach((pt, i) => {
+        const p = toCanvas(pt);
+        ctx.fillStyle = i === chin ? "#ff3b30" : "rgba(77,255,122,.5)";
+        ctx.fillRect(p[0] - 4, p[1] - 4, 8, 8); ctx.strokeRect(p[0] - 4, p[1] - 4, 8, 8);
+      });
       // 左右の向き: 顔の中心から、向いている側へピンクの矢印（長さは sin(向き)）
       const top = toCanvas([f.center[0], f.center[1] - f.height / 2]), rh = Math.abs(c[1] - top[1]);
       const dx = Math.sin(f.yaw * Math.PI / 180) * rh * 1.4;
