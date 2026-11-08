@@ -137,6 +137,8 @@
     <div class="row">
       <button id="mode-bones" class="on">関節・顔（B）</button>
       <button id="mode-crop">枠（C）</button>
+      <button id="focus-body" class="on" title="重なったときに関節を先につかみます。関節をつかむと自動でこちらになります">体を優先</button>
+      <button id="focus-face" title="重なったときに顔の点を先につかみます。顔の点をつかむと自動でこちらになります">顔を優先</button>
       <button id="fit">全体を表示（F）</button>
       <button id="multi" title="ドラッグで囲んだ点（関節・顔のパーツ）をまとめて動かします。点を押すと選択に足したり外したりできます">複数選択</button>
     </div>
@@ -662,6 +664,26 @@ function cropCorners() {
 let slop = 0;
 function slopFor(e) { return e.pointerType === "touch" ? 14 : e.pointerType === "pen" ? 6 : 0; }
 
+// 選んでいる人の、(x, y) にいちばん近い関節の名前（当たり判定の内側にあるときだけ）
+function nearestJoint(x, y) {
+  let best = null, bestD = 13 + slop;
+  for (const [name, p] of Object.entries(joints())) {
+    const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
+    if (d <= bestD) { best = name; bestD = d; }
+  }
+  return best;
+}
+// 体と顔のどちらを先につかむか（"body" か "face"）。最後に触った方になる
+let focus = "body";
+function setFocus(value) {
+  if (focus === value) return;
+  focus = value; updateFocus();
+}
+function updateFocus() {
+  $("focus-body").classList.toggle("on", focus === "body");
+  $("focus-face").classList.toggle("on", focus === "face");
+}
+
 function hit(x, y) {
   const near = (p, r) => Math.hypot(p[0] - x, p[1] - y) <= r + slop;
   if (mode === "crop") {
@@ -672,6 +694,12 @@ function hit(x, y) {
     return null;
   }
   const f = face();
+  // 体を触っているあいだ（focus が "body"）は、顔の点より関節を先に拾う。顔の近くの関節（鼻・耳・首）を動かしたいのに
+  // 顔をつかんでしまわないようにする。顔の点をつかむと "face" になり、顔の点が先になる
+  if (focus === "body") {
+    const j = nearestJoint(x, y);
+    if (j) return { kind: "joint", name: j };
+  }
   if (f && near(ringPoint(f), 11)) return { kind: "ring" };
   if (f) {
     for (const key of ["leftEye", "rightEye", "nose"]) if (f[key] && near(toCanvas(f[key]), 8)) return { kind: "facePart", key };
@@ -680,12 +708,9 @@ function hit(x, y) {
     for (let i = 0; i < ch.length; i++) if (near(toCanvas(ch[i]), 8)) return { kind: "contour", index: i };
   }
   if (f && near(toCanvas(f.center), 13)) return { kind: "faceCenter" };
+  const j = nearestJoint(x, y);
+  if (j) return { kind: "joint", name: j };
   let best = null, bestD = 13 + slop;
-  for (const [name, p] of Object.entries(joints())) {
-    const c = toCanvas(p), d = Math.hypot(c[0] - x, c[1] - y);
-    if (d <= bestD) { best = name; bestD = d; }
-  }
-  if (best) return { kind: "joint", name: best };
   // 選んでいない人の関節・顔の中心
   for (let i = 0; i < personCount(); i++) {
     if (i === person) continue;
@@ -727,6 +752,8 @@ function endDrag() {
       const g = clone(f), key = pen + "Lines";
       g[key] = (g[key] || []).concat([pts.map((q) => toPhoto(q[0], q[1]))]);
       setFace(g);
+      // 一筆描いたら確定してペンを終える（鼻・口は一筆書きで足りる。足すときはもう一度「描く」を押す）
+      pen = null; updateMode();
     } else draw();
   }
   if (drag.kind !== "pan" && drag.kind !== "pinch") {
@@ -884,6 +911,8 @@ main.addEventListener("pointerdown", (e) => {
   if (!h) { selected = null; drag = { kind: "pan", x, y, ox: view.ox, oy: view.oy }; draw(); updateTools(); return; }
   if (h.person !== undefined) { person = h.person; selected = null; }
   pushUndo();
+  if (h.kind === "joint") setFocus("body");
+  else if (["faceCenter", "ring", "facePart", "mouth", "contour"].includes(h.kind)) setFocus("face");
   if (h.kind === "joint") {
     selected = h.name;
     const c = toCanvas(joints()[h.name]);
@@ -1087,6 +1116,48 @@ const BODY_POS = { nose: [88, 14], rightEar: [46, 34], leftEar: [130, 34], neck:
 const FACE_POS = { eyes: [64, 80], nose: [64, 106], mouth: [64, 132], contour: [64, 164] };
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// 関節を足すときの最初の位置に使う、正面を向いて立った人の関節の並び（体の図と同じ単位。本人の右が写真の左）。
+// 図の配置（BODY_POS）はボタンが重ならないように広げてあるので、こちらは体のつり合いに合わせてある
+const BODY_SHAPE = { nose: [88, 22], rightEar: [76, 18], leftEar: [100, 18], neck: [88, 58],
+  rightShoulder: [62, 66], leftShoulder: [114, 66], rightElbow: [54, 124], leftElbow: [122, 124],
+  rightWrist: [50, 180], leftWrist: [126, 180], rightHip: [72, 178], leftHip: [104, 178],
+  rightKnee: [72, 256], leftKnee: [104, 256], rightAnkle: [72, 330], leftAnkle: [104, 330] };
+// 足す関節の最初の位置（写真の座標）。その人に入っている関節が 2 つ以上あれば、それらに BODY_SHAPE を
+// 重ねたとき（大きさと位置を合わせる）の位置、1 つならその関節を基準に、なければ枠いっぱいの人の形の位置。
+// 以前はどの関節も枠の中央に出していたので、続けて足すと同じ所に重なってつかめなかった
+function newJointPosition(name) {
+  const [w, h] = size(), [cx, cy, cw, ch] = crop();
+  const known = Object.entries(joints()).filter(([k]) => BODY_SHAPE[k]).map(([k, p]) => [BODY_SHAPE[k], [p[0] * w, p[1] * h]]);
+  // 枠の高さの 85% を体の高さ（BODY_SHAPE の 18〜330）にしたときの大きさ
+  let s = ch * 0.85 / 312, tx, ty;
+  if (known.length >= 2) {
+    const n = known.length;
+    const am = [known.reduce((a, k) => a + k[0][0], 0) / n, known.reduce((a, k) => a + k[0][1], 0) / n];
+    const bm = [known.reduce((a, k) => a + k[1][0], 0) / n, known.reduce((a, k) => a + k[1][1], 0) / n];
+    let num = 0, den = 0;
+    for (const [a, b] of known) {
+      num += (a[0] - am[0]) * (b[0] - bm[0]) + (a[1] - am[1]) * (b[1] - bm[1]);
+      den += (a[0] - am[0]) ** 2 + (a[1] - am[1]) ** 2;
+    }
+    if (den > 0 && num > 0) s = num / den;
+    tx = bm[0] - am[0] * s; ty = bm[1] - am[1] * s;
+  } else if (known.length === 1) {
+    const [a, b] = known[0];
+    tx = b[0] - a[0] * s; ty = b[1] - a[1] * s;
+  } else {
+    tx = cx + cw / 2 - 88 * s; ty = cy + ch * 0.07 - 18 * s;
+  }
+  const t = BODY_SHAPE[name];
+  let p = [tx + t[0] * s, ty + t[1] * s];
+  // 写真の外に出たら写真の中へ戻す
+  p = [Math.min(Math.max(p[0], 4), w - 4), Math.min(Math.max(p[1], 4), h - 4)];
+  // ほかの関節とまったく同じ所に重なったら、少しずらす
+  for (const q of Object.values(joints())) {
+    if (Math.hypot(q[0] * w - p[0], q[1] * h - p[1]) < 10) p = [p[0] + 16, p[1] + 16];
+  }
+  return [p[0] / w, p[1] / h];
+}
+
 function figButton(parent, pos, text, cls, title, onclick) {
   const b = document.createElement("button");
   b.textContent = text; b.className = cls; b.title = title;
@@ -1112,11 +1183,10 @@ function buildFigure() {
     figButton(body, pos, JOINTS[name], (has ? "has-" + side : "off") + (name === selected ? " picked" : ""),
       has ? `${JOINTS[name]}（入っている）。押すと消す` : `${JOINTS[name]}（なし）。押すと枠の中央に足すので、ドラッグして合わせる`,
       () => {
-        pushUndo();
+        pushUndo(); setFocus("body");
         if (has) { delete editableJoints()[name]; if (selected === name) selected = null; }
         else {
-          const [cx, cy, cw, ch] = crop(), [w, h] = size();
-          editableJoints()[name] = [(cx + cw / 2) / w, (cy + ch / 2) / h];
+          editableJoints()[name] = newJointPosition(name);
           selected = name; mode = "bones"; updateMode();
         }
         changed(); updateTools();
@@ -1147,7 +1217,7 @@ function buildFigure() {
     const drawn = (key === "nose" || key === "mouth") && !!f && hasLines(f, key);
     const b = figButton(fc, pos, (key === "contour" ? "あご" : part.label) + (drawn ? "（線）" : ""), has ? "has-f" : "off",
       !f ? "先に顔を入れてください" : has ? `${part.label}（入っている）。押すと消す` : `${part.label}（なし）。押すと足す`,
-      () => { pushUndo(); const h2 = clone(f); (has ? part.remove : part.add)(h2); setFace(h2); updateTools(); });
+      () => { pushUndo(); setFocus("face"); const h2 = clone(f); (has ? part.remove : part.add)(h2); setFace(h2); updateTools(); });
     b.disabled = !f;
   }
   // 鼻・口をペンで描く
@@ -1159,7 +1229,7 @@ function buildFigure() {
     b.textContent = pen === part ? `${label}を描き中（押すと終わり）` : `${label}を描く`;
     b.className = pen === part ? "drawing" : drawn ? "has-f" : "off";
     b.disabled = !f;
-    b.title = f ? `写真の上にペンで${label}の線を描きます（何本でも）。消しゴム側でなぞると線を消します` : "先に顔を入れてください";
+    b.title = f ? `写真の上にペンで${label}の線を一筆で描きます（描き終えると確定）。消しゴム側でなぞると線を消します` : "先に顔を入れてください";
     b.onclick = () => setPen(part);
     dt.appendChild(b);
     if (drawn) {
@@ -1234,7 +1304,7 @@ function updateMode() {
   $("mode-bones").classList.toggle("on", mode === "bones");
   $("mode-crop").classList.toggle("on", mode === "crop");
   $("hint").textContent = pen && mode === "bones"
-    ? `${pen === "nose" ? "鼻" : "口"}の線をペン先（マウスは左ドラッグ）で描きます。何本でも描けます。消しゴム側でなぞると描いた線を消します。終わるときは右の「描き中」を押すか Esc。`
+    ? `${pen === "nose" ? "鼻" : "口"}の線をペン先（マウスは左ドラッグ）で一筆で描きます。描き終えると確定します（もう 1 本足すときは、もう一度「描く」を押す）。消しゴム側でなぞると描いた線を消します。やめるときは右の「描き中」を押すか Esc。`
     : mode === "bones"
     ? "関節の丸をドラッグして合わせます。顔: 点線の丸で位置、緑の丸で大きさ・傾き、白い縁の点で目・鼻・口（◇で口ごと）・あごの輪郭。右側に撮影画面での見え方が出ます。"
     : "黄色い枠の中をドラッグで位置、四隅のドラッグで大きさ（3:4 のまま）。枠の中がそのまま撮影画面になります。";
@@ -1243,6 +1313,8 @@ function updateMode() {
 $("mode-bones").onclick = () => { mode = "bones"; updateMode(); };
 $("mode-crop").onclick = () => { mode = "crop"; selected = null; pen = null; updateMode(); updateTools(); };
 $("fit").onclick = fitView;
+$("focus-body").onclick = () => setFocus("body");
+$("focus-face").onclick = () => setFocus("face");
 function updateMulti() {
   $("multi").classList.toggle("on", multi);
   $("multi").textContent = multi ? `複数選択 オン（${picks.length} 点）` : "複数選択";
