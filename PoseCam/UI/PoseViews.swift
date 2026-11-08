@@ -192,7 +192,11 @@ enum PoseDrawing {
             // 顔の枠（横顔では少し細い楕円）
             let w = h * (abs(face.yaw) > 45 ? 0.6 : 0.78)
             let rect = CGRect(x: center.x - w / 2, y: center.y - h / 2, width: w, height: h)
-            context.stroke(Path(ellipseIn: rect), with: .color(color), style: style)
+            // 顔の傾き（roll、画面で反時計回りが +）に合わせて楕円も回す
+            let turn = CGAffineTransform(translationX: center.x, y: center.y)
+                .rotated(by: -face.roll * .pi / 180)
+                .translatedBy(x: -center.x, y: -center.y)
+            context.stroke(Path(ellipseIn: rect).applying(turn), with: .color(color), style: style)
         }
         let drawnMouth = (face.mouthLines ?? []).filter { $0.count > 1 }
         let drawnNose = (face.noseLines ?? []).filter { $0.count > 1 }

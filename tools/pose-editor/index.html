@@ -461,7 +461,8 @@ function drawFace(ctx, f, map, color, width) {
   else {
     const c = map(f.center), top = map([f.center[0], f.center[1] - f.height / 2]);
     const rh = Math.abs(c[1] - top[1]);
-    ctx.beginPath(); ctx.ellipse(c[0], c[1], rh * (Math.abs(f.yaw) > 45 ? 0.6 : 0.78), rh, 0, 0, Math.PI * 2); ctx.stroke();
+    // 顔の傾き（roll、画面で反時計回りが +）に合わせて楕円も回す
+    ctx.beginPath(); ctx.ellipse(c[0], c[1], rh * (Math.abs(f.yaw) > 45 ? 0.6 : 0.78), rh, -(f.roll || 0) * Math.PI / 180, 0, Math.PI * 2); ctx.stroke();
   }
   // ペンで描いた線があれば、自動の口の形・鼻の形の代わりに描く（アプリの PoseDrawing.drawFace と同じ）
   const lines = (part) => (f[part + "Lines"] || []).filter((s) => s.length > 1);
