@@ -530,10 +530,15 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     /// 背面は超広角・望遠をまとめた仮想カメラを使い、倍率に応じて iOS がレンズを切り替える。
+    /// 前面は iPhone では広角、iPad mini（第 6 世代以降）などでは超広角（センターフレーム付き）しかないので、両方探す。
     private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        // iPad のセンターフレームは、映っている人に合わせて勝手にズーム・移動するので、ポーズのガイドと
+        // 見本の位置・大きさがずれる。このアプリの中では切る（iPad 本体の設定や、ほかのアプリには影響しない）
+        AVCaptureDevice.centerStageControlMode = .app
+        AVCaptureDevice.isCenterStageEnabled = false
         let types: [AVCaptureDevice.DeviceType] = position == .back
             ? [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera]
-            : [.builtInWideAngleCamera]
+            : [.builtInWideAngleCamera, .builtInUltraWideCamera]
         let devices = AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video,
                                                        position: position).devices
         for type in types {

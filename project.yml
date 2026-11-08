@@ -25,6 +25,9 @@ targets:
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # iPad（iPad mini）でも縦向きだけ。UIRequiresFullScreen があるので、iPad でも縦だけにできる
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: 写真・動画の撮影とポーズの判定にカメラを使用します。
         NSMicrophoneUsageDescription: 動画撮影時の録音にマイクを使用します。
         NSPhotoLibraryAddUsageDescription: 撮影した写真・動画を写真アプリに保存します。
@@ -40,5 +43,6 @@ targets:
         # 美肌の Core Image カーネル（BeautyKernels.ci.metal）を Core Image 用にコンパイルする
         MTL_COMPILER_FLAGS: -fcikernel
         MTLLINKER_FLAGS: -cikernel
-        TARGETED_DEVICE_FAMILY: "1"
+        # iPhone と iPad（iPad mini など）
+        TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
