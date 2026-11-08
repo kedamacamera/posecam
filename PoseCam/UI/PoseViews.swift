@@ -227,13 +227,11 @@ enum PoseDrawing {
             for line in drawnNose {
                 context.stroke(smoothOpenPath(line.map(transform)), with: .color(color), style: style)
             }
-        } else if face.leftEye == nil || face.rightEye == nil {
-            // 横顔・斜めの顔: 目が取れないので、鼻の形（くの字）を、顔の向いている側に描く。
-            // 以前は中心からの線と丸で向きを表していたが、目が下がって見えるため鼻と分かる形にした
-            let angle = face.yaw * .pi / 180
+        } else if face.leftEye == nil || face.rightEye == nil, let nosePoint = face.nose {
+            // 横顔・斜めの顔: 目が取れないので、鼻の形（くの字）を、鼻の点の所に顔の向いている側へ描く。
+            // 鼻の点がない（取れなかった・ボーン入れツールで消した）ときは描かない
             let side: CGFloat = face.yaw >= 0 ? 1 : -1
-            let tip = face.nose.map(transform)
-                ?? CGPoint(x: center.x + CGFloat(sin(angle)) * h * 0.5, y: center.y + h * 0.05)
+            let tip = transform(nosePoint)
             var nose = Path()
             nose.move(to: CGPoint(x: tip.x - side * h * 0.1, y: tip.y - h * 0.2))
             nose.addLine(to: tip)
