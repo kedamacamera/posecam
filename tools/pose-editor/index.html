@@ -24,6 +24,9 @@
   .badge { color: var(--accent); font-size: 11px; white-space: nowrap; }
   .badge.ok { color: var(--face); }
   .badge.todo { color: var(--muted); }
+  .badge.problem { color: #ff6b6b; font-weight: 700; }
+  .item .badges { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  button.problem.on { background: #c0392b; border-color: #ff6b6b; color: #fff; font-weight: 700; }
   button.ok { background: #1f7a3a; border-color: #2fa152; font-weight: 700; }
   button.ok.on { background: var(--face); color: #111; border-color: var(--face); }
   #ok-button { min-height: 40px; }
@@ -93,6 +96,7 @@
       <option value="todo">未確認だけ</option>
       <option value="ok">OK（手直し不要）だけ</option>
       <option value="edited">手直ししたものだけ</option>
+      <option value="problem">写真に問題ありだけ</option>
     </select>
     <div id="progress" class="status"></div>
   </header>
@@ -124,6 +128,9 @@
   </div>
   <div class="row">
     <button id="ok-button" class="ok" title="手直しが要らない写真に印を付けて、次の未確認の写真へ進みます（Enter）">✓ OK（手直し不要）→ 次へ</button>
+  </div>
+  <div class="row">
+    <button id="problem-button" class="problem" title="写真そのものがおかしい（足がつながっていないなど、描き直しが要る）ものに印を付けます。もう一度押すと外れます">⚠ 写真に問題あり</button>
   </div>
   <div>
     <h3>モード</h3>
@@ -214,6 +221,7 @@ const preview = $("preview"), pctx = preview.getContext("2d");
 
 let items = [], analysis = {}, edits = {}, savedText = "{}";
 let checked = new Set();  // 手直し不要（OK）にした写真の名前
+let problems = new Set();  // 写真そのものに問題がある（描き直しが要る）写真の名前
 let current = null, image = null;
 const images = {};
 let view = { s: 1, ox: 0, oy: 0 };
@@ -300,7 +308,7 @@ function changed() {
   if (badge !== changed.badge) { changed.badge = badge; renderList(false); }
   draw();
 }
-function savedState() { return JSON.stringify({ edits, checked: [...checked].sort() }); }
+function savedState() { return JSON.stringify({ edits, checked: [...checked].sort(), problems: [...problems].sort() }); }
 function isDirty() { return savedState() !== savedText; }
 
 // MARK: - 座標
@@ -1007,20 +1015,22 @@ function renderList(scroll) {
   for (const it of visibleItems()) {
     const div = document.createElement("div");
     div.className = "item" + (it.name === current ? " active" : "");
-    div.innerHTML = `<span>${it.label}<br><small>${it.name}</small></span>` + BADGES[status(it.name)];
+    div.innerHTML = `<span>${it.label}<br><small>${it.name}</small></span><span class="badges">` + BADGES[status(it.name)]
+      + (problems.has(it.name) ? '<span class="badge problem">⚠ 問題あり</span>' : "") + "</span>";
     div.onclick = () => select(it.name);
     list.appendChild(div);
     if (scroll && it.name === current) setTimeout(() => div.scrollIntoView({ block: "nearest" }), 0);
   }
   const done = items.filter((it) => status(it.name) !== "todo").length;
   const nOk = items.filter((it) => status(it.name) === "ok").length;
-  $("progress").textContent = `確認済み ${done} / ${items.length}（OK ${nOk}・手直し ${done - nOk}）`;
+  $("progress").textContent = `確認済み ${done} / ${items.length}（OK ${nOk}・手直し ${done - nOk}）`
+    + (problems.size ? `・写真に問題あり ${problems.size}` : "");
 }
 function visibleItems() {
   const cat = $("category").value, q = $("search").value.trim(), st = $("status-filter").value;
   // 今見ている写真は、状態が変わっても一覧から消さない（OK にした直後に位置がわからなくならないように）
   return items.filter((it) => (!cat || it.category === cat) && (!q || (it.label + it.name).includes(q))
-    && (!st || status(it.name) === st || it.name === current));
+    && (!st || (st === "problem" ? problems.has(it.name) : status(it.name) === st) || it.name === current));
 }
 
 // OK（手直し不要）にして、一覧で次の未確認の写真へ進む。OK 済みなら取り消す
@@ -1035,6 +1045,13 @@ function toggleOk() {
   else { renderList(false); updateTools(); toast("この一覧の写真はすべて確認済みです"); }
 }
 $("ok-button").onclick = toggleOk;
+// 写真に問題あり（描き直しが要る）の印を付ける・外す。手直しや OK とは別に付く
+function toggleProblem() {
+  if (!current) return;
+  if (problems.has(current)) problems.delete(current); else problems.add(current);
+  updateState(); renderList(false); updateTools();
+}
+$("problem-button").onclick = toggleProblem;
 $("stage-ok").onclick = toggleOk;
 
 function select(name) {
@@ -1200,6 +1217,7 @@ function updateTools() {
   const st = status(current), ok = $("ok-button");
   ok.disabled = $("stage-ok").disabled = st === "edited";
   ok.classList.toggle("on", st === "ok"); $("stage-ok").classList.toggle("on", st === "ok");
+  $("problem-button").classList.toggle("on", problems.has(current));
   ok.textContent = st === "edited" ? "手直し済み（OK 印は不要）" : st === "ok" ? "✓ OK 済み（押すと取り消し）" : "✓ OK（手直し不要）→ 次へ";
 }
 
@@ -1255,14 +1273,14 @@ function toast(text) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => (t.style.display = "none"), 2600);
 }
 async function save() {
-  const body = JSON.stringify({ edits, checked: [...checked].sort() });
+  const body = JSON.stringify({ edits, checked: [...checked].sort(), problems: [...problems].sort() });
   try {
     const res = await fetch("/api/save", { method: "POST", headers: { "Content-Type": "application/json" }, body });
     const json = await res.json();
     if (!json.ok) throw new Error(json.error);
     savedText = savedState();
     updateState();
-    toast(`保存しました（手直し ${json.edited} 枚・OK ${json.checked} 枚・builtin_shapes.json の ${json.shapes} ポーズを作り直し）`);
+    toast(`保存しました（手直し ${json.edited} 枚・OK ${json.checked} 枚・問題あり ${json.problems} 枚・builtin_shapes.json の ${json.shapes} ポーズを作り直し）`);
   } catch (err) {
     toast("保存できませんでした: " + err.message);
   }
@@ -1315,6 +1333,7 @@ for (const id of ["category", "search", "status-filter"]) $(id).addEventListener
   }
   if (json.error) { $("title").textContent = json.error; return; }
   items = json.items; analysis = json.analysis; edits = json.edits; checked = new Set(json.checked || []);
+  problems = new Set(json.problems || []);
   savedText = savedState();
   const cats = [...new Set(items.map((i) => i.category))].filter(Boolean);
   for (const c of cats) { const o = document.createElement("option"); o.value = o.textContent = c; $("category").appendChild(o); }

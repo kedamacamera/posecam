@@ -10,6 +10,7 @@ Python 3.8 以上の標準ライブラリだけで動く（追加のインスト
   builtin_analysis.json … Mac で自動解析した結果（写真の上の座標）。tools/shapes が書き出す。
   pose_edits.json       … このツールで手直しした内容（写真の上の座標）。これが手直しの元データ。
   pose_checked.json     … 見て「手直し不要（OK）」にした写真の名前の一覧。アプリの型には影響しない。
+  pose_problems.json    … 写真そのものに問題がある（描き直しが要る）と印を付けた写真の一覧。アプリの型には影響しない。
   保存すると、上の 2 つから builtin_shapes.json（アプリが読む、枠の中の座標）を作り直す。
 """
 
@@ -28,6 +29,7 @@ POSES = os.path.join(REPO, "PoseCam", "Resources", "Poses")
 ANALYSIS = os.path.join(HERE, "builtin_analysis.json")
 EDITS = os.path.join(HERE, "pose_edits.json")
 CHECKED = os.path.join(HERE, "pose_checked.json")
+PROBLEMS = os.path.join(HERE, "pose_problems.json")
 SHAPES = os.path.join(POSES, "builtin_shapes.json")
 BUILTIN_SWIFT = os.path.join(REPO, "PoseCam", "Pose", "BuiltInPoses.swift")
 
@@ -170,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
                 items.append({"name": name, "label": label, "category": category,
                               "isObject": analysis[name].get("isObject", False)})
             self.send_json({"items": items, "analysis": analysis, "edits": load_json(EDITS, {}),
-                            "checked": load_json(CHECKED, [])})
+                            "checked": load_json(CHECKED, []), "problems": load_json(PROBLEMS, [])})
         elif path.startswith("/photo/"):
             name = os.path.basename(path[len("/photo/"):])
             file = os.path.join(POSES, name + ".jpg")
@@ -191,14 +193,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             edits = body["edits"]
             checked = sorted(set(body.get("checked", [])))
+            problems = sorted(set(body.get("problems", [])))
             analysis = load_json(ANALYSIS, {})
-            unknown = [name for name in list(edits) + checked if name not in analysis]
+            unknown = [name for name in list(edits) + checked + problems if name not in analysis]
             if unknown:
                 raise ValueError("解析結果にない写真: " + ", ".join(unknown))
             write_json(EDITS, edits, indent=1)
             write_json(CHECKED, checked, indent=1)
+            write_json(PROBLEMS, problems, indent=1)
             count = export_shapes(analysis, edits)
-            self.send_json({"ok": True, "shapes": count, "edited": len(edits), "checked": len(checked)})
+            self.send_json({"ok": True, "shapes": count, "edited": len(edits), "checked": len(checked),
+                            "problems": len(problems)})
         except Exception as error:  # 保存できなかった理由を画面に出す
             self.send_json({"ok": False, "error": str(error)}, 500)
 
@@ -210,6 +215,9 @@ def main():
         print("builtin_shapes.json: %d poses" % count)
         return
     port = 8765
+    # Windows では SO_REUSEADDR を付けると、ほかのツールが使っているポートにも重ねて入れてしまい、
+    # 2 つのツールが同じアドレスで動いて保存先がばらばらになる。使用中なら次のポートへ進むように切る
+    ThreadingHTTPServer.allow_reuse_address = False
     while True:
         try:
             server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
