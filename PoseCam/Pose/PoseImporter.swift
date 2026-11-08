@@ -135,43 +135,45 @@ enum PoseImporter {
         let image = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
                                                              y: -source.extent.minY))
         let people = PoseDetector().detectPeople(ciImage: image)
-        let joints = people.first ?? [:]
+        let faces = PoseDetector.faceShapes(ciImage: image)
+        let (joints, face, others) = assignPeople(people, faces: faces)
         let outlines = PoseDetector.personOutlines(ciImage: image)
         // 輪郭が取れれば、足などの関節が検出できなくても型にできる
         guard !outlines.isEmpty || joints.count >= 6 else { return nil }
-        let faces = PoseDetector.faceShapes(ciImage: image)
-        let (face, others) = assignPeople(people, faces: faces)
         var analysis = PhotoAnalysis(size: image.extent.size, joints: joints, outlines: outlines, face: face)
         analysis.others = others
         return analysis
     }
 
-    /// 体と顔を、同じ人どうしで組にする。返すのは 1 人目（関節のいちばん多い体）の顔と、2 人目以降の人。
+    /// 体と顔を、同じ人どうしで組にする。返すのは 1 人目（いちばん大きく写っている体）の関節と顔、2 人目以降の人。
     ///
     /// 以前は 1 人目の顔を「いちばん大きい顔」にしていた。2 人の写真では、手前で体がほとんど写っていない人の顔が
     /// いちばん大きく、関節の多い体は奥の人になりやすいので、顔は手前の人・体は奥の人という組になっていた
     /// （2 人の見本写真のほぼ全部がこうなり、手で付け替えた）。今は、体ごとに頭（鼻・耳、なければ首）に
     /// いちばん近い顔をその人の顔にする。
     ///
-    /// - 2 人目以降の体: 後ろに小さく写った人を拾わないよう、関節が 6 つ以上で、1 人目の体の大きさ（関節の上下の幅）の
+    /// - 2 人目以降の体: 後ろに小さく写った人を拾わないよう、関節が 6 つ以上で、1 人目の体の大きさ（関節の範囲の対角）の
     ///   半分以上の人を使う
     /// - どの体とも組にならなかった顔のうち、組にした顔と同じくらい大きい（いちばん大きい顔の 0.7 倍以上）ものは、
     ///   体の取れなかった人として「顔だけの人」にする（自撮りで体がほとんど写っていない手前の人など）
     /// - 2 人目以降は合わせて 3 人まで
-    static func assignPeople(_ people: [[Joint: CGPoint]], faces: [FaceShape]) -> (FaceShape?, [PersonShape]) {
-        func height(_ joints: [Joint: CGPoint]) -> CGFloat {
-            let ys = joints.values.map(\.y)
-            return (ys.max() ?? 0) - (ys.min() ?? 0)
-        }
+    static func assignPeople(_ people: [[Joint: CGPoint]], faces: [FaceShape])
+        -> ([Joint: CGPoint], FaceShape?, [PersonShape]) {
         func anchor(_ joints: [Joint: CGPoint]) -> CGPoint? {
             let head = [Joint.nose, .leftEar, .rightEar].compactMap { joints[$0] }
             guard !head.isEmpty else { return joints[.neck] }
             return CGPoint(x: head.map(\.x).reduce(0, +) / CGFloat(head.count),
                            y: head.map(\.y).reduce(0, +) / CGFloat(head.count))
         }
+        // 1 人目は、いちばん大きく写っている体（関節の範囲の対角）。関節の数で選ぶと、奥に小さく全身が写った
+        // 通りがかりの人が、手前で体の一部しか写っていない主役より先になることがあった（食事 2）
+        func size(_ joints: [Joint: CGPoint]) -> CGFloat {
+            let xs = joints.values.map(\.x), ys = joints.values.map(\.y)
+            return hypot((xs.max() ?? 0) - (xs.min() ?? 0), (ys.max() ?? 0) - (ys.min() ?? 0))
+        }
         var bodies: [[Joint: CGPoint]] = []
-        if let first = people.first {
-            bodies = [first] + people.dropFirst().filter { $0.count >= 6 && height($0) >= height(first) * 0.5 }
+        if let first = people.max(by: { size($0) < size($1) }) {
+            bodies = [first] + people.filter { $0 != first && $0.count >= 6 && size($0) >= size(first) * 0.5 }
         }
         var remaining = faces  // 大きい順
         // 体ごとに、頭にいちばん近い顔（顔の高さの 1.5 倍以内）を付ける
@@ -193,7 +195,7 @@ enum PoseImporter {
         for face in remaining where face.height >= largest * 0.7 {
             others.append(PersonShape(joints: [:], face: face))
         }
-        return (bodyFaces.first ?? nil, Array(others.prefix(3)))
+        return (bodies.first ?? [:], bodyFaces.first ?? nil, Array(others.prefix(3)))
     }
 
     /// 料理・ドリンクの写真から、主な被写体（お皿・グラス・手）の輪郭を取り出す。
