@@ -67,6 +67,8 @@ enum PoseMatcher {
     /// 2 人以上の型の関節の一致度。型の人と映っている人を、一致度の合計がいちばん高くなるように組み合わせ、
     /// 型の人ごとの一致度を平均する（映っていない人・比べられない人は 0 点）。どの人も比べられなければ nil。
     static func score(people: [[Joint: CGPoint]], detected: [[Joint: CGPoint]], aspect: CGFloat? = nil) -> Double? {
+        // 体の取れなかった「顔だけの人」（関節がない人）は、関節では比べない（顔の一致度で比べる）
+        let people = people.filter { !$0.isEmpty }
         let table = people.map { person in detected.map { score(template: person, detected: $0, aspect: aspect) } }
         let assignment = bestAssignment(table)
         let scores = assignment.enumerated().map { row, column in column.flatMap { table[row][$0] } }
