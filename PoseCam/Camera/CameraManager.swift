@@ -1229,7 +1229,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 保存できた写真を、撮影後のプレビュー表示とモニター（アプリ）に渡す。どのスレッドから呼んでもよい
     private func shareCapture(_ jpeg: Data) {
         let preview = UserDefaults.standard.bool(forKey: Self.capturePreviewKey)
-        let monitor = remote.hasAppMonitor
+        let monitor = remote.wantsPhotos
         guard preview || monitor else { return }
         photoQueue.async {
             guard let small = Self.smallJPEG(jpeg, maxSide: 1600) else { return }

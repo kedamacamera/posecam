@@ -124,6 +124,13 @@ final class RemoteHost: NSObject, ObservableObject {
     private var webStreams: [ObjectIdentifier: WebStream] = [:]
     private var latestStateJSON = Data("{}".utf8)
     private var token = ""
+    /// ブラウザのモニターで見る、撮った写真（新しいものが先頭。確認用に縮めた JPEG。60 枚まで）
+    private var webPhotos: [(id: Int, jpeg: Data)] = []
+    private var webPhotoCounter = 0
+    /// 撮影後のプレビューで見せる写真（撮る側でプレビューがオンのときに撮ったもの）
+    private var webPreviewID: Int?
+    /// ブラウザで見ている数（どのスレッドからも読む）
+    private let webViewersBox = Locked(0)
     // Apple Watch（queue 専用）
     private var latestWatchFrame: (id: Int, jpeg: Data)?
     private var watchSentID = 0
@@ -292,11 +299,22 @@ final class RemoteHost: NSObject, ObservableObject {
     /// アプリのモニターがつながっているか（どのスレッドから読んでもよい）
     var hasAppMonitor: Bool { !session.connectedPeers.isEmpty }
 
-    /// 撮った写真をアプリのモニターへ送る（モニターのアルバムに入る）。どのスレッドから呼んでもよい
+    /// 撮った写真を見せる相手（アプリのモニターかブラウザのモニター）がいるか（どのスレッドから読んでもよい）
+    var wantsPhotos: Bool { hasAppMonitor || webViewersBox.value > 0 }
+
+    /// 撮った写真をモニターへ送る（モニターのアルバムに入る）。どのスレッドから呼んでもよい
     func sendPhoto(_ jpeg: Data, showPreview: Bool) {
         var body = Data([showPreview ? 1 : 0])
         body.append(jpeg)
-        queue.async { self.sendToPeer(RemoteWire.pack(RemoteWire.photo, body), reliable: true) }
+        queue.async {
+            self.sendToPeer(RemoteWire.pack(RemoteWire.photo, body), reliable: true)
+            // ブラウザのモニター: 写真を取っておき、状態（/state）で番号を知らせる
+            guard !self.token.isEmpty else { return }
+            self.webPhotoCounter += 1
+            self.webPhotos.insert((self.webPhotoCounter, jpeg), at: 0)
+            if self.webPhotos.count > 60 { self.webPhotos.removeLast(self.webPhotos.count - 60) }
+            if showPreview { self.webPreviewID = self.webPhotoCounter }
+        }
     }
 
     func disconnectMonitor() {
@@ -375,6 +393,10 @@ final class RemoteHost: NSObject, ObservableObject {
         queue.async {
             for stream in self.webStreams.values { stream.close() }
             self.webStreams = [:]
+            self.webPhotos = []
+            self.webPreviewID = nil
+            self.token = ""
+            self.webViewersBox.value = 0
             DispatchQueue.main.async {
                 self.webViewers = 0
                 self.updateStreaming()
@@ -444,9 +466,39 @@ final class RemoteHost: NSObject, ObservableObject {
         }
         switch components.path {
         case "/":
-            respond(connection, status: "200 OK", type: "text/html; charset=utf-8", body: Data(Self.page.utf8))
+            respond(connection, status: "200 OK", type: "text/html; charset=utf-8", body: Data(WebMonitorPage.html.utf8))
         case "/state":
-            respond(connection, status: "200 OK", type: "application/json", body: latestStateJSON)
+            // アプリのモニターと同じ状態に、撮る側の名前と撮った写真の番号を足す
+            var dict = (try? JSONSerialization.jsonObject(with: latestStateJSON)) as? [String: Any] ?? [:]
+            dict["camera"] = RemoteWire.peerID.displayName
+            dict["photos"] = webPhotos.map(\.id)
+            dict["preview"] = webPreviewID.map { $0 as Any } ?? NSNull()
+            let body = (try? JSONSerialization.data(withJSONObject: dict)) ?? latestStateJSON
+            respond(connection, status: "200 OK", type: "application/json", body: body)
+        case "/photo":
+            if let id = query["id"].flatMap(Int.init), let photo = webPhotos.first(where: { $0.id == id }) {
+                respond(connection, status: "200 OK", type: "image/jpeg", body: photo.jpeg)
+            } else {
+                respond(connection, status: "404 Not Found", type: "text/plain", body: Data("not found".utf8))
+            }
+        case "/sample":
+            // 見本写真（アプリに入っている見本の名前だけ。英数字と _ - のみ受け付ける）
+            let name = query["n"] ?? ""
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+            if !name.isEmpty, name.unicodeScalars.allSatisfy(allowed.contains),
+               let jpeg = PoseImageCache.sample(named: name)?.jpegData(compressionQuality: 0.8) {
+                respond(connection, status: "200 OK", type: "image/jpeg", body: jpeg)
+            } else {
+                respond(connection, status: "404 Not Found", type: "text/plain", body: Data("not found".utf8))
+            }
+        case "/focus":
+            // 映像の中の位置（0...1、左上原点）にピント・露出を合わせる。lock=1 なら AE/AF ロック
+            if let x = query["x"].flatMap(Double.init), let y = query["y"].flatMap(Double.init),
+               (0...1).contains(x), (0...1).contains(y) {
+                let focus = RemoteFocus(x: x, y: y, lock: query["lock"] == "1")
+                DispatchQueue.main.async { self.onFocus?(focus) }
+            }
+            respond(connection, status: "200 OK", type: "application/json", body: Data("{}".utf8))
         case "/cmd":
             if let command = query["c"].flatMap(RemoteCommand.init(rawValue:)) {
                 DispatchQueue.main.async { self.onCommand?(command) }
@@ -476,6 +528,7 @@ final class RemoteHost: NSObject, ObservableObject {
             guard let self else { return }
             self.webStreams[key] = nil
             let count = self.webStreams.count
+            self.webViewersBox.value = count
             DispatchQueue.main.async {
                 self.webViewers = count
                 self.updateStreaming()
@@ -487,6 +540,7 @@ final class RemoteHost: NSObject, ObservableObject {
         }
         webStreams[key] = stream
         let count = webStreams.count
+        webViewersBox.value = count
         DispatchQueue.main.async {
             self.webViewers = count
             self.updateStreaming()
@@ -501,68 +555,6 @@ final class RemoteHost: NSObject, ObservableObject {
             if error != nil { stream?.close() } else { stream?.ready() }
         })
     }
-
-    /// ブラウザのモニターのページ
-    private static let page = """
-    <!doctype html><html lang="ja"><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-    <title>ポーズカメラ モニター</title>
-    <style>
-    html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;overflow:hidden;
-      -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
-    #v{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
-    #top{position:absolute;left:0;right:0;top:0;display:flex;gap:8px;padding:12px;align-items:center}
-    .badge{background:#0008;border-radius:14px;padding:5px 11px;font-weight:600;font-size:15px}
-    .ok{background:#1db954}
-    #rec{background:#d22}
-    #count{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:120px;font-weight:700;
-      text-shadow:0 2px 10px #000;pointer-events:none}
-    #bottom{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-around;align-items:center;
-      padding:16px 16px calc(16px + env(safe-area-inset-bottom));background:linear-gradient(transparent,#0009)}
-    button{background:#fff3;color:#fff;border:0;border-radius:28px;min-width:64px;height:56px;font-size:15px;font-weight:600}
-    #shutter{width:80px;height:80px;border-radius:50%;background:#fff;border:5px solid #fff8;background-clip:padding-box}
-    #shutter.video{background:#e22}
-    #shutter.busy{opacity:.5}
-    #msg{position:absolute;left:0;right:0;top:45%;text-align:center;color:#aaa;font-size:15px}
-    </style></head><body>
-    <img id="v" alt="">
-    <div id="msg">つないでいます…</div>
-    <div id="top"><span id="score" class="badge" hidden></span><span id="rec" class="badge" hidden></span></div>
-    <div id="count" hidden></div>
-    <div id="bottom">
-      <button id="timer">タイマー</button>
-      <button id="shutter" aria-label="シャッター"></button>
-      <button id="flip">切替</button>
-    </div>
-    <script>
-    const k=new URLSearchParams(location.search).get('k');
-    const v=document.getElementById('v'),msg=document.getElementById('msg');
-    function connect(){v.src='/stream?k='+k+'&t='+Date.now();}
-    v.onload=()=>{msg.hidden=true;};
-    v.onerror=()=>{msg.hidden=false;msg.textContent='つなぎ直しています…';setTimeout(connect,1000);};
-    connect();
-    function cmd(c){fetch('/cmd?k='+k+'&c='+c).catch(()=>{});if(navigator.vibrate)navigator.vibrate(20);}
-    document.getElementById('shutter').onclick=()=>cmd('shutter');
-    document.getElementById('flip').onclick=()=>cmd('flip');
-    document.getElementById('timer').onclick=()=>cmd('timer');
-    async function poll(){
-      try{
-        const s=await (await fetch('/state?k='+k,{cache:'no-store'})).json();
-        const sc=document.getElementById('score');
-        sc.hidden=s.score==null;sc.textContent='一致度 '+s.score+'%';sc.className='badge'+(s.matched?' ok':'');
-        const r=document.getElementById('rec');r.hidden=!s.recording;
-        r.textContent='● '+String(Math.floor(s.recordingSeconds/60)).padStart(2,'0')+':'+String(s.recordingSeconds%60).padStart(2,'0');
-        const c=document.getElementById('count');c.hidden=s.countdown==null;c.textContent=s.countdown??'';
-        document.getElementById('timer').textContent=s.timerSeconds?s.timerSeconds+'秒':'タイマー';
-        const b=document.getElementById('shutter');
-        b.className=(s.mode==='動画'?'video':'')+(s.busy?' busy':'');
-        document.getElementById('flip').disabled=!s.canFlip;
-      }catch(e){}
-      setTimeout(poll,300);
-    }
-    poll();
-    </script></body></html>
-    """
 }
 
 /// ブラウザ 1 つぶんの映像の送り先（RemoteHost の queue でだけ使う）
