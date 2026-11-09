@@ -37,7 +37,7 @@ jobs:
             -project PoseCam.xcodeproj \
             -scheme PoseCam \
             -configuration Release \
-            -sdk iphoneos \
+\
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
@@ -49,6 +49,8 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/PoseCam.app Payload/
+          # Apple Watch のアプリが中に入っているか（入っていなければビルドを失敗にする）
+          ls Payload/PoseCam.app/Watch/PoseCamWatch.app/Info.plist
           zip -qry PoseCam.ipa Payload
 
       - uses: actions/upload-artifact@v4

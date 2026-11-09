@@ -677,6 +677,11 @@ struct ContentView: View {
             if !camera.isRecording && !camera.isSequenceRunning { camera.flipCamera() }
         case .timer:
             camera.timerSeconds = next(after: camera.timerSeconds, in: [0, 3, 6, 10])
+        case .burst:
+            // 画面の連続撮影ボタンと同じ（写真のときだけ。ダイレクトフラッシュでは 3 枚まで）
+            guard camera.mode == .photo, !camera.isSequenceRunning else { return }
+            camera.burstCount = next(after: camera.burstCount,
+                                     in: camera.flashOn && camera.directFlash ? [1, 3] : [1, 3, 5, 10])
         }
     }
 
@@ -695,7 +700,8 @@ struct ContentView: View {
             busy: camera.isCapturing || camera.isSequenceRunning,
             timerSeconds: camera.timerSeconds,
             mode: camera.mode.rawValue,
-            canFlip: !camera.isRecording && !camera.isSequenceRunning))
+            canFlip: !camera.isRecording && !camera.isSequenceRunning,
+            burstCount: camera.mode == .photo ? camera.burstCount : 1))
 
         let size = remote.frameSizeBox.value
         let template = camera.template

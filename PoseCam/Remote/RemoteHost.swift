@@ -3,12 +3,14 @@ import Foundation
 import MultipeerConnectivity
 import Network
 import UIKit
+import WatchConnectivity
 
 // リモートモニター: もう一台のスマホに撮影画面（映像＋ポーズのガイド）を映し、シャッターなどを押せるようにする。
 //
 // つなぎ方は 2 通り:
 // - A: 両方の iPhone に PoseCam を入れ、Multipeer Connectivity で直接つなぐ（Wi-Fi がなくてもつながる）
 // - B: 撮る側の iPhone が小さな Web サーバーになり、もう一台はブラウザで見る（Android でも使える。同じ Wi-Fi かテザリング）
+// - C: ペアの Apple Watch の「ポーズカメラ」で見る（WatchConnectivity。時計の画面に合わせて小さくしたコマを送る）
 //
 // どちらも、撮る側が映像にガイドを重ねた JPEG を作って送る。受け取った側が 1 枚表示し終えてから次を送るので、
 // 回線が遅くてもコマがたまって遅れていくことはない（古いコマは捨てて、いつも最新のコマを送る）。
@@ -18,6 +20,8 @@ enum RemoteCommand: String, Codable {
     case shutter
     case flip
     case timer
+    /// 連続撮影の枚数を切り替える（Apple Watch から）
+    case burst
 }
 
 /// 撮る側からモニターへ送る状態（一致度・カウントダウンなど）
@@ -33,6 +37,8 @@ struct RemoteState: Codable, Equatable {
     /// 撮影モード（CaptureMode の rawValue）
     var mode = CaptureMode.photo.rawValue
     var canFlip = true
+    /// 連続撮影の枚数（1 なら 1 枚ずつ）
+    var burstCount = 1
 }
 
 enum RemoteWire {
@@ -73,8 +79,11 @@ final class RemoteHost: NSObject, ObservableObject {
     /// モニターからの操作（メインスレッドで呼ぶ）
     var onCommand: ((RemoteCommand) -> Void)?
 
-    /// 送っているか（どちらかのモニターが見ている）。メインスレッド用
-    var isStreaming: Bool { connectedMonitor != nil || webViewers > 0 }
+    /// Apple Watch で見ているか
+    @Published private(set) var watchViewing = false
+
+    /// 送っているか（どれかのモニターが見ている）。メインスレッド用
+    var isStreaming: Bool { connectedMonitor != nil || webViewers > 0 || watchViewing }
 
     /// 映像のキューから読む: 送るか
     private let streamingBox = Locked(false)
@@ -83,6 +92,8 @@ final class RemoteHost: NSObject, ObservableObject {
     /// いま送っているコマの大きさ（ピクセル）。ガイドをこの大きさで描く
     let frameSizeBox = Locked<CGSize>(.zero)
     private let encodeBusy = Locked(false)
+    /// 映像のキューから読む: Apple Watch 用の小さいコマも作るか
+    private let watchBox = Locked(false)
     /// 映像のキュー専用
     private var lastOffer: CFTimeInterval = 0
 
@@ -96,6 +107,11 @@ final class RemoteHost: NSObject, ObservableObject {
     private var webStreams: [ObjectIdentifier: WebStream] = [:]
     private var latestStateJSON = Data("{}".utf8)
     private var token = ""
+    // Apple Watch（queue 専用）
+    private var latestWatchFrame: (id: Int, jpeg: Data)?
+    private var watchSentID = 0
+    private var watchHungry = false
+    private var watchLastSeen: CFTimeInterval = 0
 
     private let session = MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
     private var browser: MCNearbyServiceBrowser?
@@ -105,6 +121,10 @@ final class RemoteHost: NSObject, ObservableObject {
     override init() {
         super.init()
         session.delegate = self
+        if WCSession.isSupported() {
+            WCSession.default.delegate = self
+            WCSession.default.activate()
+        }
     }
 
     // MARK: - 映像
@@ -129,15 +149,36 @@ final class RemoteHost: NSObject, ObservableObject {
         frameSizeBox.value = size
         encodeBusy.value = true
         let overlay = overlayBox.value
+        let forWatch = watchBox.value
         encodeQueue.async { [weak self] in
             guard let self else { return }
             defer { self.encodeBusy.value = false }
-            guard let jpeg = Self.jpeg(cgImage, overlay: overlay) else { return }
-            self.queue.async { self.publish(jpeg) }
+            guard let composed = Self.compose(cgImage, overlay: overlay),
+                  let jpeg = UIImage(cgImage: composed).jpegData(compressionQuality: 0.55) else { return }
+            // 時計へは、時計の画面に合う大きさ（長い辺 320）にして送る（WatchConnectivity は大きいデータが遅い）
+            let watchJPEG = forWatch ? Self.small(composed, maxSide: 320).flatMap {
+                UIImage(cgImage: $0).jpegData(compressionQuality: 0.45)
+            } : nil
+            self.queue.async {
+                self.publish(jpeg)
+                if let watchJPEG { self.publishWatch(watchJPEG) }
+            }
         }
     }
 
-    private static func jpeg(_ image: CGImage, overlay: CGImage?) -> Data? {
+    private static func small(_ image: CGImage, maxSide: CGFloat) -> CGImage? {
+        let scale = min(1, maxSide / CGFloat(max(image.width, image.height)))
+        let width = Int((CGFloat(image.width) * scale).rounded())
+        let height = Int((CGFloat(image.height) * scale).rounded())
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    private static func compose(_ image: CGImage, overlay: CGImage?) -> CGImage? {
         let width = image.width, height = image.height
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -145,8 +186,7 @@ final class RemoteHost: NSObject, ObservableObject {
         let rect = CGRect(x: 0, y: 0, width: width, height: height)
         context.draw(image, in: rect)
         if let overlay { context.draw(overlay, in: rect) }
-        guard let composed = context.makeImage() else { return nil }
-        return UIImage(cgImage: composed).jpegData(compressionQuality: 0.55)
+        return context.makeImage()
     }
 
     /// メインスレッドで作ったガイドの画像（nil ならガイドなし）
@@ -162,6 +202,7 @@ final class RemoteHost: NSObject, ObservableObject {
         queue.async {
             self.latestStateJSON = json
             self.sendToPeer(RemoteWire.pack(RemoteWire.state, json), reliable: true)
+            self.sendStateToWatch()
         }
     }
 
@@ -176,6 +217,7 @@ final class RemoteHost: NSObject, ObservableObject {
         DispatchQueue.main.async {
             let on = self.isStreaming
             self.streamingBox.value = on
+            self.watchBox.value = self.watchViewing
             if !on { self.overlayBox.value = nil }
             // 送っている間は撮る側の画面を消さない（消えるとアプリが止まり、モニターに映らなくなる）
             UIApplication.shared.isIdleTimerDisabled = on
@@ -579,4 +621,124 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
                  with progress: Progress) {}
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID,
                  at localURL: URL?, withError error: Error?) {}
+}
+
+// MARK: - C: Apple Watch（WatchConnectivity）
+
+/// 時計とのやり取りの決まり（PoseCamWatch/WatchMonitor.swift と合わせる）
+enum WatchWire {
+    /// 時計が見ている合図（見ている間 2 秒ごとに届く）。["hello": 1]
+    static let hello = "hello"
+    /// 時計が 1 コマ表示し終えた合図。["ack": 1]
+    static let ack = "ack"
+    /// 時計の画面を閉じた合図。["bye": 1]
+    static let bye = "bye"
+    /// 時計からの操作。["cmd": RemoteCommand の rawValue]
+    static let command = "cmd"
+    /// 撮る側の状態（RemoteState の JSON）。["state": Data]
+    static let state = "state"
+}
+
+extension RemoteHost: WCSessionDelegate {
+    /// queue で呼ぶ
+    fileprivate func publishWatch(_ jpeg: Data) {
+        let id = (latestWatchFrame?.id ?? 0) + 1
+        latestWatchFrame = (id, jpeg)
+        if watchHungry { sendFrameToWatch() }
+    }
+
+    /// queue で呼ぶ。まだ送っていない新しいコマがあれば送り、時計の合図を待つ
+    private func sendFrameToWatch() {
+        let session = WCSession.default
+        guard let frame = latestWatchFrame, frame.id != watchSentID,
+              session.activationState == .activated, session.isReachable else {
+            watchHungry = true
+            return
+        }
+        watchHungry = false
+        watchSentID = frame.id
+        session.sendMessageData(frame.jpeg, replyHandler: nil) { [weak self] _ in
+            // 送れなかったら、次のコマを送れるようにしておく
+            self?.queue.async { self?.watchHungry = true }
+        }
+        // 合図が届かないまま止まらないよう、1.5 秒で次を送ってよいことにする
+        let sent = frame.id
+        queue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.watchSentID == sent, !self.watchHungry else { return }
+            self.sendFrameToWatch()
+        }
+    }
+
+    /// queue で呼ぶ
+    fileprivate func sendStateToWatch() {
+        let session = WCSession.default
+        guard watchLastSeen > 0, session.activationState == .activated, session.isReachable else { return }
+        session.sendMessage([WatchWire.state: latestStateJSON], replyHandler: nil, errorHandler: nil)
+    }
+
+    /// queue で呼ぶ。時計からの合図が 5 秒届かなければ、見るのをやめたとみなす（手首を下ろした・圏外など）
+    private func checkWatchAlive() {
+        guard watchLastSeen > 0 else { return }
+        if CACurrentMediaTime() - watchLastSeen > 5 {
+            setWatchViewing(false)
+        } else {
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.checkWatchAlive() }
+        }
+    }
+
+    /// queue で呼ぶ
+    private func setWatchViewing(_ on: Bool) {
+        if on {
+            let first = watchLastSeen == 0
+            watchLastSeen = CACurrentMediaTime()
+            guard first else { return }
+            watchSentID = 0
+            watchHungry = true
+            sendStateToWatch()
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.checkWatchAlive() }
+        } else {
+            guard watchLastSeen > 0 else { return }
+            watchLastSeen = 0
+            watchHungry = false
+            latestWatchFrame = nil
+        }
+        DispatchQueue.main.async {
+            self.watchViewing = on
+            self.updateStreaming()
+        }
+    }
+
+    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+        if let error { Diagnostics.mark("時計: つなげません \(error.localizedDescription)") }
+    }
+
+    func sessionDidBecomeInactive(_ session: WCSession) {}
+
+    func sessionDidDeactivate(_ session: WCSession) {
+        // 別の時計に切り替えたとき。新しい時計とつなぎ直す
+        WCSession.default.activate()
+    }
+
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        if !session.isReachable { queue.async { self.setWatchViewing(false) } }
+    }
+
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        queue.async {
+            if message[WatchWire.hello] != nil {
+                self.setWatchViewing(true)
+            }
+            if message[WatchWire.ack] != nil {
+                self.watchLastSeen = CACurrentMediaTime()
+                self.watchHungry = true
+                self.sendFrameToWatch()
+            }
+            if message[WatchWire.bye] != nil {
+                self.setWatchViewing(false)
+            }
+            if let raw = message[WatchWire.command] as? String, let command = RemoteCommand(rawValue: raw) {
+                DispatchQueue.main.async { self.onCommand?(command) }
+            }
+        }
+    }
 }
