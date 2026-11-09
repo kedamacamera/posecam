@@ -19,6 +19,12 @@ struct ContentView: View {
     @State private var showAlbum = false
     /// リモートモニターの画面（撮る側）と、この iPhone をモニターにした画面
     @State private var showRemote = false
+    @State private var showSettings = false
+    /// 設定のシートを閉じた後に開く画面
+    @State private var afterSettings: AfterSettings?
+    private enum AfterSettings { case remote, licenses }
+    /// リモートモニターのシートを閉じた後に、この端末をモニターにする
+    @State private var monitorAfterRemote = false
     @State private var showMonitor = false
     /// 構図のガイドの線
     @AppStorage("gridStyle") private var gridStyle: GridStyle = .off
@@ -187,14 +193,31 @@ struct ContentView: View {
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
         }
+        .sheet(isPresented: $showSettings, onDismiss: {
+            // 設定のシートが閉じ切ってから、次の画面を出す
+            switch afterSettings {
+            case .remote: showRemote = true
+            case .licenses: showLicenses = true
+            case nil: break
+            }
+            afterSettings = nil
+        }) {
+            settingsSheet
+        }
         .sheet(isPresented: $showLicenses) {
             LicensesView()
         }
         .fullScreenCover(isPresented: $showAlbum) {
             AlbumView()
         }
-        .sheet(isPresented: $showRemote) {
-            RemoteSheet(remote: camera.remote) { showMonitor = true }
+        .sheet(isPresented: $showRemote, onDismiss: {
+            // 「モニターにする」を押したときは、シートが閉じ切ってから全画面を出す
+            if monitorAfterRemote {
+                monitorAfterRemote = false
+                showMonitor = true
+            }
+        }) {
+            RemoteSheet(remote: camera.remote) { monitorAfterRemote = true }
         }
         .fullScreenCover(isPresented: $showMonitor) {
             RemoteMonitorView { showMonitor = false }
@@ -276,7 +299,7 @@ struct ContentView: View {
 
     /// アルバム・編集などの画面を開いている間は、音量ボタンをふつうの音量ボタンに戻す
     private var hardwareShutterEnabled: Bool {
-        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses && !showRemote && !showMonitor
+        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses && !showRemote && !showMonitor && !showSettings
             && camera.snapClip == nil && crashReport == nil
     }
 
@@ -381,39 +404,69 @@ struct ContentView: View {
             .disabled(camera.mode != .photo)
             .opacity(camera.mode == .photo ? 1 : 0.4)
             Spacer()
-            Menu {
-                Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
-                Toggle("骨格を表示", isOn: $camera.showSkeleton)
-                Toggle("水平器", isOn: $showLevel)
-                Picker(selection: $appearance) {
-                    ForEach(Appearance.allCases) { item in
-                        Text(item.label).tag(item)
-                    }
-                } label: {
-                    Label("外観（ダーク・ライト）", systemImage: "circle.lefthalf.filled")
-                }
-                .pickerStyle(.menu)
-                Button {
-                    Diagnostics.log("リモート: メニューから開く")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showRemote = true }
-                } label: {
-                    Label("リモートモニター", systemImage: "rectangle.on.rectangle")
-                }
-                Button("動作の記録をコピー") {
-                    UIPasteboard.general.string = ([
-                        "iOS \(UIDevice.current.systemVersion)",
-                    ] + Diagnostics.events).joined(separator: "\n")
-                }
-                Button("ライセンス") {
-                    // メニューが閉じ切る前にシートを出すと、表示されないまま画面の操作を受け付けなくなることがある。
-                    // メニューが閉じてから出す
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showLicenses = true }
-                }
+            // 以前はメニュー（Menu）にしていたが、メニューからシートを出すと、iPhone では表示されないまま
+            // 画面の操作を一切受け付けなくなった（メニューが閉じるのを 0.35 秒待っても直らなかった）。
+            // 設定はシートにし、そこから開く画面は、設定のシートが閉じ切ってから（onDismiss で）出す
+            Button {
+                showSettings = true
             } label: {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
+    }
+
+    /// 設定のシートの中身
+    private var settingsSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
+                    Toggle("骨格を表示", isOn: $camera.showSkeleton)
+                    Toggle("水平器", isOn: $showLevel)
+                    Picker(selection: $appearance) {
+                        ForEach(Appearance.allCases) { item in
+                            Text(item.label).tag(item)
+                        }
+                    } label: {
+                        Label("外観（ダーク・ライト）", systemImage: "circle.lefthalf.filled")
+                    }
+                    .pickerStyle(.menu)
+                }
+                Section {
+                    Button {
+                        Diagnostics.log("リモート: 設定から開く")
+                        afterSettings = .remote
+                        showSettings = false
+                    } label: {
+                        Label("リモートモニター", systemImage: "rectangle.on.rectangle")
+                    }
+                    Button {
+                        UIPasteboard.general.string = ([
+                            "iOS \(UIDevice.current.systemVersion)",
+                        ] + Diagnostics.events).joined(separator: "\n")
+                        showSettings = false
+                    } label: {
+                        Label("動作の記録をコピー", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        afterSettings = .licenses
+                        showSettings = false
+                    } label: {
+                        Label("ライセンス", systemImage: "doc.text")
+                    }
+                }
+            }
+            .navigationTitle("設定")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("閉じる") { showSettings = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 
     /// 一致度・録画時間・連続撮影の進み具合。

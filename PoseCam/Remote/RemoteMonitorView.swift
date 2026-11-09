@@ -116,9 +116,9 @@ struct RemoteMonitorView: View {
             } else {
                 VStack(spacing: 14) {
                     ProgressView().tint(.white)
-                    Text(client.cameraName == nil ? "撮る側の iPhone を待っています" : "映像を待っています")
+                    Text(client.cameraName == nil ? "撮る側を待っています" : "映像を待っています")
                         .font(.headline)
-                    Text("撮る側の iPhone で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.peerID.displayName)」を選んでください。\n"
+                    Text("撮る側の iPhone・iPad で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.peerID.displayName)」を選んでください。\n"
                          + "Wi-Fi がなくても、2 台が近く（5 m くらいまで）にあればつながります。")
                         .font(.footnote)
                         .multilineTextAlignment(.center)
@@ -213,6 +213,9 @@ struct RemoteSheet: View {
     let onBecomeMonitor: () -> Void
     @Environment(\.dismiss) private var dismiss
 
+    /// 画面の文に使う、この端末の呼び名（iPad では「この iPad を〜」と出す）
+    static let deviceWord = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+
     var body: some View {
         NavigationStack {
             List {
@@ -254,9 +257,9 @@ struct RemoteSheet: View {
                 } header: {
                     Text("アプリのモニターにつなぐ（iPhone）")
                 } footer: {
-                    Text("もう一台の iPhone でポーズカメラを開き、「設定」→「リモートモニター」→「この iPhone をモニターにする」を押すと、"
+                    Text("もう一台の iPhone・iPad でポーズカメラを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
                          + "ここに出ます。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながります。"
-                         + "シャッターを押すと、この iPhone のカメラで撮ります。")
+                         + "シャッターを押すと、この \(Self.deviceWord) のカメラで撮ります。")
                 }
 
                 Section {
@@ -293,14 +296,14 @@ struct RemoteSheet: View {
 
                 Section {
                     Button {
+                        // 全画面は、このシートが閉じ切ってから出す（呼ぶ側の onDismiss で）
+                        onBecomeMonitor()
                         dismiss()
-                        // シートが閉じてから全画面を出す
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onBecomeMonitor() }
                     } label: {
-                        Label("この iPhone をモニターにする", systemImage: "rectangle.on.rectangle")
+                        Label("この \(Self.deviceWord) をモニターにする", systemImage: "rectangle.on.rectangle")
                     }
                 } footer: {
-                    Text("撮る側の iPhone の映像を映し、ここからシャッターを押せます。モニターにしている間、この iPhone のカメラは止まります。")
+                    Text("撮る側の映像を映し、ここからシャッターを押せます。モニターにしている間、この \(Self.deviceWord) のカメラは止まります。")
                 }
             }
             .navigationTitle("リモートモニター")
