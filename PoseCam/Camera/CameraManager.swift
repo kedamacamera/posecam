@@ -1232,20 +1232,23 @@ final class CameraManager: NSObject, ObservableObject {
         let monitor = remote.wantsPhotos
         guard preview || monitor else { return }
         photoQueue.async {
-            guard let small = Self.smallJPEG(jpeg, maxSide: 1600) else { return }
-            if monitor { self.remote.sendPhoto(small.data, showPreview: preview) }
-            if preview {
+            // モニターへは、横向きで撮った写真は横向きにして送る
+            if monitor, let small = Self.smallJPEG(jpeg, maxSide: 1600) {
+                self.remote.sendPhoto(small.data, showPreview: preview)
+            }
+            // この画面のプレビューは、撮ったときの持ち方のまま（横に持って見ているので回さない）
+            if preview, let small = Self.smallJPEG(jpeg, maxSide: 1600, applyOrientation: false) {
                 DispatchQueue.main.async { self.lastCapture = CapturedPhoto(image: small.image) }
             }
         }
     }
 
-    /// JPEG を長い辺 maxSide に縮めた JPEG と画像（向きは画素に反映済み）
-    static func smallJPEG(_ data: Data, maxSide: Int) -> (data: Data, image: UIImage)? {
+    /// JPEG を長い辺 maxSide に縮めた JPEG と画像。applyOrientation なら向き（横向きで撮った写真）を画素に反映する
+    static func smallJPEG(_ data: Data, maxSide: Int, applyOrientation: Bool = true) -> (data: Data, image: UIImage)? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceCreateThumbnailWithTransform: applyOrientation,
             kCGImageSourceThumbnailMaxPixelSize: maxSide,
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }

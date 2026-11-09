@@ -27,6 +27,9 @@ struct AlbumView: View {
     @State private var source: AlbumSource = .all
     /// 自分で作ったアルバム（中身があるもの）
     @State private var userAlbums: [AlbumSource] = []
+    /// 上の「最近の項目 ▼」を押して、アルバムの一覧を開いている
+    @State private var showSources = false
+    @State private var sourceEntries: [AlbumEntry] = []
 
     var body: some View {
         ZStack {
@@ -47,7 +50,6 @@ struct AlbumView: View {
                             .foregroundStyle(.secondary)
                             .padding()
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .safeAreaInset(edge: .top, spacing: 0) { sourceBar }
                     } else if let assets {
                         // 何十万枚あっても軽いよう、UIKit の一覧で表示する
                         AssetGridView(assets: assets, link: gridLink, selecting: selecting,
@@ -55,24 +57,52 @@ struct AlbumView: View {
                             withAnimation(.easeOut(duration: 0.2)) { viewing = AlbumPage(index: index) }
                         }
                         .ignoresSafeArea(edges: .bottom)
-                        .safeAreaInset(edge: .top, spacing: 0) { sourceBar }
                         .safeAreaInset(edge: .bottom) {
                             if selecting { selectionBar }
                         }
                     }
                 }
-                .navigationTitle(selecting ? (selection.isEmpty ? "選んでください" : "\(selection.count) 件を選択") : source.title)
+                // アルバムの一覧（上の「最近の項目 ▼」で開く。BeautyCam と同じく、サムネイルと枚数つき）
+                .overlay {
+                    if showSources {
+                        sourceList
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("閉じる") { dismiss() }
+                        if !showSources {
+                            Button("閉じる") { dismiss() }
+                        }
+                    }
+                    ToolbarItem(placement: .principal) {
+                        if selecting {
+                            Text(selection.isEmpty ? "選んでください" : "\(selection.count) 件を選択")
+                                .font(.headline)
+                        } else {
+                            Button {
+                                if !showSources { sourceEntries = AlbumEntry.all() }
+                                withAnimation(.easeOut(duration: 0.2)) { showSources.toggle() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(source.title).font(.headline).lineLimit(1)
+                                    Image(systemName: showSources ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 12, weight: .bold))
+                                }
+                                .foregroundStyle(Color.primary)
+                            }
+                            .disabled(working)
+                        }
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button(selecting ? "キャンセル" : "選択") {
-                            selecting.toggle()
-                            selection = []
+                        if !showSources {
+                            Button(selecting ? "キャンセル" : "選択") {
+                                selecting.toggle()
+                                selection = []
+                            }
+                            .disabled((assets?.count ?? 0) == 0)
                         }
-                        .disabled((assets?.count ?? 0) == 0)
                     }
                 }
             }
@@ -104,35 +134,38 @@ struct AlbumView: View {
         }
     }
 
-    /// 上の帯: 表示するものを切り替える（横にスクロールできる）
-    private var sourceBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach([AlbumSource.all, .poseCam, .favorites, .videos] + userAlbums) { item in
-                    Button {
-                        guard item != source else { return }
-                        source = item
-                        selection = []
-                        Task { await load() }
-                    } label: {
-                        Label(item.title, systemImage: item.systemImage)
-                            .font(.subheadline.weight(item == source ? .semibold : .regular))
+    /// アルバムの一覧。押すとそのアルバムに切り替えて閉じる
+    private var sourceList: some View {
+        List(sourceEntries) { entry in
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) { showSources = false }
+                guard entry.source != source else { return }
+                source = entry.source
+                selection = []
+                Task { await load() }
+            } label: {
+                HStack(spacing: 16) {
+                    AssetThumbnail(asset: entry.cover)
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.source.title)
+                            .font(.body)
+                            .foregroundStyle(Color.primary)
                             .lineLimit(1)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Capsule().fill(item == source ? Color.accentColor : Color(.secondarySystemBackground)))
-                            .foregroundStyle(item == source ? Color.white : Color.primary)
+                        Text("\(entry.photos) 枚の写真と \(entry.videos) 件の動画")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    Spacer()
+                    if entry.source == source {
+                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                    }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
-        .background(.bar)
-        // 選んでいる途中は切り替えない（選んだものが別の一覧のものと混ざらないように）
-        .disabled(working || selecting)
-        .opacity(selecting ? 0.5 : 1)
+        .listStyle(.plain)
+        .background(Color(.systemBackground))
     }
 
     private var emptyText: String {
@@ -276,7 +309,7 @@ enum AlbumSource: Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .all: return "すべて"
+        case .all: return "最近の項目"
         case .poseCam: return "PoseCam"
         case .favorites: return "お気に入り"
         case .videos: return "動画"
@@ -305,6 +338,83 @@ enum AlbumSource: Hashable, Identifiable {
                 list.append(.album(collection.localIdentifier, title))
             }
         return list
+    }
+}
+
+/// アルバムの一覧の 1 行（表紙と、写真・動画の数）
+struct AlbumEntry: Identifiable {
+    let source: AlbumSource
+    let photos: Int
+    let videos: Int
+    let cover: PHAsset?
+    var id: String { source.id }
+
+    /// 最近の項目・お気に入り・動画・PoseCam・自分で作ったアルバム（中身があるもの）
+    static func all() -> [AlbumEntry] {
+        let image = PHAssetMediaType.image.rawValue, video = PHAssetMediaType.video.rawValue
+        func options(_ format: String, _ args: [Any]) -> PHFetchOptions {
+            let o = PHFetchOptions()
+            o.predicate = NSPredicate(format: format, argumentArray: args)
+            o.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            return o
+        }
+        func entry(_ source: AlbumSource, extra: String?, in collection: PHAssetCollection?) -> AlbumEntry {
+            let suffix = extra.map { " && " + $0 } ?? ""
+            func fetch(_ o: PHFetchOptions) -> PHFetchResult<PHAsset> {
+                collection.map { PHAsset.fetchAssets(in: $0, options: o) } ?? PHAsset.fetchAssets(with: o)
+            }
+            let photos = fetch(options("mediaType == %d" + suffix, [image])).count
+            let videos = fetch(options("mediaType == %d" + suffix, [video])).count
+            let cover = fetch(options("(mediaType == %d || mediaType == %d)" + suffix, [image, video])).firstObject
+            return AlbumEntry(source: source, photos: photos, videos: videos, cover: cover)
+        }
+        var list = [
+            entry(.all, extra: nil, in: nil),
+            entry(.favorites, extra: "favorite == YES", in: nil),
+        ]
+        let videos = entry(.videos, extra: nil, in: nil)
+        list.append(AlbumEntry(source: .videos, photos: 0, videos: videos.videos,
+                               cover: PHAsset.fetchAssets(with: options("mediaType == %d", [video])).firstObject))
+        if let album = MediaSaver.existingAlbum() {
+            list.append(entry(.poseCam, extra: nil, in: album))
+        }
+        for source in AlbumSource.userAlbums() {
+            guard case .album(let id, _) = source,
+                  let collection = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
+            else { continue }
+            list.append(entry(source, extra: nil, in: collection))
+        }
+        return list
+    }
+}
+
+/// 一覧の 1 枚の小さい写真
+struct AssetThumbnail: View {
+    let asset: PHAsset?
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color(.secondarySystemBackground)
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if asset == nil {
+                Image(systemName: "photo.on.rectangle").foregroundStyle(.secondary)
+            }
+        }
+        .clipped()
+        .task(id: asset?.localIdentifier) {
+            guard let asset else { return }
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .opportunistic
+            options.isNetworkAccessAllowed = true
+            options.resizeMode = .fast
+            let side = 72 * UIScreen.main.scale
+            PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
+                                                  contentMode: .aspectFill, options: options) { result, _ in
+                if let result { image = result }
+            }
+        }
     }
 }
 
@@ -400,13 +510,19 @@ struct AssetViewer: View {
                 HStack {
                     Button("閉じる") { withAnimation(.easeOut(duration: 0.2)) { onClose() } }
                     Spacer()
+                    // 編集は右上
+                    if asset?.mediaType == .image {
+                        Button(isLoading ? "読み込み中…" : "編集") { edit() }
+                            .disabled(isLoading)
+                            .bold()
+                    }
                 }
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
             .background(.bar)
             Spacer()
-            // 共有は画面のまん中。左に写真アプリ、右に削除と編集
+            // 共有は画面のまん中。左に写真アプリ、右下に削除
             ZStack {
                 Button {
                     if let asset { onShare(asset, shareButtonFrame) }
@@ -427,11 +543,6 @@ struct AssetViewer: View {
                         Image(systemName: "trash")
                     }
                     .accessibilityLabel("削除")
-                    if asset?.mediaType == .image {
-                        Button(isLoading ? "読み込み中…" : "編集") { edit() }
-                            .disabled(isLoading)
-                            .bold()
-                    }
                 }
             }
             .padding(.horizontal, 20)

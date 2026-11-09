@@ -71,8 +71,8 @@ enum AlbumSharing {
 }
 
 extension AlbumSharing {
-    /// iOS の共有の画面を出す。iPhone は下から、iPad は共有ボタン（frame: 画面の座標）から吹き出しで出す
-    /// （以前は SwiftUI のシートで出していて、iPad では iPhone の大きさの窓になっていた）。
+    /// iOS の共有の画面を出す。iPhone は下から、iPad は画面の中央に大きく出す（写真アプリと同じ）。
+    /// 以前は SwiftUI のシート・共有ボタンからの吹き出しで出していて、iPad では小さかった。
     /// 閉じたら書き出した一時ファイルを消す
     @MainActor
     static func present(_ items: ShareItems, from frame: CGRect?) {
@@ -86,7 +86,12 @@ extension AlbumSharing {
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
         let controller = UIActivityViewController(activityItems: items.urls, applicationActivities: nil)
         controller.completionWithItemsHandler = { _, _, _, _ in items.cleanUp() }
-        if let popover = controller.popoverPresentationController {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            // iPad は写真アプリと同じく、画面の中央に大きく出す（吹き出しでは小さかった）
+            controller.modalPresentationStyle = .formSheet
+            controller.preferredContentSize = CGSize(width: min(620, window.bounds.width - 80),
+                                                     height: min(760, window.bounds.height - 160))
+        } else if let popover = controller.popoverPresentationController {
             popover.sourceView = window
             popover.sourceRect = frame ?? CGRect(x: window.bounds.midX, y: window.bounds.maxY - 60, width: 1, height: 1)
             popover.permittedArrowDirections = [.down, .up]

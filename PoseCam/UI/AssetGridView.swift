@@ -21,7 +21,7 @@ struct AssetGridView: UIViewRepresentable {
         let layout = UICollectionViewFlowLayout()
         layout.minimumInteritemSpacing = 2
         layout.minimumLineSpacing = 2
-        let view = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        let view = SlideCollectionView(frame: .zero, collectionViewLayout: layout)
         view.backgroundColor = .systemBackground
         view.register(Cell.self, forCellWithReuseIdentifier: Cell.id)
         view.dataSource = context.coordinator
@@ -29,12 +29,18 @@ struct AssetGridView: UIViewRepresentable {
         view.prefetchDataSource = context.coordinator
         // 選択モードで横になぞり始めると、なぞった範囲をまとめて選ぶ（写真アプリと同じ）
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.slideSelect(_:)))
-        pan.maximumNumberOfTouches = 1
+        // なぞって選んでいる間に、もう 1 本の指で一覧を動かせる（2 本目の指は SlideCollectionView が受け取る）
+        pan.maximumNumberOfTouches = 2
+        pan.cancelsTouchesInView = false
         pan.delegate = context.coordinator
         view.addGestureRecognizer(pan)
         // なぞって選んでいる間は一覧をスクロールしない（横に動き始めなければ、すぐスクロールになる）
         view.panGestureRecognizer.require(toFail: pan)
         context.coordinator.collectionView = view
+        view.onSecondFingerScroll = { [weak coordinator = context.coordinator, weak view] in
+            guard let coordinator, let view else { return }
+            coordinator.slideMoved(view)
+        }
         context.coordinator.assets = assets
         context.coordinator.link = link
         link?.collectionView = view
@@ -133,24 +139,38 @@ struct AssetGridView: UIViewRepresentable {
 
         @objc func slideSelect(_ pan: UIPanGestureRecognizer) {
             guard let view = pan.view as? UICollectionView else { return }
+            let slideView = view as? SlideCollectionView
             switch pan.state {
             case .began:
-                guard let start = view.indexPathForItem(at: pan.location(in: view))?.item else { return }
+                slideView?.sliding = true
+                guard let start = view.indexPathForItem(at: slideLocation(view, pan))?.item else { return }
                 slidePan = pan
                 slideStart = start
                 slideBaseline = Set((view.indexPathsForSelectedItems ?? []).map(\.item))
                 // なぞり始めたマスが選ばれていなければ選んでいき、選ばれていれば外していく
                 slideSelects = !slideBaseline.contains(start)
                 slideRange = nil
-                updateSlide(view, location: pan.location(in: view))
+                updateSlide(view, location: slideLocation(view, pan))
             case .changed:
-                updateSlide(view, location: pan.location(in: view))
-                updateAutoScroll(view, location: pan.location(in: view))
+                updateSlide(view, location: slideLocation(view, pan))
+                updateAutoScroll(view, location: slideLocation(view, pan))
             default:
+                slideView?.sliding = false
                 stopAutoScroll()
                 slideStart = nil
                 slideRange = nil
             }
+        }
+
+        /// なぞっている指の位置（2 本目の指が触れていても、1 本目の指の位置）
+        private func slideLocation(_ view: UICollectionView, _ pan: UIPanGestureRecognizer) -> CGPoint {
+            (view as? SlideCollectionView)?.slideLocation() ?? pan.location(in: view)
+        }
+
+        /// 2 本目の指で一覧が動いた: なぞっている指の下のマスまで選ぶ
+        func slideMoved(_ view: UICollectionView) {
+            guard slideStart != nil, let pan = slidePan else { return }
+            updateSlide(view, location: slideLocation(view, pan))
         }
 
         /// なぞり始めのマスから指のマスまで（一覧の並び順で）を、選ぶ・外す。範囲から外れたマスは元に戻す
@@ -206,7 +226,7 @@ struct AssetGridView: UIViewRepresentable {
             guard y != view.contentOffset.y else { return }
             view.contentOffset.y = y
             // 一覧が動いた分、指の下のマスも変わる
-            updateSlide(view, location: pan.location(in: view))
+            updateSlide(view, location: slideLocation(view, pan))
         }
 
         private func stopAutoScroll() {
@@ -303,6 +323,74 @@ struct AssetGridView: UIViewRepresentable {
                 self.imageView.image = image
             }
         }
+    }
+}
+
+/// なぞって選んでいる間、2 本目の指で一覧を上下に動かせる UICollectionView。
+/// なぞって選ぶ操作は、指を離したときにマスのタップ（選ぶ・外す）にならないよう、指の終わりを取り消しとして渡す
+final class SlideCollectionView: UICollectionView {
+    /// なぞって選んでいる最中
+    var sliding = false {
+        didSet {
+            guard sliding != oldValue else { return }
+            if sliding {
+                slideTouch = activeTouches.count == 1 ? activeTouches.first : nil
+                suppressEnd = true
+            } else {
+                scrollTouch = nil
+            }
+        }
+    }
+    /// 2 本目の指で一覧が動いた
+    var onSecondFingerScroll: (() -> Void)?
+    private var slideTouch: UITouch?
+    private var scrollTouch: UITouch?
+    private var activeTouches = Set<UITouch>()
+    private var suppressEnd = false
+
+    /// なぞっている指（1 本目）の位置
+    func slideLocation() -> CGPoint? { slideTouch?.location(in: self) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        activeTouches.formUnion(touches)
+        if sliding, scrollTouch == nil {
+            scrollTouch = touches.first { $0 !== slideTouch }
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if sliding, let touch = scrollTouch, touches.contains(touch), let window {
+            // 指が上へ動けば一覧も上へ（標準のスクロールと同じ向き）
+            let dy = touch.location(in: window).y - touch.previousLocation(in: window).y
+            let minY = -adjustedContentInset.top
+            let maxY = max(minY, contentSize.height + adjustedContentInset.bottom - bounds.height)
+            contentOffset.y = min(max(contentOffset.y - dy, minY), maxY)
+            onSecondFingerScroll?()
+        }
+        super.touchesMoved(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        finish(touches)
+        if suppressEnd {
+            super.touchesCancelled(touches, with: event)
+        } else {
+            super.touchesEnded(touches, with: event)
+        }
+        if activeTouches.isEmpty { suppressEnd = false }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        finish(touches)
+        super.touchesCancelled(touches, with: event)
+        if activeTouches.isEmpty { suppressEnd = false }
+    }
+
+    private func finish(_ touches: Set<UITouch>) {
+        activeTouches.subtract(touches)
+        if let t = scrollTouch, touches.contains(t) { scrollTouch = nil }
+        if let t = slideTouch, touches.contains(t) { slideTouch = nil }
     }
 }
 

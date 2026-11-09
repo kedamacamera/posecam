@@ -57,15 +57,16 @@ struct MonitorAlbumView: View {
     }
 }
 
-/// 1 枚ずつ大きく見る（左右にめくる。つまむ・ダブルタップで拡大）
+/// 1 枚ずつ大きく見る（左右にめくる。つまむ・ダブルタップで拡大。拡大していなければ下へなぞると一覧に戻る）
 private struct MonitorPhotoPage: View {
     let photos: [MonitorPhoto]
     @State var selection: UUID
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         TabView(selection: $selection) {
             ForEach(photos) { photo in
-                MonitorZoomImage(image: photo.image)
+                MonitorZoomImage(image: photo.image) { dismiss() }
                     .tag(photo.id)
             }
         }
@@ -80,8 +81,10 @@ private struct MonitorPhotoPage: View {
 /// 拡大していないときは、横になぞると外側のページめくりになる
 private struct MonitorZoomImage: UIViewRepresentable {
     let image: UIImage
+    /// 下へなぞって離した（一覧に戻る）
+    let onSwipeDown: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(onSwipeDown: onSwipeDown) }
 
     func makeUIView(context: Context) -> UIScrollView {
         let scroll = ZoomScrollView()
@@ -100,10 +103,15 @@ private struct MonitorZoomImage: UIViewRepresentable {
         let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
         scroll.addGestureRecognizer(doubleTap)
+        // 拡大していないとき、下へなぞると写真が指について動き、離すと一覧に戻る（写真アプリと同じ）
+        let down = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swipeDown(_:)))
+        down.delegate = context.coordinator
+        scroll.addGestureRecognizer(down)
         return scroll
     }
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.onSwipeDown = onSwipeDown
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
             scroll.setZoomScale(1, animated: false)
@@ -126,8 +134,41 @@ private struct MonitorZoomImage: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UIScrollViewDelegate {
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         weak var imageView: UIImageView?
+        var onSwipeDown: () -> Void
+
+        init(onSwipeDown: @escaping () -> Void) {
+            self.onSwipeDown = onSwipeDown
+        }
+
+        /// 拡大していないときに、下向きになぞり始めたときだけ受け取る（横はページめくり）
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer,
+                  let scroll = recognizer.view as? UIScrollView else { return true }
+            guard scroll.zoomScale <= 1.01 else { return false }
+            let v = pan.velocity(in: scroll)
+            return v.y > 0 && v.y > abs(v.x) * 1.2
+        }
+
+        @objc func swipeDown(_ pan: UIPanGestureRecognizer) {
+            guard let view = imageView else { return }
+            let t = pan.translation(in: pan.view)
+            switch pan.state {
+            case .changed:
+                let dy = max(0, t.y)
+                let scale = max(0.6, 1 - dy / 1200)
+                view.transform = CGAffineTransform(translationX: t.x, y: dy).scaledBy(x: scale, y: scale)
+            case .ended:
+                if t.y > 110 || pan.velocity(in: pan.view).y > 900 {
+                    onSwipeDown()
+                } else {
+                    UIView.animate(withDuration: 0.2) { view.transform = .identity }
+                }
+            default:
+                UIView.animate(withDuration: 0.2) { view.transform = .identity }
+            }
+        }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
 
