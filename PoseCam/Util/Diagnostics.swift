@@ -74,18 +74,27 @@ enum Diagnostics {
 
     /// メインスレッドが 4 秒以上止まったら、その直前までの出来事の記録に「固まった」と書き、次の起動で知らせる。
     /// （固まると「動作の記録をコピー」も押せないので、次に開いたときに記録を渡せるようにする）
+    /// メインスレッドから呼ぶ（起動時）
     static func startHangWatch() {
         _ = previousHang
+        MainThreadSampler.recordMainThread()
         let beat = Locked(CFAbsoluteTimeGetCurrent())
         let timer = Timer(timeInterval: 0.5, repeats: true) { _ in beat.value = CFAbsoluteTimeGetCurrent() }
         RunLoop.main.add(timer, forMode: .common)
         let watch = DispatchQueue(label: "posecam.hangwatch", qos: .utility)
         var reported = false
+        var lastCheck = CFAbsoluteTimeGetCurrent()
         func check() {
-            let stalled = CFAbsoluteTimeGetCurrent() - beat.value
+            let now = CFAbsoluteTimeGetCurrent()
+            // この見張り自体が 2 秒以上遅れた = アプリが裏に回って止まっていた。戻った直後は固まりと数えない
+            if now - lastCheck > 2 { beat.value = now }
+            lastCheck = now
+            let stalled = now - beat.value
             if stalled > 4, !reported {
                 reported = true
                 log("固まった: 画面の処理が \(Int(stalled)) 秒止まっている")
+                // 止まっている所（メインスレッドの呼び出しの積み重なり）を記録する
+                log("固まった所:\n" + MainThreadSampler.sample().joined(separator: "\n"))
                 UserDefaults.standard.set(true, forKey: hungKey)
             } else if stalled < 1, reported {
                 reported = false
