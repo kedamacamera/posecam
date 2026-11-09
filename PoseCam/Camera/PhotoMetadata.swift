@@ -108,19 +108,22 @@ enum PhotoMetadata {
     }
 
     /// 加工した画像を、撮影情報付きの JPEG にする。
-    static func jpeg(_ image: CIImage, metadata: [String: Any], context: CIContext) -> Data? {
+    /// orientation: 横向きで撮ったときの向き（画素は縦向きのまま、写真アプリが回して表示する）
+    static func jpeg(_ image: CIImage, metadata: [String: Any], context: CIContext,
+                     orientation: CGImagePropertyOrientation = .up) -> Data? {
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let cgImage = context.createCGImage(image, from: image.extent, format: .RGBA8,
                                                   colorSpace: colorSpace) else { return nil }
         var properties = metadata
-        // 縦向きに直してあるので向きは 1。画素数は保存する大きさ。元の写真の大きさ・サムネイルの情報は消す
-        properties[kCGImagePropertyOrientation as String] = 1
+        // 画素は縦向きに直してあるので、向きは撮ったときの端末の向き（縦なら 1）。
+        // 画素数は保存する大きさ。元の写真の大きさ・サムネイルの情報は消す
+        properties[kCGImagePropertyOrientation as String] = orientation.rawValue
         for key in [kCGImagePropertyPixelWidth, kCGImagePropertyPixelHeight, kCGImagePropertyDepth,
                     kCGImagePropertyHasAlpha] {
             properties.removeValue(forKey: key as String)
         }
         if var tiff = properties[tiffKey] as? [String: Any] {
-            tiff[kCGImagePropertyTIFFOrientation as String] = 1
+            tiff[kCGImagePropertyTIFFOrientation as String] = orientation.rawValue
             properties[tiffKey] = tiff
         }
         if var exif = properties[exifKey] as? [String: Any] {

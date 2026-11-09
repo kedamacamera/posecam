@@ -48,7 +48,9 @@ final class VideoRecorder {
     var hasAudioTrack: Bool { audioInput != nil }
 
     /// codec は HEVC が使えなければ H.264 で作り直す（CameraManager 側）
-    init(url: URL, size: CGSize, audioSettings: [String: Any]?, codec: AVVideoCodecType = .hevc) throws {
+    /// transform: 横向きで撮ったときの回転（画素は縦向きのまま、再生するときに回す）
+    init(url: URL, size: CGSize, audioSettings: [String: Any]?, codec: AVVideoCodecType = .hevc,
+         transform: CGAffineTransform = .identity) throws {
         let width = Int(size.width) / 2 * 2
         let height = Int(size.height) / 2 * 2
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -62,6 +64,7 @@ final class VideoRecorder {
             AVVideoHeightKey: height,
         ])
         videoInput.expectsMediaDataInRealTime = true
+        videoInput.transform = transform
         guard writer.canAdd(videoInput) else { throw RecorderError.cannotAddInput }
         writer.add(videoInput)
 

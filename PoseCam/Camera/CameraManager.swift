@@ -317,6 +317,8 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - セッション
 
     func start() {
+        // 横向きで撮ったら横向きの写真・動画として保存するため、端末の向きを調べておく
+        CaptureOrientation.shared.start()
         // 覚えておいた脚長が入っていれば、最初から骨格を検出する
         updatePoseNeeded()
         Task {
@@ -1202,6 +1204,7 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
         let exif = latestExifBox.value
+        let orientation = CaptureOrientation.shared.current
         let position = videoInput?.device.position ?? .back
         // 通常の写真と同じ画素数になるよう、裏で引き伸ばす
         let targetSize = upscale ? photoSizeBox.value[position] : nil
@@ -1209,7 +1212,7 @@ final class CameraManager: NSObject, ObservableObject {
             defer { DispatchQueue.main.async { self.photoFinished() } }
             let metadata = PhotoMetadata.forVideoFrame(exif: exif, position: position)
             guard let result = self.processStill(frame, settings: settings, aspect: aspect, metadata: metadata,
-                                                 upscaleTo: targetSize) else {
+                                                 upscaleTo: targetSize, orientation: orientation) else {
                 self.report("写真の処理に失敗しました")
                 return
             }
@@ -1263,7 +1266,8 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func processPhoto(_ data: Data, metadata: [String: Any], settings: ProcessingSettings, aspect: CGFloat,
-                              ambient: (image: CIImage, exif: [String: Any], dark: Bool)?) -> (jpeg: Data, thumbnail: UIImage?)? {
+                              ambient: (image: CIImage, exif: [String: Any], dark: Bool)?,
+                              orientation: CGImagePropertyOrientation) -> (jpeg: Data, thumbnail: UIImage?)? {
         guard let source = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return nil }
         var flash: (image: CIImage, ratio: Double, dark: Bool)?
         if let ambient {
@@ -1276,7 +1280,7 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
         if let result = processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
-                                     ambient: flash) {
+                                     orientation: orientation, ambient: flash) {
             return result
         }
         guard flash != nil else { return nil }
@@ -1284,19 +1288,21 @@ final class CameraManager: NSObject, ObservableObject {
         Diagnostics.log("ダイレクトフラッシュ: 書き出しに失敗、やり直す")
         Thread.sleep(forTimeInterval: 0.3)
         if let result = processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
-                                     ambient: flash) {
+                                     orientation: orientation, ambient: flash) {
             return result
         }
         // ダイレクトフラッシュの加工で書き出せなかったときも、写真は残す（通常のフラッシュの写真として保存する）
         Diagnostics.log("ダイレクトフラッシュ: 書き出しに失敗したので通常のフラッシュで保存")
         report("ダイレクトフラッシュの加工に失敗したので、通常のフラッシュで保存しました")
-        return processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil)
+        return processStill(source, settings: settings, aspect: aspect, metadata: metadata, upscaleTo: nil,
+                            orientation: orientation)
     }
 
     /// upscaleTo: 無音撮影で、通常の写真の大きさ（縦向き）。小さければ引き伸ばす。
     /// ambient: ダイレクトフラッシュで、発光直前のコマと露出の比。
     private func processStill(_ source: CIImage, settings: ProcessingSettings, aspect: CGFloat,
                               metadata: [String: Any], upscaleTo: CGSize?,
+                              orientation: CGImagePropertyOrientation = .up,
                               ambient: (image: CIImage, ratio: Double, dark: Bool)? = nil) -> (jpeg: Data, thumbnail: UIImage?)? {
         let normalized = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX,
                                                                   y: -source.extent.minY))
@@ -1330,15 +1336,24 @@ final class CameraManager: NSObject, ObservableObject {
         let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis.pose, manual: settings.legRange) : nil
         let output = processor.process(image, settings: settings, legs: legs, masks: analysis.masks)
         // 撮影情報（Exif・レンズ名など）を付けて JPEG にする
-        guard let jpeg = PhotoMetadata.jpeg(output, metadata: metadata, context: renderer.ciContext) else { return nil }
-        return (jpeg, makeThumbnail(output))
+        guard let jpeg = PhotoMetadata.jpeg(output, metadata: metadata, context: renderer.ciContext,
+                                            orientation: orientation) else { return nil }
+        return (jpeg, makeThumbnail(output, orientation: orientation))
     }
 
-    func makeThumbnail(_ image: CIImage) -> UIImage? {
+    func makeThumbnail(_ image: CIImage, orientation: CGImagePropertyOrientation = .up) -> UIImage? {
         let scale = 240 / max(image.extent.width, image.extent.height)
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let cgImage = renderer.ciContext.createCGImage(small, from: small.extent) else { return nil }
-        return UIImage(cgImage: cgImage)
+        // 横向きで撮った写真は、サムネイルも横向きに見せる
+        let uiOrientation: UIImage.Orientation
+        switch orientation {
+        case .right: uiOrientation = .right
+        case .left: uiOrientation = .left
+        case .down: uiOrientation = .down
+        default: uiOrientation = .up
+        }
+        return UIImage(cgImage: cgImage, scale: 1, orientation: uiOrientation)
     }
 
     func setThumbnail(_ image: UIImage?) {
@@ -1562,14 +1577,17 @@ final class CameraManager: NSObject, ObservableObject {
                     audioSettings = VideoRecorder.fallbackAudioSettings
                 }
             }
+            // 録画を始めたときの端末の向きで、動画を横向き・縦向きにする（標準のカメラと同じく、途中では変えない）
+            let transform = CaptureOrientation.videoTransform(for: CaptureOrientation.shared.current)
             do {
-                recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings)
+                recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings, transform: transform)
             } catch {
                 // HEVC で始められない機種・状態では H.264 で作り直す
                 Diagnostics.log("録画: HEVC で開始できず \(error.localizedDescription)")
                 try? FileManager.default.removeItem(at: url)
                 do {
-                    recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings, codec: .h264)
+                    recorder = try VideoRecorder(url: url, size: size, audioSettings: audioSettings, codec: .h264,
+                                                 transform: transform)
                 } catch {
                     Diagnostics.log("録画: 開始できず \(error.localizedDescription)")
                     report("録画を開始できませんでした: \(error.localizedDescription)")
@@ -1935,6 +1953,8 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
         let aspect = aspectBox.value
         let data = photo.fileDataRepresentation()
         let metadata = photo.metadata
+        // シャッターを押した直後の端末の向き（横向きなら横向きの写真として保存する）
+        let orientation = CaptureOrientation.shared.current
         var frames = ambientFrames.value
         let ambient = frames.removeValue(forKey: photo.resolvedSettings.uniqueID)
         ambientFrames.value = frames
@@ -1943,7 +1963,7 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
             defer { DispatchQueue.main.async { self.photoFinished() } }
             guard error == nil, let data,
                   let result = self.processPhoto(data, metadata: metadata, settings: settings, aspect: aspect,
-                                                 ambient: ambient) else {
+                                                 ambient: ambient, orientation: orientation) else {
                 self.report("写真の処理に失敗しました")
                 return
             }
