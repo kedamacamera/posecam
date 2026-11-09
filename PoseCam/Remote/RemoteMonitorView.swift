@@ -234,7 +234,8 @@ struct RemoteMonitorView: View {
                 if shownPreview == photo { withAnimation(.easeIn(duration: 0.2)) { shownPreview = nil } }
             }
         }
-        .sheet(isPresented: $showAlbum) {
+        // 撮った写真は全画面で開く
+        .fullScreenCover(isPresented: $showAlbum) {
             MonitorAlbumView(photos: client.photos)
         }
         .foregroundStyle(.white)
