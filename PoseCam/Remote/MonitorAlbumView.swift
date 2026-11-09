@@ -65,7 +65,7 @@ private struct MonitorPhotoPage: View {
     var body: some View {
         TabView(selection: $selection) {
             ForEach(photos) { photo in
-                ZoomableImage(image: photo.image)
+                MonitorZoomImage(image: photo.image)
                     .tag(photo.id)
             }
         }
@@ -78,7 +78,7 @@ private struct MonitorPhotoPage: View {
 
 /// つまんで拡大・ダブルタップで拡大／元に戻す写真（UIScrollView）。
 /// 拡大していないときは、横になぞると外側のページめくりになる
-private struct ZoomableImage: UIViewRepresentable {
+private struct MonitorZoomImage: UIViewRepresentable {
     let image: UIImage
 
     func makeCoordinator() -> Coordinator { Coordinator() }
