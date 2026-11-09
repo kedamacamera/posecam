@@ -20,6 +20,8 @@ struct ContentView: View {
     @State private var showSettings = false
     /// 撮影後にプレビューを表示する（設定。覚えておく）
     @AppStorage(CameraManager.capturePreviewKey) private var capturePreview = false
+    /// タッチシャッター（設定。初めはオフ。覚えておく）。オンならタップで撮る、オフならタップでピント・露出を合わせる
+    @AppStorage("touchShutter") private var touchShutter = false
     /// 最後に知ったモニターのつながり（つながった瞬間だけ設定を閉じるため）
     @State private var knownMonitor: String?
     /// プレビューの大きさ（モニターからのピントの印をこの画面に出すため）
@@ -342,6 +344,10 @@ struct ContentView: View {
         }
         camera.focus(at: point, in: size, lock: false)
         showFocus(at: point)
+        // タッチシャッター: タップした所にピントを合わせてから撮る（合うのを少し待つ）
+        if touchShutter, !camera.isRecording, !camera.isSequenceRunning, camera.countdown == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { camera.shutterPressed() }
+        }
     }
 
     /// 長押し: ピントと露出を合わせて固定する（AE/AF ロック）
@@ -465,12 +471,15 @@ struct ContentView: View {
             List {
                 Section {
                     Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
+                    Toggle("タッチシャッター", isOn: $touchShutter)
                     Toggle("撮影後にプレビューを表示", isOn: $capturePreview)
                     Toggle("連続撮影の終わりをライトで知らせる", isOn: $burstEndLight)
                 } header: {
                     Text("撮影")
                 } footer: {
-                    Text("撮影後のプレビュー: 写真を撮ったあと、撮れた写真を少しのあいだ大きく表示します（タップで閉じる）。"
+                    Text("タッチシャッター: オンにすると、映像をタップした所にピントを合わせて撮ります。"
+                         + "オフのときは、タップでピント・露出を合わせます。長押しはどちらも AE/AF ロックです。\n"
+                         + "撮影後のプレビュー: 写真を撮ったあと、撮れた写真を少しのあいだ大きく表示します（タップで閉じる）。"
                          + "モニター（アプリ）につないでいるときは、モニターにも表示します。\n"
                          + "連続撮影の終わり: 背面カメラで連続撮影が終わったとき、ライトを 2 回点滅させて知らせます。")
                 }
