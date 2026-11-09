@@ -15,6 +15,13 @@ struct AlbumView: View {
     @State private var editing: EditorInput?
     @State private var pickerItem: PhotosPickerItem?
     @State private var gridLink = AssetGridLink()
+    /// 選択モード（選んだものを共有・削除する）
+    @State private var selecting = false
+    @State private var selection: Set<Int> = []
+    /// 共有の画面に渡すファイル
+    @State private var sharing: ShareItems?
+    /// 共有用に書き出している・削除している
+    @State private var working = false
 
     var body: some View {
         ZStack {
@@ -34,13 +41,17 @@ struct AlbumView: View {
                             .foregroundStyle(.secondary)
                     } else if let assets {
                         // 何十万枚あっても軽いよう、UIKit の一覧で表示する
-                        AssetGridView(assets: assets, link: gridLink) { index in
+                        AssetGridView(assets: assets, link: gridLink, selecting: selecting,
+                                      onSelectionChange: { selection = $0 }) { index in
                             withAnimation(.easeOut(duration: 0.2)) { viewing = AlbumPage(index: index) }
                         }
                         .ignoresSafeArea(edges: .bottom)
+                        .safeAreaInset(edge: .bottom) {
+                            if selecting { selectionBar }
+                        }
                     }
                 }
-                .navigationTitle("アルバム")
+                .navigationTitle(selecting ? (selection.isEmpty ? "選んでください" : "\(selection.count) 件を選択") : "アルバム")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -51,6 +62,14 @@ struct AlbumView: View {
                         PhotosPicker(selection: $pickerItem, matching: .images) {
                             Label("ほかの写真を編集", systemImage: "photo.badge.plus")
                         }
+                        .disabled(selecting)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(selecting ? "キャンセル" : "選択") {
+                            selecting.toggle()
+                            selection = []
+                        }
+                        .disabled((assets?.count ?? 0) == 0)
                     }
                 }
             }
@@ -59,11 +78,25 @@ struct AlbumView: View {
                 AssetViewer(assets: assets, start: page.index, link: gridLink) { data in
                     viewing = nil
                     editing = EditorInput(data: data)
+                } onShare: { asset in
+                    share([asset])
                 } onClose: {
                     viewing = nil
                 }
                 .transition(.opacity)
             }
+            if working {
+                ProgressView()
+                    .padding(24)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
+            }
+        }
+        .sheet(item: $sharing, onDismiss: { sharing?.cleanUp() }) { items in
+            ActivityView(items: items) {
+                items.cleanUp()
+                sharing = nil
+            }
+            .presentationDetents([.medium, .large])
         }
         .preferredColorScheme(appearance.scheme)
         .task { await load() }
@@ -76,6 +109,62 @@ struct AlbumView: View {
         }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
             PhotoEditorView(data: input.data)
+        }
+    }
+
+    /// 選択モードの下の帯（共有・削除）
+    private var selectionBar: some View {
+        HStack {
+            Button {
+                share(selectedAssets)
+            } label: {
+                Label("共有", systemImage: "square.and.arrow.up")
+            }
+            Spacer()
+            Text(selection.isEmpty ? "" : "\(selection.count) 件")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(role: .destructive) {
+                delete(selectedAssets)
+            } label: {
+                Label("削除", systemImage: "trash")
+            }
+        }
+        .disabled(selection.isEmpty || working)
+        .padding(.horizontal, 20)
+        .frame(height: 49)
+        .background(.bar)
+    }
+
+    private var selectedAssets: [PHAsset] {
+        guard let assets else { return [] }
+        return selection.sorted().filter { $0 < assets.count }.map { assets.object(at: $0) }
+    }
+
+    /// 元のファイルを書き出してから、共有の画面を出す
+    private func share(_ list: [PHAsset]) {
+        guard !list.isEmpty, !working else { return }
+        working = true
+        Task {
+            let items = await AlbumSharing.export(list)
+            working = false
+            if let items { sharing = items }
+        }
+    }
+
+    /// 写真ライブラリから消す（iOS が確認する）。消したら一覧を読み直して選択モードを終える
+    private func delete(_ list: [PHAsset]) {
+        guard !list.isEmpty, !working else { return }
+        working = true
+        Task {
+            let deleted = await AlbumSharing.delete(list)
+            working = false
+            if deleted {
+                selecting = false
+                selection = []
+                await load()
+            }
         }
     }
 
@@ -109,6 +198,7 @@ struct AssetViewer: View {
     let assets: PHFetchResult<PHAsset>
     let link: AssetGridLink
     let onEdit: (Data) -> Void
+    let onShare: (PHAsset) -> Void
     let onClose: () -> Void
 
     @State private var index: Int
@@ -119,10 +209,11 @@ struct AssetViewer: View {
     @State private var dragging = false
 
     init(assets: PHFetchResult<PHAsset>, start: Int, link: AssetGridLink,
-         onEdit: @escaping (Data) -> Void, onClose: @escaping () -> Void) {
+         onEdit: @escaping (Data) -> Void, onShare: @escaping (PHAsset) -> Void, onClose: @escaping () -> Void) {
         self.assets = assets
         self.link = link
         self.onEdit = onEdit
+        self.onShare = onShare
         self.onClose = onClose
         _index = State(initialValue: start)
     }
@@ -188,6 +279,12 @@ struct AssetViewer: View {
                     if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
                 } label: {
                     Label("写真アプリ", systemImage: "photo.on.rectangle")
+                }
+                Spacer()
+                Button {
+                    if let asset { onShare(asset) }
+                } label: {
+                    Label("共有", systemImage: "square.and.arrow.up")
                 }
                 Spacer()
                 if asset?.mediaType == .image {

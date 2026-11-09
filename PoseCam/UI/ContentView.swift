@@ -495,14 +495,20 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                 }
+                // リモートモニター・ライセンスは、この画面の中で横に送って開く。
+                // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
                 Section {
-                    // リモートモニター・ライセンスは、この画面の中で横に送って開く。
-                    // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
                     NavigationLink {
                         RemoteSheet(remote: camera.remote) { showMonitor = true }
                     } label: {
                         Label("リモートモニター", systemImage: "rectangle.on.rectangle")
                     }
+                } header: {
+                    Text("リモートモニター")
+                } footer: {
+                    Text("もう 1 台の iPhone・iPad やブラウザに撮影画面を映し、そこからシャッターを押せます。")
+                }
+                Section {
                     Button {
                         UIPasteboard.general.string = ([
                             "iOS \(UIDevice.current.systemVersion)",

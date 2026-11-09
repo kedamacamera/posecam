@@ -9,6 +9,10 @@ struct AssetGridView: UIViewRepresentable {
     let assets: PHFetchResult<PHAsset>
     /// 写真の画面から一覧へ戻るときに、マスの位置を調べる・マスを隠すためのもの
     var link: AssetGridLink?
+    /// 選択モード（タップで選ぶ・外す。選んだマスにチェックが付く）
+    var selecting = false
+    /// 選択モードで選んでいるもの（一覧の番号）が変わった
+    var onSelectionChange: (Set<Int>) -> Void = { _ in }
     let onSelect: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onSelect: onSelect) }
@@ -30,10 +34,20 @@ struct AssetGridView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UICollectionView, context: Context) {
-        context.coordinator.onSelect = onSelect
-        if context.coordinator.assets !== assets {
-            context.coordinator.assets = assets
+        let coordinator = context.coordinator
+        coordinator.onSelect = onSelect
+        coordinator.onSelectionChange = onSelectionChange
+        if coordinator.assets !== assets {
+            coordinator.assets = assets
             view.reloadData()
+        }
+        if coordinator.selecting != selecting {
+            coordinator.selecting = selecting
+            view.allowsMultipleSelection = selecting
+            // 選択モードを終えたら、選んでいたものを外す
+            if !selecting {
+                for path in view.indexPathsForSelectedItems ?? [] { view.deselectItem(at: path, animated: false) }
+            }
         }
     }
 
@@ -41,6 +55,8 @@ struct AssetGridView: UIViewRepresentable {
                              UICollectionViewDataSourcePrefetching {
         var assets: PHFetchResult<PHAsset>?
         var onSelect: (Int) -> Void
+        var onSelectionChange: (Set<Int>) -> Void = { _ in }
+        var selecting = false
         weak var link: AssetGridLink?
         private let manager = PHCachingImageManager()
         private var thumbnailSize = CGSize(width: 200, height: 200)
@@ -75,7 +91,20 @@ struct AssetGridView: UIViewRepresentable {
         }
 
         func collectionView(_ view: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-            onSelect(indexPath.item)
+            if selecting {
+                reportSelection(view)
+            } else {
+                view.deselectItem(at: indexPath, animated: false)
+                onSelect(indexPath.item)
+            }
+        }
+
+        func collectionView(_ view: UICollectionView, didDeselectItemAt indexPath: IndexPath) {
+            if selecting { reportSelection(view) }
+        }
+
+        private func reportSelection(_ view: UICollectionView) {
+            onSelectionChange(Set((view.indexPathsForSelectedItems ?? []).map(\.item)))
         }
 
         func collectionView(_ view: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
@@ -95,6 +124,9 @@ struct AssetGridView: UIViewRepresentable {
         static let id = "asset"
         private let imageView = UIImageView()
         private let videoMark = UIImageView(image: UIImage(systemName: "play.fill"))
+        /// 選んだマスのチェック（選択モードのとき）
+        private let checkMark = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+        private let dim = UIView()
         private var assetID: String?
         private var request: PHImageRequestID?
         private weak var manager: PHImageManager?
@@ -115,6 +147,24 @@ struct AssetGridView: UIViewRepresentable {
             videoMark.frame = CGRect(x: 5, y: frame.height - 19, width: 14, height: 14)
             videoMark.autoresizingMask = [.flexibleTopMargin]
             contentView.addSubview(videoMark)
+            dim.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+            dim.frame = contentView.bounds
+            dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            contentView.addSubview(dim)
+            checkMark.preferredSymbolConfiguration = .init(paletteColors: [.white, .systemBlue])
+            checkMark.frame = CGRect(x: frame.width - 27, y: frame.height - 27, width: 22, height: 22)
+            checkMark.autoresizingMask = [.flexibleLeftMargin, .flexibleTopMargin]
+            contentView.addSubview(checkMark)
+            updateCheck()
+        }
+
+        override var isSelected: Bool {
+            didSet { updateCheck() }
+        }
+
+        private func updateCheck() {
+            checkMark.isHidden = !isSelected
+            dim.isHidden = !isSelected
         }
 
         required init?(coder: NSCoder) { fatalError() }
