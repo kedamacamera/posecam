@@ -70,16 +70,27 @@ enum AlbumSharing {
     }
 }
 
-/// iOS の共有の画面
-struct ActivityView: UIViewControllerRepresentable {
-    let items: ShareItems
-    let onFinish: () -> Void
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
+extension AlbumSharing {
+    /// iOS の共有の画面を出す。iPhone は下から、iPad は共有ボタン（frame: 画面の座標）から吹き出しで出す
+    /// （以前は SwiftUI のシートで出していて、iPad では iPhone の大きさの窓になっていた）。
+    /// 閉じたら書き出した一時ファイルを消す
+    @MainActor
+    static func present(_ items: ShareItems, from frame: CGRect?) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first,
+              let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first,
+              var top = window.rootViewController else {
+            items.cleanUp()
+            return
+        }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
         let controller = UIActivityViewController(activityItems: items.urls, applicationActivities: nil)
-        controller.completionWithItemsHandler = { _, _, _, _ in onFinish() }
-        return controller
+        controller.completionWithItemsHandler = { _, _, _, _ in items.cleanUp() }
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = window
+            popover.sourceRect = frame ?? CGRect(x: window.bounds.midX, y: window.bounds.maxY - 60, width: 1, height: 1)
+            popover.permittedArrowDirections = [.down, .up]
+        }
+        top.present(controller, animated: true)
     }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

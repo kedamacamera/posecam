@@ -17,7 +17,8 @@ struct AlbumView: View {
     @State private var selecting = false
     @State private var selection: Set<Int> = []
     /// 共有の画面に渡すファイル
-    @State private var sharing: ShareItems?
+    /// 選択モードの「共有」ボタンの位置（iPad で共有の画面をそこから吹き出しで出す）
+    @State private var shareButtonFrame: CGRect?
     /// 共有用に書き出している・削除している
     @State private var working = false
     /// 写真の画面で削除したら増やして、写真の画面を作り直す（次の写真を表示する）
@@ -80,8 +81,8 @@ struct AlbumView: View {
                 AssetViewer(assets: assets, start: page.index, link: gridLink) { data in
                     viewing = nil
                     editing = EditorInput(data: data)
-                } onShare: { asset in
-                    share([asset])
+                } onShare: { asset, frame in
+                    share([asset], from: frame)
                 } onDelete: { asset in
                     deleteInViewer(asset, at: page.index)
                 } onClose: {
@@ -95,13 +96,6 @@ struct AlbumView: View {
                     .padding(24)
                     .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
             }
-        }
-        .sheet(item: $sharing, onDismiss: { sharing?.cleanUp() }) { items in
-            ActivityView(items: items) {
-                items.cleanUp()
-                sharing = nil
-            }
-            .presentationDetents([.medium, .large])
         }
         .preferredColorScheme(appearance.scheme)
         .task { await load() }
@@ -155,10 +149,11 @@ struct AlbumView: View {
     private var selectionBar: some View {
         HStack {
             Button {
-                share(selectedAssets)
+                share(selectedAssets, from: shareButtonFrame)
             } label: {
                 Label("共有", systemImage: "square.and.arrow.up")
             }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { shareButtonFrame = $0 }
             Spacer()
             Text(selection.isEmpty ? "" : "\(selection.count) 件")
                 .font(.footnote)
@@ -182,13 +177,13 @@ struct AlbumView: View {
     }
 
     /// 元のファイルを書き出してから、共有の画面を出す
-    private func share(_ list: [PHAsset]) {
+    private func share(_ list: [PHAsset], from frame: CGRect?) {
         guard !list.isEmpty, !working else { return }
         working = true
         Task {
             let items = await AlbumSharing.export(list)
             working = false
-            if let items { sharing = items }
+            if let items { AlbumSharing.present(items, from: frame) }
         }
     }
 
@@ -330,7 +325,8 @@ struct AssetViewer: View {
     let assets: PHFetchResult<PHAsset>
     let link: AssetGridLink
     let onEdit: (Data) -> Void
-    let onShare: (PHAsset) -> Void
+    /// 共有（写真と、共有ボタンの位置）
+    let onShare: (PHAsset, CGRect?) -> Void
     let onDelete: (PHAsset) -> Void
     let onClose: () -> Void
 
@@ -340,9 +336,10 @@ struct AssetViewer: View {
     @State private var dragProgress: CGFloat = 0
     /// なぞっている間は上下のボタンを隠す
     @State private var dragging = false
+    @State private var shareButtonFrame: CGRect?
 
     init(assets: PHFetchResult<PHAsset>, start: Int, link: AssetGridLink,
-         onEdit: @escaping (Data) -> Void, onShare: @escaping (PHAsset) -> Void, onDelete: @escaping (PHAsset) -> Void,
+         onEdit: @escaping (Data) -> Void, onShare: @escaping (PHAsset, CGRect?) -> Void, onDelete: @escaping (PHAsset) -> Void,
          onClose: @escaping () -> Void) {
         self.assets = assets
         self.link = link
@@ -412,10 +409,11 @@ struct AssetViewer: View {
             // 共有は画面のまん中。左に写真アプリ、右に削除と編集
             ZStack {
                 Button {
-                    if let asset { onShare(asset) }
+                    if let asset { onShare(asset, shareButtonFrame) }
                 } label: {
                     Label("共有", systemImage: "square.and.arrow.up")
                 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { shareButtonFrame = $0 }
                 HStack(spacing: 22) {
                     Button {
                         if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
