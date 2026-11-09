@@ -67,6 +67,14 @@ struct BurstTimeline: Equatable {
     let total: Int
 }
 
+/// 撮った写真の確認用の画像（撮影後のプレビュー表示に使う）
+struct CapturedPhoto: Identifiable, Equatable {
+    let id = UUID()
+    let image: UIImage
+
+    static func == (a: CapturedPhoto, b: CapturedPhoto) -> Bool { a.id == b.id }
+}
+
 /// スナップ撮影で撮った短い動画。コマを選ぶ画面に渡す。
 struct SnapClip: Identifiable {
     let id = UUID()
@@ -171,10 +179,12 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var aspect: AspectOption = .threeFour {
         didSet { updateTargetAspect() }
     }
-    @Published var settings = ProcessingSettings() {
+    /// 加工の設定。アプリを開き直しても前回と同じ設定から始める（以前は開き直すたびに初期値に戻っていた）
+    @Published var settings = ProcessingSettings.loadSaved() {
         didSet {
             updateSettingsBox()
             updatePoseNeeded()
+            if settings != oldValue { settings.save() }
         }
     }
     /// 比較ボタンを押している間だけ、加工をすべて外したプレビューにする（撮影結果には影響しない）
@@ -211,7 +221,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     private let processor = FrameProcessor()
     private let detector = PoseDetector()
-    private let settingsBox = Locked(ProcessingSettings())
+    // 覚えておいた加工の設定で始める（settings の didSet は最初の値では呼ばれない）
+    private let settingsBox = Locked(ProcessingSettings.loadSaved())
     private let templateBox = Locked<PoseTemplate?>(nil)
     private let poseBox = Locked<[Joint: CGPoint]?>(nil)
     private let aspectBox = Locked<CGFloat>(3.0 / 4.0)
@@ -301,6 +312,8 @@ final class CameraManager: NSObject, ObservableObject {
     // MARK: - セッション
 
     func start() {
+        // 覚えておいた脚長が入っていれば、最初から骨格を検出する
+        updatePoseNeeded()
         Task {
             let granted = await AVCaptureDevice.requestAccess(for: .video)
             await MainActor.run { self.cameraAuthorized = granted }
@@ -1191,10 +1204,45 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    /// 撮った写真の確認用の小さい画像（撮影後のプレビュー表示・モニターへの送信に使う）
+    @Published private(set) var lastCapture: CapturedPhoto?
+
+    /// 撮影後にプレビューを表示する（設定）
+    static let capturePreviewKey = "capturePreview"
+
+    /// 保存できた写真を、撮影後のプレビュー表示とモニター（アプリ）に渡す。どのスレッドから呼んでもよい
+    private func shareCapture(_ jpeg: Data) {
+        let preview = UserDefaults.standard.bool(forKey: Self.capturePreviewKey)
+        let monitor = remote.hasAppMonitor
+        guard preview || monitor else { return }
+        photoQueue.async {
+            guard let small = Self.smallJPEG(jpeg, maxSide: 1600) else { return }
+            if monitor { self.remote.sendPhoto(small.data, showPreview: preview) }
+            if preview {
+                DispatchQueue.main.async { self.lastCapture = CapturedPhoto(image: small.image) }
+            }
+        }
+    }
+
+    /// JPEG を長い辺 maxSide に縮めた JPEG と画像（向きは画素に反映済み）
+    static func smallJPEG(_ data: Data, maxSide: Int) -> (data: Data, image: UIImage)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxSide,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let image = UIImage(cgImage: cgImage)
+        guard let small = image.jpegData(compressionQuality: 0.75) else { return nil }
+        return (small, image)
+    }
+
     private func save(_ result: (jpeg: Data, thumbnail: UIImage?)) {
         MediaSaver.savePhoto(result.jpeg) { ok in
             if ok {
                 DispatchQueue.main.async { self.lastThumbnail = result.thumbnail }
+                self.shareCapture(result.jpeg)
             } else {
                 self.report("写真を保存できませんでした（写真へのアクセス許可を確認してください）")
             }

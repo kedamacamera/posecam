@@ -8,6 +8,10 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
     @Published private(set) var state: RemoteState?
     /// つないでいる撮る側の名前
     @Published private(set) var cameraName: String?
+    /// このモニターを開いている間に撮った写真（新しいものが先頭。アルバムで見る）
+    @Published private(set) var photos: [MonitorPhoto] = []
+    /// 撮る側が「撮影後にプレビューを表示」にしているとき、いま撮った写真
+    @Published var incomingPreview: MonitorPhoto?
 
     /// 撮る側とのつながり。誘われるたびに作り直す（失敗した後の古い状態を残さない）。メインスレッドで変える
     private var session = RemoteHost.makeSession()
@@ -103,6 +107,18 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
             if let state = try? JSONDecoder().decode(RemoteState.self, from: data.dropFirst()) {
                 DispatchQueue.main.async { self.state = state }
             }
+        case RemoteWire.photo:
+            let body = data.dropFirst()
+            guard let flag = body.first else { return }
+            decodeQueue.async {
+                guard let image = UIImage(data: body.dropFirst())?.preparingForDisplay() else { return }
+                let photo = MonitorPhoto(image: image)
+                DispatchQueue.main.async {
+                    // 多くなりすぎないよう、新しい 60 枚まで
+                    self.photos = Array(([photo] + self.photos).prefix(60))
+                    if flag == 1 { self.incomingPreview = photo }
+                }
+            }
         default:
             break
         }
@@ -115,10 +131,25 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
                  at localURL: URL?, withError error: Error?) {}
 }
 
+/// モニターで受け取った写真
+struct MonitorPhoto: Identifiable, Equatable {
+    let id = UUID()
+    let image: UIImage
+
+    static func == (a: MonitorPhoto, b: MonitorPhoto) -> Bool { a.id == b.id }
+}
+
 /// この iPhone をモニターにする画面（全画面）
 struct RemoteMonitorView: View {
     let onClose: () -> Void
     @StateObject private var client = RemoteMonitorClient()
+    /// 映像を左右反転して見る（背面カメラで自分を撮るとき、鏡のように見るため）。初めはしない。覚えておく
+    @AppStorage("monitorMirror") private var mirror = false
+    /// 撮る側が撮影後のプレビューをオンにしているとき、このモニターでも表示する。覚えておく
+    @AppStorage("monitorShowsPreview") private var showsPreview = true
+    @State private var showSample = true
+    @State private var showAlbum = false
+    @State private var shownPreview: MonitorPhoto?
 
     var body: some View {
         ZStack {
@@ -127,6 +158,7 @@ struct RemoteMonitorView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
+                    .scaleEffect(x: mirror ? -1 : 1, y: 1)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 14) {
@@ -167,14 +199,63 @@ struct RemoteMonitorView: View {
                     if let name = client.cameraName {
                         Text(name).font(.caption).foregroundStyle(.secondary)
                     }
+                    // 左右反転（押すたびに切り替え。覚えておく）
+                    Button {
+                        mirror.toggle()
+                    } label: {
+                        Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(mirror ? Color.yellow : Color.white)
+                            .frame(width: 40, height: 40)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .accessibilityLabel(mirror ? "左右反転をやめる" : "左右反転する")
+                    // 撮った写真をすぐ大きく見せるか（撮る側で撮影後のプレビューをオンにしているとき）
+                    Button {
+                        showsPreview.toggle()
+                    } label: {
+                        Image(systemName: showsPreview ? "eye" : "eye.slash")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(width: 40, height: 40)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .accessibilityLabel(showsPreview ? "撮った写真の表示をやめる" : "撮った写真を表示する")
                 }
                 .padding(.horizontal, 12)
+                // 撮る側で選んでいるポーズの見本写真（左上。タップで隠す・出す）
+                if let sample = client.state?.sample {
+                    PoseSampleCard(imageName: sample, mirrored: client.state?.sampleMirrored ?? false,
+                                   shown: $showSample)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                }
                 Spacer()
                 if client.cameraName != nil {
                     controls
                 }
             }
             .padding(.vertical, 12)
+        }
+        .overlay {
+            if let photo = shownPreview {
+                CapturePreviewOverlay(image: photo.image) {
+                    withAnimation(.easeIn(duration: 0.15)) { shownPreview = nil }
+                }
+            }
+        }
+        // 撮る側が撮影後のプレビューをオンにしていれば、撮れた写真を 2 秒大きく見せる
+        .onChange(of: client.incomingPreview) {
+            guard let photo = client.incomingPreview else { return }
+            client.incomingPreview = nil
+            guard showsPreview else { return }
+            withAnimation(.easeOut(duration: 0.15)) { shownPreview = photo }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if shownPreview == photo { withAnimation(.easeIn(duration: 0.2)) { shownPreview = nil } }
+            }
+        }
+        .sheet(isPresented: $showAlbum) {
+            MonitorAlbumView(photos: client.photos)
         }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
@@ -194,6 +275,23 @@ struct RemoteMonitorView: View {
         let state = client.state ?? RemoteState()
         let mode = CaptureMode(rawValue: state.mode) ?? .photo
         return HStack {
+            // このモニターを開いてから撮った写真
+            Button {
+                showAlbum = true
+            } label: {
+                Group {
+                    if let last = client.photos.first {
+                        Image(uiImage: last.image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "photo.on.rectangle").font(.system(size: 18))
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.6), lineWidth: 1))
+            }
+            .accessibilityLabel("撮った写真を見る")
+            Spacer()
             LabeledIconButton(systemImage: "timer",
                               label: state.timerSeconds == 0 ? "タイマー" : "\(state.timerSeconds)秒",
                               active: state.timerSeconds > 0) { client.send(.timer) }
@@ -215,8 +313,11 @@ struct RemoteMonitorView: View {
             }
             .disabled(!state.canFlip)
             .frame(width: 64)
+            // 左の写真のボタンと同じ幅の空きを置いて、シャッターを真ん中にする
+            Spacer()
+            Color.clear.frame(width: 44, height: 44)
         }
-        .padding(.horizontal, 30)
+        .padding(.horizontal, 16)
         .padding(.bottom, 10)
     }
 }

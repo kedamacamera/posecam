@@ -18,6 +18,10 @@ struct ContentView: View {
     @State private var showAlbum = false
     /// 設定の画面（リモートモニター・ライセンスはこの中で横に送って開く）
     @State private var showSettings = false
+    /// 撮影後にプレビューを表示する（設定。覚えておく）
+    @AppStorage(CameraManager.capturePreviewKey) private var capturePreview = false
+    /// いま表示している撮影後のプレビュー
+    @State private var shownCapture: CapturedPhoto?
     /// 前回、画面が固まったまま終わっていたら、記録をコピーしたことを知らせる
     @State private var showHangNotice = Diagnostics.previousHang
     /// この端末をモニターにした全画面（設定の画面の上に重ねて出す）
@@ -111,6 +115,12 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
+                if let capture = shownCapture {
+                    CapturePreviewOverlay(image: capture.image) {
+                        withAnimation(.easeIn(duration: 0.15)) { shownCapture = nil }
+                    }
+                }
+
                 if let message = camera.statusMessage {
                     Badge(text: message, color: .black.opacity(0.8))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -163,6 +173,14 @@ struct ContentView: View {
             if name != nil, showSettings, !showMonitor { showSettings = false }
         }
         .onChange(of: selectedPose) { updateTemplate() }
+        // 撮影後のプレビュー: 撮れた写真を 1.5 秒表示する（次の写真が来たら差し替える）
+        .onChange(of: camera.lastCapture) {
+            guard capturePreview, let capture = camera.lastCapture else { return }
+            withAnimation(.easeOut(duration: 0.15)) { shownCapture = capture }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if shownCapture == capture { withAnimation(.easeIn(duration: 0.2)) { shownCapture = nil } }
+            }
+        }
         // アルバム（写真の表示・編集）を開いている間はカメラを止める（裏で動き続けて熱くなり、電池が減っていた）
         .onChange(of: showAlbum) {
             if showAlbum {
@@ -414,8 +432,14 @@ struct ContentView: View {
     private var settingsSheet: some View {
         NavigationStack {
             List {
-                Section("撮影") {
+                Section {
                     Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
+                    Toggle("撮影後にプレビューを表示", isOn: $capturePreview)
+                } header: {
+                    Text("撮影")
+                } footer: {
+                    Text("写真を撮ったあと、撮れた写真を少しのあいだ大きく表示します（タップで閉じる）。"
+                         + "モニター（アプリ）につないでいるときは、モニターにも表示します。")
                 }
                 Section("表示") {
                     Toggle("骨格を表示", isOn: $camera.showSkeleton)
@@ -784,7 +808,9 @@ struct ContentView: View {
             timerSeconds: camera.timerSeconds,
             mode: camera.mode.rawValue,
             canFlip: !camera.isRecording && !camera.isSequenceRunning,
-            burstCount: camera.mode == .photo ? camera.burstCount : 1))
+            burstCount: camera.mode == .photo ? camera.burstCount : 1,
+            sample: selectedPose?.imageName,
+            sampleMirrored: mirrorPose))
 
         let size = remote.frameSizeBox.value
         let template = camera.template

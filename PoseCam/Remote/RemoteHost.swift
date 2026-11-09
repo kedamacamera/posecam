@@ -39,6 +39,10 @@ struct RemoteState: Codable, Equatable {
     var canFlip = true
     /// 連続撮影の枚数（1 なら 1 枚ずつ）
     var burstCount = 1
+    /// 選んでいるポーズの見本写真（アプリに入っている見本の名前。モニター側も同じ写真を持っている）
+    var sample: String?
+    /// 見本写真を左右反転して見せているか
+    var sampleMirrored = false
 }
 
 enum RemoteWire {
@@ -50,6 +54,8 @@ enum RemoteWire {
     static let command: UInt8 = 3
     /// モニターが 1 コマ表示し終えた合図（次のコマを送ってよい）
     static let ack: UInt8 = 4
+    /// 撮った写真（先頭 1 バイトが 1 なら、モニターでもすぐ大きく見せる。続きは JPEG）
+    static let photo: UInt8 = 5
 
     static func pack(_ kind: UInt8, _ body: Data) -> Data {
         var data = Data([kind])
@@ -270,6 +276,16 @@ final class RemoteHost: NSObject, ObservableObject {
         invitingMonitor = peer
         Diagnostics.log("リモート: つなぐ（\(inviteAttempts) 回目）")
         browser?.invitePeer(peer, to: fresh, withContext: nil, timeout: 10)
+    }
+
+    /// アプリのモニターがつながっているか（どのスレッドから読んでもよい）
+    var hasAppMonitor: Bool { !session.connectedPeers.isEmpty }
+
+    /// 撮った写真をアプリのモニターへ送る（モニターのアルバムに入る）。どのスレッドから呼んでもよい
+    func sendPhoto(_ jpeg: Data, showPreview: Bool) {
+        var body = Data([showPreview ? 1 : 0])
+        body.append(jpeg)
+        queue.async { self.sendToPeer(RemoteWire.pack(RemoteWire.photo, body), reliable: true) }
     }
 
     func disconnectMonitor() {
