@@ -61,6 +61,8 @@ struct ContentView: View {
     @State private var modeRowTop: CGFloat = 0
     /// 実際に表示しているプレビューの下端（画面の座標）。計算した値ではなく、表示された位置を測る
     @State private var measuredPreviewBottom: CGFloat?
+    /// ブラウザのモニターで見ている人の数（増えた瞬間を知るため）
+    @State private var knownWebViewers = 0
     @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     @Environment(\.colorScheme) private var colorScheme
 
@@ -191,6 +193,12 @@ struct ContentView: View {
             let wasConnected = knownMonitor != nil
             knownMonitor = name
             if name != nil, !wasConnected, showSettings, !showMonitor { showSettings = false }
+        }
+        // ブラウザのモニターでも同じく、見る人が 0 人 → 1 人以上になったときに撮影画面に戻る
+        .onReceive(camera.remote.$webViewers) { count in
+            let had = knownWebViewers
+            knownWebViewers = count
+            if count > 0, had == 0, showSettings, !showMonitor { showSettings = false }
         }
         .onChange(of: selectedPose) { updateTemplate() }
         // 撮影後のプレビュー: 撮れた写真を 1.5 秒表示する（次の写真が来たら差し替える）
@@ -822,7 +830,8 @@ struct ContentView: View {
                 camera.directFlashDark = false
             }
         }
-        .frame(width: 48, height: 48)
+        // 「ダイレクト1」「ダイレクト2」が「ダイレ…」と切れないよう、幅は文字に合わせて広げる
+        .frame(minWidth: 48, minHeight: 48)
     }
 
     private func next(after value: Int, in values: [Int]) -> Int {

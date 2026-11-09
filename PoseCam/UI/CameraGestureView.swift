@@ -27,8 +27,9 @@ struct CameraGestureView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeUIView(context: Context) -> UIView {
-        let view = UIView()
+        let view = PassThroughView()
         view.backgroundColor = .clear
+        view.ignoreBelow = ignoreBelow
         let c = context.coordinator
         let tap = UITapGestureRecognizer(target: c, action: #selector(Coordinator.tap(_:)))
         let long = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.longPress(_:)))
@@ -61,6 +62,19 @@ struct CameraGestureView: UIViewRepresentable {
         // 表示されないまま画面が固まり、iPad では固まらなかった。切り替えをやめ、受け取った側で無視する
         // （そのため、画面を開いている間は音量ボタンで音量が変わらない）
         context.coordinator.parent = self
+        (view as? PassThroughView)?.ignoreBelow = ignoreBelow
+    }
+
+    /// ignoreBelow より下では指を受け取らない面。
+    /// 以前は指を受け取ったうえで操作（タップなど）だけを無視していたが、9:16・フルの比率で映像が下のボタンの
+    /// 後ろまで広がると、撮影モード・倍率などのボタンを押した指をこの面が先に取り、ボタンが反応しないことがあった。
+    /// ここで受け取らなければ、指はそのまま上に重なったボタンに届く
+    final class PassThroughView: UIView {
+        var ignoreBelow: CGFloat = .infinity
+
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            point.y < ignoreBelow && super.point(inside: point, with: event)
+        }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {

@@ -30,6 +30,7 @@ struct LabeledIcon: View {
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)
+                .fixedSize()
         }
         .frame(minWidth: 48)
         .foregroundStyle(active ? Color.chromeAccent : .chromeText)
@@ -209,6 +210,8 @@ struct LensBar: View {
 
     /// 指を何ポイント動かすと倍率が e 倍になるか
     static let pointsPerE: CGFloat = 140
+    /// 倍率ボタンの大きさの倍率（iPad は大きく）
+    static let scale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.35 : 1
 
     /// いま使っているボタン（現在の倍率以下でいちばん大きいもの）
     private var activeFactor: CGFloat? {
@@ -256,9 +259,10 @@ struct LensBar: View {
             ForEach(options) { option in
                 let active = option.displayFactor == activeFactor
                 Text(active ? ZoomFormat.short(zoom) + "×" : ZoomFormat.short(option.displayFactor))
-                    .font(.system(size: active ? 12 : 11, weight: .bold))
+                    .font(.system(size: (active ? 12 : 11) * Self.scale, weight: .bold))
                     .foregroundStyle(active ? Color.yellow : .white)
-                    .frame(width: 34, height: 34)
+                    // iPad は画面が大きく押しにくかったので、丸を大きくする
+                    .frame(width: 34 * Self.scale, height: 34 * Self.scale)
                     .background(Circle().fill(Color.white.opacity(active ? 0.18 : 0)))
                     .contentShape(Circle())
                     .onTapGesture { onSelect(option.displayFactor) }
@@ -884,6 +888,12 @@ struct ModePicker: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(item == mode ? Color.chromeAccent : Color.chromeText.opacity(0.75))
                         .shadow(color: .chromeShadow, radius: 2)
+                        // 文字だけだと押せる所が狭いので、上下左右に広げる（並びの位置は変えない）
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 4)
+                        .contentShape(Rectangle())
+                        .padding(.vertical, -8)
+                        .padding(.horizontal, -4)
                 }
                 .disabled(isLocked)
             }
