@@ -15,18 +15,12 @@ struct ContentView: View {
     @State private var mirrorPose = false
     @State private var poseOpacity = 0.85
     @State private var showLibrary = false
-    @State private var showLicenses = false
     @State private var showAlbum = false
-    /// リモートモニターの画面（撮る側）と、この iPhone をモニターにした画面
-    @State private var showRemote = false
+    /// 設定の画面（リモートモニター・ライセンスはこの中で横に送って開く）
     @State private var showSettings = false
     /// 前回、画面が固まったまま終わっていたら、記録をコピーしたことを知らせる
     @State private var showHangNotice = Diagnostics.previousHang
-    /// 設定のシートを閉じた後に開く画面
-    @State private var afterSettings: AfterSettings?
-    private enum AfterSettings { case remote, licenses }
-    /// リモートモニターのシートを閉じた後に、この端末をモニターにする
-    @State private var monitorAfterRemote = false
+    /// この端末をモニターにした全画面（設定の画面の上に重ねて出す）
     @State private var showMonitor = false
     /// 構図のガイドの線
     @AppStorage("gridStyle") private var gridStyle: GridStyle = .off
@@ -195,20 +189,8 @@ struct ContentView: View {
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
         }
-        .sheet(isPresented: $showSettings, onDismiss: {
-            // 設定のシートが閉じ切ってから、次の画面を出す
-            switch afterSettings {
-            case .remote: showRemote = true
-            case .licenses: showLicenses = true
-            case nil: break
-            }
-            afterSettings = nil
-        }) {
+        .sheet(isPresented: $showSettings) {
             settingsSheet
-        }
-        .sheet(isPresented: $showLicenses) {
-            LicensesView()
-                .onAppear { Diagnostics.log("ライセンス: 画面が開いた") }
         }
         .alert("前回、画面が固まりました", isPresented: $showHangNotice) {
             Button("記録をコピー") {
@@ -221,18 +203,6 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showAlbum) {
             AlbumView()
-        }
-        .sheet(isPresented: $showRemote, onDismiss: {
-            // 「モニターにする」を押したときは、シートが閉じ切ってから全画面を出す
-            if monitorAfterRemote {
-                monitorAfterRemote = false
-                showMonitor = true
-            }
-        }) {
-            RemoteSheet(remote: camera.remote) { monitorAfterRemote = true }
-        }
-        .fullScreenCover(isPresented: $showMonitor) {
-            RemoteMonitorView { showMonitor = false }
         }
         .sheet(item: $camera.snapClip) { clip in
             SnapPickerView(clip: clip) { image in camera.setThumbnail(image) }
@@ -311,7 +281,7 @@ struct ContentView: View {
 
     /// アルバム・編集などの画面を開いている間は、音量ボタンをふつうの音量ボタンに戻す
     private var hardwareShutterEnabled: Bool {
-        camera.cameraAuthorized && !showAlbum && !showLibrary && !showLicenses && !showRemote && !showMonitor && !showSettings
+        camera.cameraAuthorized && !showAlbum && !showLibrary && !showMonitor && !showSettings
             && camera.snapClip == nil && crashReport == nil
     }
 
@@ -447,10 +417,10 @@ struct ContentView: View {
                     .pickerStyle(.menu)
                 }
                 Section {
-                    Button {
-                        Diagnostics.log("リモート: 設定から開く")
-                        afterSettings = .remote
-                        showSettings = false
+                    // リモートモニター・ライセンスは、この画面の中で横に送って開く。
+                    // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
+                    NavigationLink {
+                        RemoteSheet(remote: camera.remote) { showMonitor = true }
                     } label: {
                         Label("リモートモニター", systemImage: "rectangle.on.rectangle")
                     }
@@ -462,9 +432,8 @@ struct ContentView: View {
                     } label: {
                         Label("動作の記録をコピー", systemImage: "doc.on.doc")
                     }
-                    Button {
-                        afterSettings = .licenses
-                        showSettings = false
+                    NavigationLink {
+                        LicensesView()
                     } label: {
                         Label("ライセンス", systemImage: "doc.text")
                     }
@@ -477,6 +446,10 @@ struct ContentView: View {
                     Button("閉じる") { showSettings = false }
                 }
             }
+        }
+        // この端末をモニターにした全画面は、設定の画面の上に重ねて出す（閉じてから出さない）
+        .fullScreenCover(isPresented: $showMonitor) {
+            RemoteMonitorView { showMonitor = false }
         }
         // iPad は中央の窓で開くので、半分の高さにすると中が途中で切れる。iPad は高さいっぱいにする
         .presentationDetents(UIDevice.current.userInterfaceIdiom == .pad ? [.large] : [.medium, .large])

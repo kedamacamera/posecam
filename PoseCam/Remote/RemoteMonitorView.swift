@@ -206,18 +206,18 @@ struct RemoteMonitorView: View {
     }
 }
 
-/// 撮る側の「リモートモニター」の画面（シート）
+/// 撮る側の「リモートモニター」の画面。設定の画面の中で横に送って開く（NavigationStack の中に置く）。
+/// 以前は設定（メニュー・シート）を閉じてから別のシートで出していたが、iPhone（iOS 27.2）では
+/// 閉じた直後に出したシートが見えないまま、画面の操作を一切受け付けなくなった
 struct RemoteSheet: View {
     @ObservedObject var remote: RemoteHost
     /// 「この iPhone をモニターにする」
     let onBecomeMonitor: () -> Void
-    @Environment(\.dismiss) private var dismiss
 
     /// 画面の文に使う、この端末の呼び名（iPad では「この iPad を〜」と出す）
     static let deviceWord = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
 
     var body: some View {
-        NavigationStack {
             List {
                 Section {
                     if let name = remote.connectedMonitor {
@@ -299,9 +299,8 @@ struct RemoteSheet: View {
 
                 Section {
                     Button {
-                        // 全画面は、このシートが閉じ切ってから出す（呼ぶ側の onDismiss で）
+                        // 全画面は、設定の画面の上に重ねて出す（閉じてから出すと iPhone で固まる）
                         onBecomeMonitor()
-                        dismiss()
                     } label: {
                         Label("この \(Self.deviceWord) をモニターにする", systemImage: "rectangle.on.rectangle")
                     }
@@ -311,12 +310,6 @@ struct RemoteSheet: View {
             }
             .navigationTitle("リモートモニター")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("閉じる") { dismiss() }
-                }
-            }
-        }
         .onAppear {
             Diagnostics.log("リモート: 画面が開いた")
             remote.startBrowsing()
