@@ -20,6 +20,12 @@ struct ContentView: View {
     @State private var showSettings = false
     /// 撮影後にプレビューを表示する（設定。覚えておく）
     @AppStorage(CameraManager.capturePreviewKey) private var capturePreview = false
+    /// 最後に知ったモニターのつながり（つながった瞬間だけ設定を閉じるため）
+    @State private var knownMonitor: String?
+    /// プレビューの大きさ（モニターからのピントの印をこの画面に出すため）
+    @State private var previewViewSize: CGSize = .zero
+    /// 連続撮影の終わりをライトで知らせる（設定。初めはオン。覚えておく）
+    @AppStorage(CameraManager.burstEndLightKey) private var burstEndLight = true
     /// いま表示している撮影後のプレビュー
     @State private var shownCapture: CapturedPhoto?
     /// 前回、画面が固まったまま終わっていたら、記録をコピーしたことを知らせる
@@ -150,6 +156,14 @@ struct ContentView: View {
             // 前回カメラ起動中に落ちていたら、記録を見せるまでカメラは起動しない
             if crashReport == nil { camera.start() }
             camera.remote.onCommand = { handleRemote($0) }
+            // モニターでタップした所にピント・露出を合わせ、この画面にもピントの印を出す
+            camera.remote.onFocus = { focus in
+                let p = CGPoint(x: focus.x, y: focus.y)
+                camera.focus(at: p, in: CGSize(width: 1, height: 1), lock: focus.lock)
+                if previewViewSize.width > 0 {
+                    showFocus(at: CGPoint(x: p.x * previewViewSize.width, y: p.y * previewViewSize.height))
+                }
+            }
         }
         // モニターに送るガイドの絵と状態（見ているモニターがあるときだけ作る）
         .task {
@@ -168,9 +182,13 @@ struct ContentView: View {
                 camera.resume()
             }
         }
-        // モニターとつながったら、設定の画面を閉じて撮影画面に戻る（撮る側はすぐ構えられるように）
-        .onReceive(camera.remote.$connectedMonitor.removeDuplicates()) { name in
-            if name != nil, showSettings, !showMonitor { showSettings = false }
+        // モニターとつながったら、設定の画面を閉じて撮影画面に戻る（撮る側はすぐ構えられるように）。
+        // 「つながっていない → つながった」に変わった 1 回だけ閉じる。以前は画面を作り直すたびに今の値が届き、
+        // つながっている間は設定を開いた瞬間に閉じてしまい、設定が開けなかった
+        .onReceive(camera.remote.$connectedMonitor) { name in
+            let wasConnected = knownMonitor != nil
+            knownMonitor = name
+            if name != nil, !wasConnected, showSettings, !showMonitor { showSettings = false }
         }
         .onChange(of: selectedPose) { updateTemplate() }
         // 撮影後のプレビュー: 撮れた写真を 1.5 秒表示する（次の写真が来たら差し替える）
@@ -296,6 +314,8 @@ struct ContentView: View {
         }
         .frame(width: size.width, height: height)
         .clipped()
+        // ピントの印の位置に使う、映像の部分の大きさ（iPad の 9:16 などで左右に余白をつける前）
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { previewViewSize = $0 }
         // iPad の 9:16 など、高さに合わせて幅が画面より狭くなるときは中央に置く
         .frame(width: screen.width)
         // 倍率ボタンの帯がプレビューの下端にかからないよう、表示されたプレビューの下端を測っておく
@@ -446,11 +466,13 @@ struct ContentView: View {
                 Section {
                     Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
                     Toggle("撮影後にプレビューを表示", isOn: $capturePreview)
+                    Toggle("連続撮影の終わりをライトで知らせる", isOn: $burstEndLight)
                 } header: {
                     Text("撮影")
                 } footer: {
-                    Text("写真を撮ったあと、撮れた写真を少しのあいだ大きく表示します（タップで閉じる）。"
-                         + "モニター（アプリ）につないでいるときは、モニターにも表示します。")
+                    Text("撮影後のプレビュー: 写真を撮ったあと、撮れた写真を少しのあいだ大きく表示します（タップで閉じる）。"
+                         + "モニター（アプリ）につないでいるときは、モニターにも表示します。\n"
+                         + "連続撮影の終わり: 背面カメラで連続撮影が終わったとき、ライトを 2 回点滅させて知らせます。")
                 }
                 Section("表示") {
                     Toggle("骨格を表示", isOn: $camera.showSkeleton)

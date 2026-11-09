@@ -99,7 +99,8 @@ struct PoseSampleCard: View {
                 .resizable()
                 .scaledToFit()
                 .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                .frame(width: 92)
+                // iPad は画面が広いので 1 割大きくする
+                .frame(width: UIDevice.current.userInterfaceIdiom == .pad ? 101 : 92)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.7), lineWidth: 1))
                 .overlay(alignment: .topTrailing) {

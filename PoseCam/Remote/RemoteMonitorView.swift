@@ -43,6 +43,13 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
         try? session.send(RemoteWire.pack(RemoteWire.command, json), toPeers: session.connectedPeers, with: .reliable)
     }
 
+    /// 撮る側にピント・露出を合わせてもらう（point は映像の中の位置 0...1、左上原点）
+    func sendFocus(_ point: CGPoint, lock: Bool) {
+        guard !session.connectedPeers.isEmpty,
+              let json = try? JSONEncoder().encode(RemoteFocus(x: point.x, y: point.y, lock: lock)) else { return }
+        try? session.send(RemoteWire.pack(RemoteWire.focus, json), toPeers: session.connectedPeers, with: .reliable)
+    }
+
     private func sendAck(to peer: MCPeerID) {
         try? session.send(Data([RemoteWire.ack]), toPeers: [peer], with: .reliable)
     }
@@ -139,7 +146,10 @@ struct MonitorPhoto: Identifiable, Equatable {
     static func == (a: MonitorPhoto, b: MonitorPhoto) -> Bool { a.id == b.id }
 }
 
-/// この iPhone をモニターにする画面（全画面）
+/// この iPhone・iPad をモニターにする画面（全画面）。
+/// ふだんは、上の帯（反転・プレビュー・名前・全画面・閉じる）と下の帯（写真・タイマー・シャッター・切り替え）を
+/// 黒い余白に置き、そのあいだに映像を出す（以前はボタンが映像に重なって見づらかった）。
+/// 全画面にすると映像だけになり、下から上へなぞるとボタンが出る（上から下へなぞると隠れる）
 struct RemoteMonitorView: View {
     let onClose: () -> Void
     @StateObject private var client = RemoteMonitorClient()
@@ -150,93 +160,46 @@ struct RemoteMonitorView: View {
     @State private var showSample = true
     @State private var showAlbum = false
     @State private var shownPreview: MonitorPhoto?
+    /// 全画面（映像だけ）
+    @State private var fullScreen = false
+    /// 全画面のときにボタンを出しているか
+    @State private var chromeShown = false
+    /// タップしてピントを合わせた所（映像の中の 0...1）と、固定したか
+    @State private var focusMark: (point: CGPoint, locked: Bool, id: UUID)?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let image = client.image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .scaleEffect(x: mirror ? -1 : 1, y: 1)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if fullScreen {
+                videoArea
+                    .ignoresSafeArea()
+                if chromeShown {
+                    VStack(spacing: 0) {
+                        topBar.background(Color.black.opacity(0.55))
+                        Spacer()
+                        controls.background(Color.black.opacity(0.55))
+                    }
+                    .transition(.opacity)
+                }
             } else {
-                VStack(spacing: 14) {
-                    ProgressView().tint(.white)
-                    Text(client.cameraName == nil ? "撮る側を待っています" : "映像を待っています")
-                        .font(.headline)
-                    Text("撮る側の iPhone・iPad で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.peerID.displayName)」を選んでください。\n"
-                         + "Wi-Fi がなくても、2 台が近く（5 m くらいまで）にあればつながります。")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(30)
-            }
-
-            if let countdown = client.state?.countdown {
-                Text("\(countdown)")
-                    .font(.system(size: 120, weight: .bold, design: .rounded))
-                    .shadow(color: .black.opacity(0.6), radius: 8)
-            }
-
-            VStack {
-                HStack(spacing: 8) {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                    }
-                    if let score = client.state?.score {
-                        Badge(text: "一致度 \(score)%",
-                              color: client.state?.matched == true ? .green : .black.opacity(0.55))
-                    }
-                    if client.state?.recording == true, let seconds = client.state?.recordingSeconds {
-                        Badge(text: String(format: "%02d:%02d", seconds / 60, seconds % 60), dot: .red)
-                    }
-                    Spacer()
-                    if let name = client.cameraName {
-                        Text(name).font(.caption).foregroundStyle(.secondary)
-                    }
-                    // 左右反転（押すたびに切り替え。覚えておく）
-                    Button {
-                        mirror.toggle()
-                    } label: {
-                        Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(mirror ? Color.yellow : Color.white)
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                    }
-                    .accessibilityLabel(mirror ? "左右反転をやめる" : "左右反転する")
-                    // 撮った写真をすぐ大きく見せるか（撮る側で撮影後のプレビューをオンにしているとき）
-                    Button {
-                        showsPreview.toggle()
-                    } label: {
-                        Image(systemName: showsPreview ? "eye" : "eye.slash")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                    }
-                    .accessibilityLabel(showsPreview ? "撮った写真の表示をやめる" : "撮った写真を表示する")
-                }
-                .padding(.horizontal, 12)
-                // 撮る側で選んでいるポーズの見本写真（左上。タップで隠す・出す）
-                if let sample = client.state?.sample {
-                    PoseSampleCard(imageName: sample, mirrored: client.state?.sampleMirrored ?? false,
-                                   shown: $showSample)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 4)
-                }
-                Spacer()
-                if client.cameraName != nil {
+                VStack(spacing: 0) {
+                    topBar
+                    videoArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     controls
                 }
             }
-            .padding(.vertical, 12)
         }
+        // 全画面のとき: 下から上へなぞるとボタンを出し、上から下へなぞると隠す
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    guard fullScreen else { return }
+                    let dy = value.translation.height
+                    guard abs(dy) > abs(value.translation.width) else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { chromeShown = dy < 0 }
+                }
+        )
         .overlay {
             if let photo = shownPreview {
                 CapturePreviewOverlay(image: photo.image) {
@@ -270,6 +233,183 @@ struct RemoteMonitorView: View {
             UIApplication.shared.isIdleTimerDisabled = false
         }
     }
+
+    // MARK: - 上の帯
+
+    private var topBar: some View {
+        ZStack {
+            // 撮る側の名前は真ん中
+            if let name = client.cameraName {
+                Text(name)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 120)
+            }
+            HStack(spacing: 6) {
+                // 左右反転（押すたびに切り替え。覚えておく）
+                barButton(systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
+                          label: "左右反転", active: mirror) { mirror.toggle() }
+                    .accessibilityLabel(mirror ? "左右反転をやめる" : "左右反転する")
+                // 撮った写真をすぐ大きく見せるか（撮る側で撮影後のプレビューをオンにしているとき）
+                barButton(systemImage: showsPreview ? "eye" : "eye.slash", label: "プレビュー",
+                          active: showsPreview) { showsPreview.toggle() }
+                    .accessibilityLabel(showsPreview ? "撮った写真の表示をやめる" : "撮った写真を表示する")
+                Spacer()
+                barButton(systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left"
+                                                  : "arrow.up.left.and.arrow.down.right",
+                          label: fullScreen ? "戻す" : "全画面", active: false) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        fullScreen.toggle()
+                        chromeShown = false
+                    }
+                }
+                // 閉じるは右端
+                barButton(systemImage: "xmark", label: "閉じる", active: false, action: onClose)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private func barButton(systemImage: String, label: String, active: Bool,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(height: 22)
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(active ? Color.yellow : Color.white)
+            .frame(width: 58, height: 46)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 映像
+
+    /// 映像と、その上に重ねる一致度・見本写真・秒読み・ピントの印。タップでピント、長押しで固定
+    private var videoArea: some View {
+        GeometryReader { geo in
+            ZStack {
+                if let image = client.image {
+                    let rect = Self.fittedRect(image.size, in: geo.size)
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .scaleEffect(x: mirror ? -1 : 1, y: 1)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.6)
+                                .sequenced(before: DragGesture(minimumDistance: 0))
+                                .onEnded { value in
+                                    if case .second(true, let drag?) = value {
+                                        focus(at: drag.location, in: rect, lock: true)
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            SpatialTapGesture().onEnded { value in focus(at: value.location, in: rect, lock: false) }
+                        )
+                    if let mark = focusMark {
+                        let p = CGPoint(x: rect.minX + mark.point.x * rect.width,
+                                        y: rect.minY + mark.point.y * rect.height)
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(Color.yellow, lineWidth: 1.5)
+                            .frame(width: 70, height: 70)
+                            .overlay(alignment: .top) {
+                                if mark.locked {
+                                    Text("AE/AF ロック")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 4)
+                                        .background(Color.yellow)
+                                        .offset(y: -18)
+                                }
+                            }
+                            .position(p)
+                            .allowsHitTesting(false)
+                    }
+                } else {
+                    waiting
+                }
+
+                // 一致度・録画中の時間（映像の左上）と、見本写真（その下）
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if let score = client.state?.score {
+                            Badge(text: "一致度 \(score)%",
+                                  color: client.state?.matched == true ? .green : .black.opacity(0.55))
+                        }
+                        if client.state?.recording == true, let seconds = client.state?.recordingSeconds {
+                            Badge(text: String(format: "%02d:%02d", seconds / 60, seconds % 60), dot: .red)
+                        }
+                    }
+                    if let sample = client.state?.sample {
+                        PoseSampleCard(imageName: sample, mirrored: client.state?.sampleMirrored ?? false,
+                                       shown: $showSample)
+                    }
+                }
+                .padding(10)
+                .padding(.top, fullScreen && chromeShown ? 60 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                if let countdown = client.state?.countdown {
+                    Text("\(countdown)")
+                        .font(.system(size: 120, weight: .bold, design: .rounded))
+                        .shadow(color: .black.opacity(0.6), radius: 8)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    private var waiting: some View {
+        VStack(spacing: 14) {
+            ProgressView().tint(.white)
+            Text(client.cameraName == nil ? "撮る側を待っています" : "映像を待っています")
+                .font(.headline)
+            Text("撮る側の iPhone・iPad で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.peerID.displayName)」を選んでください。\n"
+                 + "Wi-Fi がなくても、2 台が近く（5 m くらいまで）にあればつながります。")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 画像を枠の中に比率を保って収めたときの位置
+    private static func fittedRect(_ image: CGSize, in box: CGSize) -> CGRect {
+        guard image.width > 0, image.height > 0 else { return CGRect(origin: .zero, size: box) }
+        let scale = min(box.width / image.width, box.height / image.height)
+        let size = CGSize(width: image.width * scale, height: image.height * scale)
+        return CGRect(x: (box.width - size.width) / 2, y: (box.height - size.height) / 2,
+                      width: size.width, height: size.height)
+    }
+
+    /// タップした所に撮る側でピント・露出を合わせる（映像の中の位置に直して送る。左右反転して見ていれば戻す）
+    private func focus(at location: CGPoint, in rect: CGRect, lock: Bool) {
+        guard client.cameraName != nil, rect.width > 0, rect.height > 0, rect.contains(location) else { return }
+        let shown = CGPoint(x: (location.x - rect.minX) / rect.width, y: (location.y - rect.minY) / rect.height)
+        let frame = CGPoint(x: mirror ? 1 - shown.x : shown.x, y: shown.y)
+        client.sendFocus(frame, lock: lock)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let id = UUID()
+        withAnimation(.easeOut(duration: 0.12)) { focusMark = (shown, lock, id) }
+        if !lock {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                if focusMark?.id == id { withAnimation(.easeIn(duration: 0.2)) { focusMark = nil } }
+            }
+        }
+    }
+
+    // MARK: - 下の帯
 
     private var controls: some View {
         let state = client.state ?? RemoteState()
@@ -318,7 +458,11 @@ struct RemoteMonitorView: View {
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.top, 12)
+        // iPad はホームバーから離す
+        .padding(.bottom, UIDevice.current.userInterfaceIdiom == .pad ? 28 : 12)
+        .opacity(client.cameraName == nil ? 0.35 : 1)
+        .disabled(client.cameraName == nil)
     }
 }
 

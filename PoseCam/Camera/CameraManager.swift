@@ -743,7 +743,15 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 連続撮影がすべて終わった合図。背面のライトを最低の明るさで 2 回チカチカさせる。sessionQueue から呼ぶ。
     /// 最後の写真の撮影が終わった（didFinishCaptureFor が届いた）後に呼ぶので、写真には写り込まない。
+    /// 連続撮影の終わりをライトで知らせる（設定。初めはする）
+    static let burstEndLightKey = "burstEndLight"
+
     private func signalSequenceFinished(after delay: Double) {
+        // 設定でオフにしていれば知らせない（値がなければ、以前と同じく知らせる）
+        if UserDefaults.standard.object(forKey: Self.burstEndLightKey) as? Bool == false {
+            Diagnostics.log("連続撮影: 終わりの合図はオフ")
+            return
+        }
         blinkGeneration += 1
         let generation = blinkGeneration
         let position = videoInput?.device.position

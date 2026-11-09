@@ -24,6 +24,13 @@ enum RemoteCommand: String, Codable {
     case burst
 }
 
+/// モニターでタップした所（映像の中の位置 0...1、左上原点）。lock なら固定（AE/AF ロック）
+struct RemoteFocus: Codable {
+    var x: Double
+    var y: Double
+    var lock: Bool
+}
+
 /// 撮る側からモニターへ送る状態（一致度・カウントダウンなど）
 struct RemoteState: Codable, Equatable {
     /// 一致度（ポーズの型を選んでいないときは nil）
@@ -56,6 +63,8 @@ enum RemoteWire {
     static let ack: UInt8 = 4
     /// 撮った写真（先頭 1 バイトが 1 なら、モニターでもすぐ大きく見せる。続きは JPEG）
     static let photo: UInt8 = 5
+    /// モニターでタップした所にピント・露出を合わせる（RemoteFocus の JSON）
+    static let focus: UInt8 = 6
 
     static func pack(_ kind: UInt8, _ body: Data) -> Data {
         var data = Data([kind])
@@ -84,6 +93,8 @@ final class RemoteHost: NSObject, ObservableObject {
 
     /// モニターからの操作（メインスレッドで呼ぶ）
     var onCommand: ((RemoteCommand) -> Void)?
+    /// モニターでタップしてピントを合わせる（メインスレッドで呼ぶ）
+    var onFocus: ((RemoteFocus) -> Void)?
 
     /// Apple Watch で見ているか
     @Published private(set) var watchViewing = false
@@ -665,6 +676,10 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
         case RemoteWire.command:
             if let command = try? JSONDecoder().decode(RemoteCommand.self, from: data.dropFirst()) {
                 DispatchQueue.main.async { self.onCommand?(command) }
+            }
+        case RemoteWire.focus:
+            if let focus = try? JSONDecoder().decode(RemoteFocus.self, from: data.dropFirst()) {
+                DispatchQueue.main.async { self.onFocus?(focus) }
             }
         default:
             break
