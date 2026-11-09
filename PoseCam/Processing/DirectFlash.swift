@@ -89,10 +89,13 @@ enum DirectFlash {
             .cropped(to: extent)
     }
 
-    /// 人物の切り抜き（人物 1・背景 0、写真と同じ大きさ、境目はぼかす）。人が写っていなければ nil
+    /// 人物の切り抜き（人物 1・背景 0、写真と同じ大きさ、境目はぼかす）。人が写っていなければ nil。
+    /// 以前は粗い精度（balanced・長辺 1024）で切り抜き、境目を長辺の 0.6% ぼかしていたので、
+    /// 人物の外側（髪の周りの壁・椅子など）まで明るさがはみ出していた。
+    /// 精度を上げ（accurate・長辺 2048）、ぼかしを狭くし、ぼかした境目を人物の側へ寄せる
     static func personMask(_ photo: CIImage) -> CIImage? {
         let extent = photo.extent
-        let scale = min(1, 1024 / max(extent.width, extent.height))
+        let scale = min(1, 2048 / max(extent.width, extent.height))
         let small = photo.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let request = VNGeneratePersonSegmentationRequest()
         request.qualityLevel = .balanced
