@@ -78,7 +78,10 @@ struct ContentView: View {
                         Spacer(minLength: 0)
                         bottomControls(previewBottom: measuredPreviewBottom
                                            ?? previewBottom(screen: screen, topInset: insets.top),
-                                       bottomPadding: max(insets.bottom, 12))
+                                       // iPad はホームバーのすぐ上に撮影モードがあると、押したつもりで
+                                       // アプリの切り替えになるので、少し上げる
+                                       bottomPadding: max(insets.bottom, 12)
+                                           + (UIDevice.current.userInterfaceIdiom == .pad ? 18 : 0))
                     }
 
                     if camera.template != nil {
@@ -189,7 +192,9 @@ struct ContentView: View {
         .sheet(isPresented: $showLibrary) {
             PoseLibraryView(library: library, selection: $selectedPose)
         }
-        .sheet(isPresented: $showSettings) {
+        // 設定は撮影画面とは別の全画面にする（BeautyCam のように）。半分の高さのシートで開くと、
+        // 後ろの撮影画面の位置が変わって倍率ボタンの帯の作り直しが止まらなくなるきっかけにもなっていた
+        .fullScreenCover(isPresented: $showSettings) {
             settingsSheet
         }
         .alert("前回、画面が固まりました", isPresented: $showHangNotice) {
@@ -213,8 +218,8 @@ struct ContentView: View {
 
     /// 3:4・9:16 は上のバーのすぐ下から、フルは画面全体に表示する。
     private func preview(screen: CGSize, topInset: CGFloat) -> some View {
-        let aspect = camera.aspect.ratio ?? screen.width / screen.height
-        let height = min(screen.width / aspect, screen.height)
+        let size = previewSize(screen: screen, topInset: topInset)
+        let height = size.height
         let top = camera.aspect == .full ? 0 : topInset + topBarHeight
 
         return ZStack {
@@ -237,7 +242,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
             // タップ（ピント・露出）・長押し（AE/AF ロック）・上下（露出）・つまむ（ズーム）・本体のボタン（シャッター）
             CameraGestureView(hardwareShutterEnabled: hardwareShutterEnabled,
-                              ignoreBelow: controlsTop - top,
+                              ignoreBelow: touchFloor - top,
                               onTap: { point, size in handleTap(point, size) },
                               onLongPress: { point, size in handleLongPress(point, size) },
                               onVerticalPan: { dy in handlePan(dy) },
@@ -267,8 +272,10 @@ struct ContentView: View {
                 LegRangeOverlay(feed: camera.poseFeed, settings: $camera.settings)
             }
         }
-        .frame(width: screen.width, height: height)
+        .frame(width: size.width, height: height)
         .clipped()
+        // iPad の 9:16 など、高さに合わせて幅が画面より狭くなるときは中央に置く
+        .frame(width: screen.width)
         // 倍率ボタンの帯がプレビューの下端にかからないよう、表示されたプレビューの下端を測っておく
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { measuredPreviewBottom = $0 }
         .padding(.top, top)
@@ -399,12 +406,14 @@ struct ContentView: View {
         .padding(.horizontal, 10)
     }
 
-    /// 設定のシートの中身
+    /// 設定の画面（全画面）の中身
     private var settingsSheet: some View {
         NavigationStack {
             List {
-                Section {
+                Section("撮影") {
                     Toggle(camera.canMuteShutter ? "ミュート" : "ミュート（画質が落ちます）", isOn: $camera.muteShutter)
+                }
+                Section("表示") {
                     Toggle("骨格を表示", isOn: $camera.showSkeleton)
                     Toggle("水平器", isOn: $showLevel)
                     Picker(selection: $appearance) {
@@ -416,7 +425,7 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                Section {
+                Section("その他") {
                     // リモートモニター・ライセンスは、この画面の中で横に送って開く。
                     // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
                     NavigationLink {
@@ -439,11 +448,19 @@ struct ContentView: View {
                     }
                 }
             }
+            // 見出しは大文字にしない
+            .textCase(nil)
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("閉じる") { showSettings = false }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showSettings = false
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    .accessibilityLabel("撮影画面に戻る")
                 }
             }
         }
@@ -451,8 +468,6 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showMonitor) {
             RemoteMonitorView { showMonitor = false }
         }
-        // iPad は中央の窓で開くので、半分の高さにすると中が途中で切れる。iPad は高さいっぱいにする
-        .presentationDetents(UIDevice.current.userInterfaceIdiom == .pad ? [.large] : [.medium, .large])
         .onAppear { Diagnostics.log("設定: 画面が開いた") }
     }
 
@@ -501,10 +516,21 @@ struct ContentView: View {
 
     // MARK: - 下部
 
+    /// プレビューの大きさ。ふつうは画面の幅に合わせる。iPad の 9:16 のように、幅に合わせると上のバーの下に
+    /// 入りきらないときは、高さに合わせて幅を狭める（以前は高さだけ削っていたので、映像の比率が崩れ、
+    /// 画面より高くなった分で上のバーが画面の外へ押し出されていた）
+    private func previewSize(screen: CGSize, topInset: CGFloat) -> CGSize {
+        guard camera.aspect != .full, let ratio = camera.aspect.ratio else { return screen }
+        let available = screen.height - topInset - topBarHeight
+        let height = screen.width / ratio
+        if height <= available { return CGSize(width: screen.width, height: height) }
+        return CGSize(width: (available * ratio).rounded(), height: available)
+    }
+
     /// プレビューの下端（画面の上端からの位置）
     private func previewBottom(screen: CGSize, topInset: CGFloat) -> CGFloat {
-        guard camera.aspect != .full, let ratio = camera.aspect.ratio else { return screen.height }
-        return topInset + topBarHeight + min(screen.width / ratio, screen.height)
+        guard camera.aspect != .full else { return screen.height }
+        return topInset + topBarHeight + previewSize(screen: screen, topInset: topInset).height
     }
 
     /// 倍率ボタンの帯（丸い黒い地を含む）がプレビューの下端にかかる・近すぎるときに動かす量。
@@ -519,6 +545,15 @@ struct ContentView: View {
         let down = previewBottom + gap - frame.minY
         if frame.maxY + down <= controlsTop - 2 { return down }
         return previewBottom - gap - frame.maxY
+    }
+
+    /// これより下（画面の上端からの位置）の指は、プレビューの操作面（ピント・ズーム）で受け取らない。
+    /// 倍率ボタンの帯も含める（以前はパネル・シャッターの範囲だけで、倍率ボタンを押した指を操作面が取り、
+    /// ボタンの反応が悪かった）
+    private var touchFloor: CGFloat {
+        guard camera.lensOptions.count > 1, let frame = lensBarFrame else { return controlsTop }
+        let shift = lensBarShift(previewBottom: measuredPreviewBottom ?? .greatestFiniteMagnitude)
+        return min(controlsTop, frame.minY + shift - 8)
     }
 
     private func bottomControls(previewBottom: CGFloat, bottomPadding: CGFloat) -> some View {
@@ -536,8 +571,11 @@ struct ContentView: View {
                         onSelect: { camera.setDisplayZoom($0, animated: true) },
                         onZoom: { camera.setDisplayZoom($0) })
                     // 帯がプレビューの下端にまたがって、半分だけ映像の上にはみ出して見えないようにする
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lensBarFrame = $0 }
+                    // ずらす（offset）より外側で測る。内側で測ると、ずらした後の位置を読んでしまい、
+                    // 「かかる → ずらす → かからない → 戻す → かかる…」と作り直しが止まらなくなった
+                    // （iPhone で設定を開くと、画面が固まったまま戻らなかった原因）
                     .offset(y: lensBarShift(previewBottom: previewBottom))
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lensBarFrame = $0 }
             }
 
             // パネル・シャッター・撮影モードの範囲。フルの比率ではこの下にもプレビュー（ピント・露出の操作面）があり、
