@@ -1,3 +1,5 @@
+import Foundation
+
 /// プレビュー・写真・動画に共通でかける加工の設定。値はすべて 0...1。
 struct ProcessingSettings: Equatable {
     var filter: PhotoFilter = .none
