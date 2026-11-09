@@ -158,9 +158,14 @@ final class CameraManager: NSObject, ObservableObject {
     }
     /// ダイレクトフラッシュ 2: 人物の周りの背景も暗く落とす（1 はフラッシュの届いた所はそのまま明るい）
     @Published var directFlashDark = false
-    @Published var autoShutter = false {
-        didSet { updatePoseNeeded() }
+    /// 自動撮影（型に合ったら撮る）。アプリを終了しても覚えておく
+    @Published var autoShutter = UserDefaults.standard.bool(forKey: CameraManager.autoShutterKey) {
+        didSet {
+            UserDefaults.standard.set(autoShutter, forKey: Self.autoShutterKey)
+            updatePoseNeeded()
+        }
     }
+    static let autoShutterKey = "autoShutter"
     @Published var showSkeleton = false {
         didSet {
             showSkeletonBox.value = showSkeleton
