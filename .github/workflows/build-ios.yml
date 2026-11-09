@@ -37,7 +37,6 @@ jobs:
             -project PoseCam.xcodeproj \
             -scheme PoseCam \
             -configuration Release \
-\
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
