@@ -22,6 +22,10 @@ struct AlbumView: View {
     @State private var working = false
     /// 写真の画面で削除したら増やして、写真の画面を作り直す（次の写真を表示する）
     @State private var viewerKey = 0
+    /// 表示しているもの（すべて・PoseCam・お気に入り・動画・自分で作ったアルバム）
+    @State private var source: AlbumSource = .all
+    /// 自分で作ったアルバム（中身があるもの）
+    @State private var userAlbums: [AlbumSource] = []
 
     var body: some View {
         ZStack {
@@ -37,8 +41,12 @@ struct AlbumView: View {
                         }
                         .padding()
                     } else if (assets?.count ?? 0) == 0 {
-                        Text(status == .notDetermined ? "読み込み中…" : "写真がありません")
+                        Text(status == .notDetermined ? "読み込み中…" : emptyText)
+                            .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
+                            .padding()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .safeAreaInset(edge: .top, spacing: 0) { sourceBar }
                     } else if let assets {
                         // 何十万枚あっても軽いよう、UIKit の一覧で表示する
                         AssetGridView(assets: assets, link: gridLink, selecting: selecting,
@@ -46,12 +54,13 @@ struct AlbumView: View {
                             withAnimation(.easeOut(duration: 0.2)) { viewing = AlbumPage(index: index) }
                         }
                         .ignoresSafeArea(edges: .bottom)
+                        .safeAreaInset(edge: .top, spacing: 0) { sourceBar }
                         .safeAreaInset(edge: .bottom) {
                             if selecting { selectionBar }
                         }
                     }
                 }
-                .navigationTitle(selecting ? (selection.isEmpty ? "選んでください" : "\(selection.count) 件を選択") : "アルバム")
+                .navigationTitle(selecting ? (selection.isEmpty ? "選んでください" : "\(selection.count) 件を選択") : source.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -98,6 +107,47 @@ struct AlbumView: View {
         .task { await load() }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
             PhotoEditorView(data: input.data)
+        }
+    }
+
+    /// 上の帯: 表示するものを切り替える（横にスクロールできる）
+    private var sourceBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach([AlbumSource.all, .poseCam, .favorites, .videos] + userAlbums) { item in
+                    Button {
+                        guard item != source else { return }
+                        source = item
+                        selection = []
+                        Task { await load() }
+                    } label: {
+                        Label(item.title, systemImage: item.systemImage)
+                            .font(.subheadline.weight(item == source ? .semibold : .regular))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(item == source ? Color.accentColor : Color(.secondarySystemBackground)))
+                            .foregroundStyle(item == source ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(.bar)
+        // 選んでいる途中は切り替えない（選んだものが別の一覧のものと混ざらないように）
+        .disabled(working || selecting)
+        .opacity(selecting ? 0.5 : 1)
+    }
+
+    private var emptyText: String {
+        switch source {
+        case .poseCam:
+            return "PoseCam のアルバムはまだ空です。\nこれから撮った写真・動画がここに入ります（前に撮ったものは「すべて」にあります）。"
+        case .favorites: return "お気に入りはありません"
+        case .videos: return "動画はありません"
+        default: return "写真がありません"
         }
     }
 
@@ -180,12 +230,86 @@ struct AlbumView: View {
     private func load() async {
         status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else { return }
+        userAlbums = AlbumSource.userAlbums()
+        // 選んでいたアルバムが消えていたら「すべて」に戻す
+        if case .album(let id, _) = source, !userAlbums.contains(where: { $0.id == id }) { source = .all }
         // 新しい順に、写真と動画をすべて（以前は 2000 件までで、古い写真が出なかった）
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.predicate = NSPredicate(format: "mediaType == %d || mediaType == %d",
-                                        PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
-        assets = PHAsset.fetchAssets(with: options)
+        let image = PHAssetMediaType.image.rawValue, video = PHAssetMediaType.video.rawValue
+        switch source {
+        case .all:
+            options.predicate = NSPredicate(format: "mediaType == %d || mediaType == %d", image, video)
+            assets = PHAsset.fetchAssets(with: options)
+        case .favorites:
+            options.predicate = NSPredicate(format: "(mediaType == %d || mediaType == %d) && favorite == YES", image, video)
+            assets = PHAsset.fetchAssets(with: options)
+        case .videos:
+            options.predicate = NSPredicate(format: "mediaType == %d", video)
+            assets = PHAsset.fetchAssets(with: options)
+        case .poseCam:
+            if let album = MediaSaver.existingAlbum() {
+                assets = PHAsset.fetchAssets(in: album, options: options)
+            } else {
+                assets = nil
+            }
+        case .album(let id, _):
+            if let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject {
+                assets = PHAsset.fetchAssets(in: album, options: options)
+            } else {
+                assets = nil
+            }
+        }
+    }
+}
+
+/// アルバムで表示するもの
+enum AlbumSource: Hashable, Identifiable {
+    case all, poseCam, favorites, videos
+    /// 自分で作ったアルバム（番号と名前）
+    case album(String, String)
+
+    var id: String {
+        switch self {
+        case .all: return "all"
+        case .poseCam: return "posecam"
+        case .favorites: return "favorites"
+        case .videos: return "videos"
+        case .album(let id, _): return id
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .all: return "すべて"
+        case .poseCam: return "PoseCam"
+        case .favorites: return "お気に入り"
+        case .videos: return "動画"
+        case .album(_, let name): return name
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "photo.on.rectangle"
+        case .poseCam: return "camera"
+        case .favorites: return "heart"
+        case .videos: return "video"
+        case .album: return "rectangle.stack"
+        }
+    }
+
+    /// 自分で作ったアルバムのうち、中身があるもの（PoseCam のアルバムは別に出すので除く）
+    static func userAlbums() -> [AlbumSource] {
+        var list: [AlbumSource] = []
+        PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
+            .enumerateObjects { collection, _, _ in
+                let title = collection.localizedTitle ?? ""
+                guard title != MediaSaver.albumTitle, !title.isEmpty,
+                      PHAsset.fetchAssets(in: collection, options: nil).count > 0 else { return }
+                list.append(.album(collection.localIdentifier, title))
+            }
+        return list
     }
 }
 
