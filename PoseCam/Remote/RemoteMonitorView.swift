@@ -9,7 +9,8 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
     /// つないでいる撮る側の名前
     @Published private(set) var cameraName: String?
 
-    private let session = MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
+    /// 撮る側とのつながり。誘われるたびに作り直す（失敗した後の古い状態を残さない）。メインスレッドで変える
+    private var session = RemoteHost.makeSession()
     private var advertiser: MCNearbyServiceAdvertiser?
     private let decodeQueue = DispatchQueue(label: "posecam.monitor", qos: .userInitiated)
 
@@ -46,8 +47,22 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
 extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDelegate {
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID,
                     withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        // 「モニターになる」を開いている間だけ届く。撮る側を 1 台だけ受け入れる
-        invitationHandler(session.connectedPeers.isEmpty, session)
+        // 「モニターになる」を開いている間だけ届く。撮る側を 1 台だけ受け入れる。
+        // つながっていなければ、新しいつながりを作ってから受け入れる
+        DispatchQueue.main.async {
+            guard self.advertiser != nil, self.session.connectedPeers.isEmpty else {
+                invitationHandler(false, nil)
+                return
+            }
+            let old = self.session
+            old.delegate = nil
+            old.disconnect()
+            let fresh = RemoteHost.makeSession()
+            fresh.delegate = self
+            self.session = fresh
+            Diagnostics.log("モニター: 誘いを受けた")
+            invitationHandler(true, fresh)
+        }
     }
 
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {

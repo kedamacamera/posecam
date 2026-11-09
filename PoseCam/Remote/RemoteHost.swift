@@ -113,7 +113,16 @@ final class RemoteHost: NSObject, ObservableObject {
     private var watchHungry = false
     private var watchLastSeen: CFTimeInterval = 0
 
-    private let session = MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
+    /// モニター（アプリ）とのつながり。つなぐたびに作り直す（以前は 1 つを使い回していて、一度失敗すると
+    /// 古い状態が残り、「1 回目は失敗して 2 回目でつながる」ことがあった）。queue からも読むので箱に入れる
+    private let sessionBox = Locked(RemoteHost.makeSession())
+    private var session: MCSession { sessionBox.value }
+    /// いまの相手に何回つなごうとしたか（メインスレッド用）
+    private var inviteAttempts = 0
+
+    static func makeSession() -> MCSession {
+        MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
+    }
     private var browser: MCNearbyServiceBrowser?
     private var listener: NWListener?
     private var lastState: RemoteState?
@@ -244,10 +253,23 @@ final class RemoteHost: NSObject, ObservableObject {
     }
 
     func invite(_ peer: MCPeerID) {
-        // 1 台だけつなぐ（つないでいるモニターは切ってから）
-        if !session.connectedPeers.isEmpty { session.disconnect() }
+        inviteAttempts = 0
+        attemptInvite(peer)
+    }
+
+    /// 新しいつながりを作って誘う。1 台だけつなぐ（つないでいるモニターは切ってから）
+    private func attemptInvite(_ peer: MCPeerID) {
+        inviteAttempts += 1
+        let old = session
+        old.delegate = nil
+        old.disconnect()
+        let fresh = Self.makeSession()
+        fresh.delegate = self
+        sessionBox.value = fresh
+        connectedMonitor = nil
         invitingMonitor = peer
-        browser?.invitePeer(peer, to: session, withContext: nil, timeout: 20)
+        Diagnostics.log("リモート: つなぐ（\(inviteAttempts) 回目）")
+        browser?.invitePeer(peer, to: fresh, withContext: nil, timeout: 10)
     }
 
     func disconnectMonitor() {
@@ -576,6 +598,8 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
     }
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        // 作り直す前の古いつながりからの知らせは無視する
+        guard session === self.session else { return }
         queue.async {
             if state == .connected {
                 self.peerSentID = 0
@@ -589,10 +613,23 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
         DispatchQueue.main.async {
             switch state {
             case .connected:
+                Diagnostics.log("リモート: つながった（\(self.inviteAttempts) 回目）")
                 self.connectedMonitor = peerID.displayName
                 self.invitingMonitor = nil
             case .notConnected:
-                if self.invitingMonitor == peerID { self.invitingMonitor = nil }
+                if self.invitingMonitor == peerID {
+                    if self.inviteAttempts < 3, self.browser != nil {
+                        // 失敗したら、新しいつながりを作って自動でもう一度誘う（3 回まで）
+                        Diagnostics.log("リモート: つながらなかったので試し直す（\(self.inviteAttempts) 回目）")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                            guard self.invitingMonitor == peerID, self.browser != nil else { return }
+                            self.attemptInvite(peerID)
+                        }
+                    } else {
+                        Diagnostics.log("リモート: つながらなかった（\(self.inviteAttempts) 回）")
+                        self.invitingMonitor = nil
+                    }
+                }
                 if session.connectedPeers.isEmpty { self.connectedMonitor = nil }
             default:
                 break

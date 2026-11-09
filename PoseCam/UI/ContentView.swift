@@ -158,6 +158,10 @@ struct ContentView: View {
                 camera.resume()
             }
         }
+        // モニターとつながったら、設定の画面を閉じて撮影画面に戻る（撮る側はすぐ構えられるように）
+        .onReceive(camera.remote.$connectedMonitor.removeDuplicates()) { name in
+            if name != nil, showSettings, !showMonitor { showSettings = false }
+        }
         .onChange(of: selectedPose) { updateTemplate() }
         // アルバム（写真の表示・編集）を開いている間はカメラを止める（裏で動き続けて熱くなり、電池が減っていた）
         .onChange(of: showAlbum) {
