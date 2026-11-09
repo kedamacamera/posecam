@@ -428,6 +428,17 @@ struct ContentView: View {
         .padding(.horizontal, 10)
     }
 
+    /// 設定の画面のいちばん下に出す版の情報。例: 「バージョン 0.1.0（ビルド 152）\nab12cd3・2026-11-10 09:30」
+    private static let versionText: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        let commit = (info["PoseCamCommit"] as? String) ?? ""
+        let date = (info["PoseCamBuildDate"] as? String) ?? ""
+        let detail = [commit, date].filter { !$0.isEmpty }.joined(separator: "・")
+        return "バージョン \(version)（ビルド \(build)）" + (detail.isEmpty ? "" : "\n\(detail)")
+    }()
+
     /// 設定の画面（全画面）の中身
     private var settingsSheet: some View {
         NavigationStack {
@@ -453,7 +464,7 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                Section("その他") {
+                Section {
                     // リモートモニター・ライセンスは、この画面の中で横に送って開く。
                     // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
                     NavigationLink {
@@ -474,6 +485,15 @@ struct ContentView: View {
                     } label: {
                         Label("ライセンス", systemImage: "doc.text")
                     }
+                } header: {
+                    Text("その他")
+                } footer: {
+                    // どのビルドを入れているか（ビルド番号は GitHub Actions の通し番号）
+                    Text(Self.versionText)
+                        .font(.footnote.monospacedDigit())
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 24)
+                        .textSelection(.enabled)
                 }
             }
             // 見出しは大文字にしない

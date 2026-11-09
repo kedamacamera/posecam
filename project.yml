@@ -9,6 +9,9 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # GitHub Actions のビルドで上書きする（手元でビルドしたときは空）
+    POSECAM_COMMIT: ""
+    POSECAM_BUILD_DATE: ""
 targets:
   PoseCam:
     type: application
@@ -25,6 +28,9 @@ targets:
         CFBundleDisplayName: ポーズカメラ
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # どのビルドか（設定の画面に出す）。GitHub Actions のビルドで、コミットとビルド日時を入れる
+        PoseCamCommit: $(POSECAM_COMMIT)
+        PoseCamBuildDate: $(POSECAM_BUILD_DATE)
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
