@@ -60,19 +60,23 @@ private struct LicenseTextView: View {
     }
 }
 
-/// 読むだけの長い文（選んでコピーはできる）
+/// 読むだけの長い文
 private struct LicenseTextBox: UIViewRepresentable {
     let text: String
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
         view.isEditable = false
-        view.isSelectable = true
+        // 文字を選べるようにすると、iPhone（iOS 27.2）で開いた直後に固まったまま戻らなかった
+        // （SwiftUI の Text でも UITextView でも同じ）。等幅フォントとあわせて外し、読むだけにする
+        view.isSelectable = false
         view.backgroundColor = .clear
         view.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 32, right: 12)
-        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        view.font = .preferredFont(forTextStyle: .caption1)
         view.textColor = .label
         view.text = text
+        Diagnostics.log("ライセンス: 全文を入れた（\(text.count) 字）")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Diagnostics.log("ライセンス: 全文の 1 秒後も動いている") }
         return view
     }
 
