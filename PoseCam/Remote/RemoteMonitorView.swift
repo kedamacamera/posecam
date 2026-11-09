@@ -51,7 +51,7 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
     }
 
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        Diagnostics.mark("モニター: 開始できません \(error.localizedDescription)")
+        Diagnostics.log("モニター: 開始できません \(error.localizedDescription)")
     }
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
@@ -311,7 +311,10 @@ struct RemoteSheet: View {
                 }
             }
         }
-        .onAppear { remote.startBrowsing() }
+        .onAppear {
+            Diagnostics.log("リモート: 画面が開いた")
+            remote.startBrowsing()
+        }
         .onDisappear { remote.stopBrowsing() }
     }
 

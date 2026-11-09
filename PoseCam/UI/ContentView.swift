@@ -394,6 +394,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(.menu)
                 Button {
+                    Diagnostics.log("リモート: メニューから開く")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showRemote = true }
                 } label: {
                     Label("リモートモニター", systemImage: "rectangle.on.rectangle")

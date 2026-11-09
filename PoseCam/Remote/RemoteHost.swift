@@ -229,10 +229,12 @@ final class RemoteHost: NSObject, ObservableObject {
     /// 近くのモニターを探す（リモートモニターの画面を開いている間）
     func startBrowsing() {
         guard browser == nil else { return }
+        Diagnostics.log("リモート: 探し始める")
         let browser = MCNearbyServiceBrowser(peer: RemoteWire.peerID, serviceType: RemoteWire.serviceType)
         browser.delegate = self
         browser.startBrowsingForPeers()
         self.browser = browser
+        Diagnostics.log("リモート: 探し始めた")
     }
 
     func stopBrowsing() {
@@ -570,7 +572,7 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        Diagnostics.mark("リモート: 探せません \(error.localizedDescription)")
+        Diagnostics.log("リモート: 探せません \(error.localizedDescription)")
     }
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
@@ -709,7 +711,7 @@ extension RemoteHost: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        if let error { Diagnostics.mark("時計: つなげません \(error.localizedDescription)") }
+        if let error { Diagnostics.log("時計: つなげません \(error.localizedDescription)") }
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}
