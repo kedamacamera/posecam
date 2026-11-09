@@ -27,6 +27,14 @@ struct AssetGridView: UIViewRepresentable {
         view.dataSource = context.coordinator
         view.delegate = context.coordinator
         view.prefetchDataSource = context.coordinator
+        // 選択モードで横になぞり始めると、なぞった範囲をまとめて選ぶ（写真アプリと同じ）
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.slideSelect(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = context.coordinator
+        view.addGestureRecognizer(pan)
+        // なぞって選んでいる間は一覧をスクロールしない（横に動き始めなければ、すぐスクロールになる）
+        view.panGestureRecognizer.require(toFail: pan)
+        context.coordinator.collectionView = view
         context.coordinator.assets = assets
         context.coordinator.link = link
         link?.collectionView = view
@@ -52,13 +60,23 @@ struct AssetGridView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout,
-                             UICollectionViewDataSourcePrefetching {
+                             UICollectionViewDataSourcePrefetching, UIGestureRecognizerDelegate {
         var assets: PHFetchResult<PHAsset>?
         var onSelect: (Int) -> Void
         var onSelectionChange: (Set<Int>) -> Void = { _ in }
         var selecting = false
         weak var link: AssetGridLink?
+        weak var collectionView: UICollectionView?
         private let manager = PHCachingImageManager()
+        /// なぞって選ぶ: なぞり始めたマス、選ぶのか外すのか、なぞり始める前に選んでいたもの、いま塗っている範囲
+        private var slideStart: Int?
+        private var slideSelects = true
+        private var slideBaseline: Set<Int> = []
+        private var slideRange: ClosedRange<Int>?
+        private weak var slidePan: UIPanGestureRecognizer?
+        /// なぞる指が一覧の上端・下端の近くにあるとき、一覧を自動で送る
+        private var autoScroll: CADisplayLink?
+        private var autoScrollSpeed: CGFloat = 0
         private var thumbnailSize = CGSize(width: 200, height: 200)
 
         init(onSelect: @escaping (Int) -> Void) {
@@ -101,6 +119,99 @@ struct AssetGridView: UIViewRepresentable {
 
         func collectionView(_ view: UICollectionView, didDeselectItemAt indexPath: IndexPath) {
             if selecting { reportSelection(view) }
+        }
+
+        // MARK: なぞって選ぶ
+
+        /// 選択モードで、横向きに動き始めたときだけなぞって選ぶ（縦はふつうのスクロール）
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer, pan.view === collectionView else { return true }
+            guard selecting else { return false }
+            let v = pan.velocity(in: pan.view)
+            return abs(v.x) > abs(v.y)
+        }
+
+        @objc func slideSelect(_ pan: UIPanGestureRecognizer) {
+            guard let view = pan.view as? UICollectionView else { return }
+            switch pan.state {
+            case .began:
+                guard let start = view.indexPathForItem(at: pan.location(in: view))?.item else { return }
+                slidePan = pan
+                slideStart = start
+                slideBaseline = Set((view.indexPathsForSelectedItems ?? []).map(\.item))
+                // なぞり始めたマスが選ばれていなければ選んでいき、選ばれていれば外していく
+                slideSelects = !slideBaseline.contains(start)
+                slideRange = nil
+                updateSlide(view, location: pan.location(in: view))
+            case .changed:
+                updateSlide(view, location: pan.location(in: view))
+                updateAutoScroll(view, location: pan.location(in: view))
+            default:
+                stopAutoScroll()
+                slideStart = nil
+                slideRange = nil
+            }
+        }
+
+        /// なぞり始めのマスから指のマスまで（一覧の並び順で）を、選ぶ・外す。範囲から外れたマスは元に戻す
+        private func updateSlide(_ view: UICollectionView, location: CGPoint) {
+            guard let start = slideStart,
+                  let current = view.indexPathForItem(at: location)?.item else { return }
+            let range = min(start, current)...max(start, current)
+            guard range != slideRange else { return }
+            let old = slideRange
+            slideRange = range
+            if let old {
+                for i in old where !range.contains(i) {
+                    set(view, i, selected: slideBaseline.contains(i))
+                }
+            }
+            for i in range { set(view, i, selected: slideSelects) }
+            reportSelection(view)
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+
+        private func set(_ view: UICollectionView, _ i: Int, selected: Bool) {
+            let path = IndexPath(item: i, section: 0)
+            if selected {
+                view.selectItem(at: path, animated: false, scrollPosition: [])
+            } else {
+                view.deselectItem(at: path, animated: false)
+            }
+        }
+
+        private func updateAutoScroll(_ view: UICollectionView, location: CGPoint) {
+            let visible = view.bounds.inset(by: view.adjustedContentInset)
+            let edge: CGFloat = 70
+            if location.y < visible.minY + edge {
+                autoScrollSpeed = -min(18, (visible.minY + edge - location.y) / 4 + 2)
+            } else if location.y > visible.maxY - edge {
+                autoScrollSpeed = min(18, (location.y - (visible.maxY - edge)) / 4 + 2)
+            } else {
+                stopAutoScroll()
+                return
+            }
+            if autoScroll == nil {
+                let link = CADisplayLink(target: self, selector: #selector(autoScrollTick))
+                link.add(to: .main, forMode: .common)
+                autoScroll = link
+            }
+        }
+
+        @objc private func autoScrollTick() {
+            guard let view = collectionView, let pan = slidePan else { stopAutoScroll(); return }
+            let minY = -view.adjustedContentInset.top
+            let maxY = max(minY, view.contentSize.height + view.adjustedContentInset.bottom - view.bounds.height)
+            let y = min(max(view.contentOffset.y + autoScrollSpeed, minY), maxY)
+            guard y != view.contentOffset.y else { return }
+            view.contentOffset.y = y
+            // 一覧が動いた分、指の下のマスも変わる
+            updateSlide(view, location: pan.location(in: view))
+        }
+
+        private func stopAutoScroll() {
+            autoScroll?.invalidate()
+            autoScroll = nil
         }
 
         private func reportSelection(_ view: UICollectionView) {

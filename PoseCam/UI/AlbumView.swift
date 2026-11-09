@@ -1,6 +1,5 @@
 import AVKit
 import Photos
-import PhotosUI
 import SwiftUI
 
 /// アプリ内のアルバム。端末の写真・動画を新しい順に並べる（写真ライブラリの読み取りの許可が要る）。
@@ -13,7 +12,6 @@ struct AlbumView: View {
     @State private var status: PHAuthorizationStatus = .notDetermined
     @State private var viewing: AlbumPage?
     @State private var editing: EditorInput?
-    @State private var pickerItem: PhotosPickerItem?
     @State private var gridLink = AssetGridLink()
     /// 選択モード（選んだものを共有・削除する）
     @State private var selecting = false
@@ -22,6 +20,8 @@ struct AlbumView: View {
     @State private var sharing: ShareItems?
     /// 共有用に書き出している・削除している
     @State private var working = false
+    /// 写真の画面で削除したら増やして、写真の画面を作り直す（次の写真を表示する）
+    @State private var viewerKey = 0
 
     var body: some View {
         ZStack {
@@ -58,13 +58,6 @@ struct AlbumView: View {
                         Button("閉じる") { dismiss() }
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        // このアプリで撮っていない写真も編集できる
-                        PhotosPicker(selection: $pickerItem, matching: .images) {
-                            Label("ほかの写真を編集", systemImage: "photo.badge.plus")
-                        }
-                        .disabled(selecting)
-                    }
-                    ToolbarItem(placement: .primaryAction) {
                         Button(selecting ? "キャンセル" : "選択") {
                             selecting.toggle()
                             selection = []
@@ -80,9 +73,12 @@ struct AlbumView: View {
                     editing = EditorInput(data: data)
                 } onShare: { asset in
                     share([asset])
+                } onDelete: { asset in
+                    deleteInViewer(asset, at: page.index)
                 } onClose: {
                     viewing = nil
                 }
+                .id(viewerKey)
                 .transition(.opacity)
             }
             if working {
@@ -100,13 +96,6 @@ struct AlbumView: View {
         }
         .preferredColorScheme(appearance.scheme)
         .task { await load() }
-        .onChange(of: pickerItem) {
-            guard let item = pickerItem else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) { editing = EditorInput(data: data) }
-                pickerItem = nil
-            }
-        }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
             PhotoEditorView(data: input.data)
         }
@@ -168,6 +157,25 @@ struct AlbumView: View {
         }
     }
 
+    /// 写真の画面で 1 枚消す（iOS が確認する）。消したら同じ位置（次の写真）を表示し、最後の 1 枚なら一覧に戻る
+    private func deleteInViewer(_ asset: PHAsset, at index: Int) {
+        guard !working else { return }
+        working = true
+        Task {
+            let deleted = await AlbumSharing.delete([asset])
+            working = false
+            guard deleted else { return }
+            await load()
+            let count = assets?.count ?? 0
+            if count == 0 {
+                viewing = nil
+            } else {
+                viewing = AlbumPage(index: min(index, count - 1))
+                viewerKey += 1
+            }
+        }
+    }
+
     @MainActor
     private func load() async {
         status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
@@ -199,6 +207,7 @@ struct AssetViewer: View {
     let link: AssetGridLink
     let onEdit: (Data) -> Void
     let onShare: (PHAsset) -> Void
+    let onDelete: (PHAsset) -> Void
     let onClose: () -> Void
 
     @State private var index: Int
@@ -209,11 +218,13 @@ struct AssetViewer: View {
     @State private var dragging = false
 
     init(assets: PHFetchResult<PHAsset>, start: Int, link: AssetGridLink,
-         onEdit: @escaping (Data) -> Void, onShare: @escaping (PHAsset) -> Void, onClose: @escaping () -> Void) {
+         onEdit: @escaping (Data) -> Void, onShare: @escaping (PHAsset) -> Void, onDelete: @escaping (PHAsset) -> Void,
+         onClose: @escaping () -> Void) {
         self.assets = assets
         self.link = link
         self.onEdit = onEdit
         self.onShare = onShare
+        self.onDelete = onDelete
         self.onClose = onClose
         _index = State(initialValue: start)
     }
@@ -274,23 +285,31 @@ struct AssetViewer: View {
             .frame(height: 44)
             .background(.bar)
             Spacer()
-            HStack {
-                Button {
-                    if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
-                } label: {
-                    Label("写真アプリ", systemImage: "photo.on.rectangle")
-                }
-                Spacer()
+            // 共有は画面のまん中。左に写真アプリ、右に削除と編集
+            ZStack {
                 Button {
                     if let asset { onShare(asset) }
                 } label: {
                     Label("共有", systemImage: "square.and.arrow.up")
                 }
-                Spacer()
-                if asset?.mediaType == .image {
-                    Button(isLoading ? "読み込み中…" : "編集") { edit() }
-                        .disabled(isLoading)
-                        .bold()
+                HStack(spacing: 22) {
+                    Button {
+                        if let url = URL(string: "photos-redirect://") { UIApplication.shared.open(url) }
+                    } label: {
+                        Label("写真アプリ", systemImage: "photo.on.rectangle")
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        if let asset { onDelete(asset) }
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .accessibilityLabel("削除")
+                    if asset?.mediaType == .image {
+                        Button(isLoading ? "読み込み中…" : "編集") { edit() }
+                            .disabled(isLoading)
+                            .bold()
+                    }
                 }
             }
             .padding(.horizontal, 20)

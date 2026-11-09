@@ -168,6 +168,11 @@ struct RemoteMonitorView: View {
     @State private var chromeShown = false
     /// タップしてピントを合わせた所（映像の中の 0...1）と、固定したか
     @State private var focusMark: (point: CGPoint, locked: Bool, id: UUID)?
+    /// 長押しの待ち（0.6 秒触れたままなら、指を離す前に AE/AF ロックにする）
+    @State private var holdTimer: DispatchWorkItem?
+    @State private var holdStart: CGPoint?
+    /// この触れ方で AE/AF ロックにした（指を離したときのタップを無視する）
+    @State private var holdLocked = false
 
     var body: some View {
         ZStack {
@@ -181,6 +186,16 @@ struct RemoteMonitorView: View {
                         Spacer()
                         controls.background(Color.black.opacity(0.55))
                     }
+                    .transition(.opacity)
+                } else {
+                    // ボタンを隠しているときは、右上の角にボタンを出すためのボタン（下から上へなぞっても出る）
+                    barButton(systemImage: "rectangle.bottomthird.inset.filled", label: "表示", active: false) {
+                        withAnimation(.easeOut(duration: 0.2)) { chromeShown = true }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.45)))
+                    .padding(.top, 6)
+                    .padding(.trailing, 10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .transition(.opacity)
                 }
             } else {
@@ -253,6 +268,12 @@ struct RemoteMonitorView: View {
                 barButton(systemImage: "hand.tap", label: "タッチ撮影", active: touchShutter) { touchShutter.toggle() }
                     .accessibilityLabel(touchShutter ? "タッチシャッターをやめる" : "タッチシャッターにする")
                 Spacer()
+                if fullScreen {
+                    // 全画面でボタンを出しているとき: 隠す（上から下へなぞっても隠れる）
+                    barButton(systemImage: "rectangle.bottomthird.inset.filled", label: "隠す", active: false) {
+                        withAnimation(.easeOut(duration: 0.2)) { chromeShown = false }
+                    }
+                }
                 barButton(systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left"
                                                   : "arrow.up.left.and.arrow.down.right",
                           label: fullScreen ? "戻す" : "全画面", active: false) {
@@ -308,17 +329,38 @@ struct RemoteMonitorView: View {
                         .scaleEffect(x: mirror ? -1 : 1, y: 1)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .contentShape(Rectangle())
-                        .gesture(
-                            LongPressGesture(minimumDuration: 0.6)
-                                .sequenced(before: DragGesture(minimumDistance: 0))
-                                .onEnded { value in
-                                    if case .second(true, let drag?) = value {
-                                        focus(at: drag.location, in: rect, lock: true)
+                        // 長押し: 0.6 秒触れたままにした時点で（指を離す前に）AE/AF ロックにして印を出す
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    if holdStart == nil {
+                                        holdStart = value.location
+                                        holdLocked = false
+                                        let item = DispatchWorkItem {
+                                            holdLocked = true
+                                            focus(at: value.startLocation, in: rect, lock: true)
+                                        }
+                                        holdTimer = item
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: item)
+                                    } else if let start = holdStart,
+                                              hypot(value.location.x - start.x, value.location.y - start.y) > 12 {
+                                        // 指が動いたら長押しではない（なぞる操作）
+                                        holdTimer?.cancel()
                                     }
+                                }
+                                .onEnded { _ in
+                                    holdTimer?.cancel()
+                                    holdTimer = nil
+                                    holdStart = nil
                                 }
                         )
                         .simultaneousGesture(
                             SpatialTapGesture().onEnded { value in
+                                // 長押しで固定したときは、指を離したときのタップでロックを外さない
+                                if holdLocked {
+                                    holdLocked = false
+                                    return
+                                }
                                 focus(at: value.location, in: rect, lock: false)
                                 // タッチシャッター: ピントを合わせてから撮る（合うのを少し待つ）
                                 let state = client.state
