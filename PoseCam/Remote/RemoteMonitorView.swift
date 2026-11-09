@@ -157,6 +157,8 @@ struct RemoteMonitorView: View {
     @AppStorage("monitorMirror") private var mirror = false
     /// 撮る側が撮影後のプレビューをオンにしているとき、このモニターでも表示する。覚えておく
     @AppStorage("monitorShowsPreview") private var showsPreview = true
+    /// タッチシャッター。オンなら映像のタップで撮る側が撮る（ピントを合わせてから）。初めはオフ。覚えておく
+    @AppStorage("monitorTouchShutter") private var touchShutter = false
     @State private var showSample = true
     @State private var showAlbum = false
     @State private var shownPreview: MonitorPhoto?
@@ -237,16 +239,8 @@ struct RemoteMonitorView: View {
     // MARK: - 上の帯
 
     private var topBar: some View {
-        ZStack {
-            // 撮る側の名前は真ん中
-            if let name = client.cameraName {
-                Text(name)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 120)
-            }
-            HStack(spacing: 6) {
+        VStack(spacing: 2) {
+            HStack(spacing: 4) {
                 // 左右反転（押すたびに切り替え。覚えておく）
                 barButton(systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right",
                           label: "左右反転", active: mirror) { mirror.toggle() }
@@ -255,6 +249,9 @@ struct RemoteMonitorView: View {
                 barButton(systemImage: showsPreview ? "eye" : "eye.slash", label: "プレビュー",
                           active: showsPreview) { showsPreview.toggle() }
                     .accessibilityLabel(showsPreview ? "撮った写真の表示をやめる" : "撮った写真を表示する")
+                // タッチシャッター（オンなら映像のタップで撮る。オフならタップでピント）
+                barButton(systemImage: "hand.tap", label: "タッチ撮影", active: touchShutter) { touchShutter.toggle() }
+                    .accessibilityLabel(touchShutter ? "タッチシャッターをやめる" : "タッチシャッターにする")
                 Spacer()
                 barButton(systemImage: fullScreen ? "arrow.down.right.and.arrow.up.left"
                                                   : "arrow.up.left.and.arrow.down.right",
@@ -266,6 +263,13 @@ struct RemoteMonitorView: View {
                 }
                 // 閉じるは右端
                 barButton(systemImage: "xmark", label: "閉じる", active: false, action: onClose)
+            }
+            // 撮る側の名前は真ん中（ボタンの段の下）
+            if let name = client.cameraName {
+                Text(name)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 10)
@@ -284,7 +288,7 @@ struct RemoteMonitorView: View {
                     .lineLimit(1)
             }
             .foregroundStyle(active ? Color.yellow : Color.white)
-            .frame(width: 58, height: 46)
+            .frame(width: 56, height: 46)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -314,7 +318,15 @@ struct RemoteMonitorView: View {
                                 }
                         )
                         .simultaneousGesture(
-                            SpatialTapGesture().onEnded { value in focus(at: value.location, in: rect, lock: false) }
+                            SpatialTapGesture().onEnded { value in
+                                focus(at: value.location, in: rect, lock: false)
+                                // タッチシャッター: ピントを合わせてから撮る（合うのを少し待つ）
+                                let state = client.state
+                                if touchShutter, rect.contains(value.location), state?.recording != true,
+                                   state?.busy != true, state?.countdown == nil {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { client.send(.shutter) }
+                                }
+                            }
                         )
                     if let mark = focusMark {
                         let p = CGPoint(x: rect.minX + mark.point.x * rect.width,
