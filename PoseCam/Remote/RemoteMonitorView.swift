@@ -255,7 +255,9 @@ struct RemoteSheet: View {
                         }
                     }
                 } header: {
-                    Text("アプリのモニターにつなぐ（iPhone）")
+                    Text("アプリのモニターにつなぐ（iPhone・iPad）")
+                        // 見出しは大文字にしない（iPhone が IPHONE になる）
+                        .textCase(nil)
                 } footer: {
                     Text("もう一台の iPhone・iPad でポーズカメラを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
                          + "ここに出ます。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながります。"
@@ -289,6 +291,7 @@ struct RemoteSheet: View {
                     }
                 } header: {
                     Text("ブラウザで見る（Android・タブレットなど）")
+                        .textCase(nil)
                 } footer: {
                     Text("もう一台を同じ Wi-Fi か、この iPhone のテザリング（インターネット共有）につなぎ、カメラで QR コードを読みます。"
                          + "アプリを入れなくても使えます。QR コードの URL を知っている人だけが見られます。")

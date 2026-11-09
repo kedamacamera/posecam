@@ -11,7 +11,7 @@ import UIKit
 ///   カメラリモート）: シャッター。iOS 17.2 以降の AVCaptureEventInteraction で受け取る。
 ///   これを使うと、押しても音量は変わらず、音量の表示も出ない。
 struct CameraGestureView: UIViewRepresentable {
-    /// 本体のボタンでシャッターを切ってよいか（アルバム・編集などの画面を開いている間は、ふつうの音量ボタンに戻す）
+    /// 本体のボタンでシャッターを切ってよいか（アルバム・編集などの画面を開いている間は、押されても無視する）
     var hardwareShutterEnabled: Bool
     /// この高さより下（この面の座標）に触れた指は受け取らない（上に重なっているボタンに任せる）
     var ignoreBelow: CGFloat = .infinity
@@ -42,13 +42,14 @@ struct CameraGestureView: UIViewRepresentable {
         }
         if #available(iOS 17.2, *) {
             let interaction = AVCaptureEventInteraction { [weak c] event in
+                // 画面を開いている間は、押されても何もしない
+                guard let c, c.parent.hardwareShutterEnabled else { return }
                 switch event.phase {
-                case .began: c?.parent.onHardwareButton(true)
-                case .ended: c?.parent.onHardwareButton(false)
+                case .began: c.parent.onHardwareButton(true)
+                case .ended: c.parent.onHardwareButton(false)
                 default: break
                 }
             }
-            interaction.isEnabled = hardwareShutterEnabled
             view.addInteraction(interaction)
             c.interaction = interaction
         }
@@ -56,10 +57,10 @@ struct CameraGestureView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UIView, context: Context) {
+        // 以前は画面（シート）を開くたびに isEnabled を切り替えていたが、iPhone ではシートを開くと
+        // 表示されないまま画面が固まり、iPad では固まらなかった。切り替えをやめ、受け取った側で無視する
+        // （そのため、画面を開いている間は音量ボタンで音量が変わらない）
         context.coordinator.parent = self
-        if #available(iOS 17.2, *), let interaction = context.coordinator.interaction as? AVCaptureEventInteraction {
-            interaction.isEnabled = hardwareShutterEnabled
-        }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {

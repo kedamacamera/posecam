@@ -60,6 +60,43 @@ enum Diagnostics {
     /// log で記録した出来事（新しいものが後ろ）
     static var events: [String] { UserDefaults.standard.stringArray(forKey: eventsKey) ?? [] }
 
+    // MARK: - 固まった（メインスレッドが止まった）ときの記録
+
+    private static let hungKey = "diag.hung"
+
+    /// 前回、画面が固まったまま終わったか（起動時に一度だけ読む。読んだら消す）
+    static let previousHang: Bool = {
+        let defaults = UserDefaults.standard
+        let hung = defaults.bool(forKey: hungKey)
+        defaults.removeObject(forKey: hungKey)
+        return hung
+    }()
+
+    /// メインスレッドが 4 秒以上止まったら、その直前までの出来事の記録に「固まった」と書き、次の起動で知らせる。
+    /// （固まると「動作の記録をコピー」も押せないので、次に開いたときに記録を渡せるようにする）
+    static func startHangWatch() {
+        _ = previousHang
+        let beat = Locked(CFAbsoluteTimeGetCurrent())
+        let timer = Timer(timeInterval: 0.5, repeats: true) { _ in beat.value = CFAbsoluteTimeGetCurrent() }
+        RunLoop.main.add(timer, forMode: .common)
+        let watch = DispatchQueue(label: "posecam.hangwatch", qos: .utility)
+        var reported = false
+        func check() {
+            let stalled = CFAbsoluteTimeGetCurrent() - beat.value
+            if stalled > 4, !reported {
+                reported = true
+                log("固まった: 画面の処理が \(Int(stalled)) 秒止まっている")
+                UserDefaults.standard.set(true, forKey: hungKey)
+            } else if stalled < 1, reported {
+                reported = false
+                log("固まりが解けた")
+                UserDefaults.standard.removeObject(forKey: hungKey)
+            }
+            watch.asyncAfter(deadline: .now() + 1, execute: check)
+        }
+        watch.asyncAfter(deadline: .now() + 1, execute: check)
+    }
+
     static func markHealthy() {
         lock.lock()
         UserDefaults.standard.set(false, forKey: inProgressKey)

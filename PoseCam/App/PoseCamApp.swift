@@ -4,6 +4,7 @@ import SwiftUI
 struct PoseCamApp: App {
     init() {
         Diagnostics.install()
+        Diagnostics.startHangWatch()
     }
 
     var body: some Scene {

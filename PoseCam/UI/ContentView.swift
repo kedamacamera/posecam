@@ -20,6 +20,8 @@ struct ContentView: View {
     /// リモートモニターの画面（撮る側）と、この iPhone をモニターにした画面
     @State private var showRemote = false
     @State private var showSettings = false
+    /// 前回、画面が固まったまま終わっていたら、記録をコピーしたことを知らせる
+    @State private var showHangNotice = Diagnostics.previousHang
     /// 設定のシートを閉じた後に開く画面
     @State private var afterSettings: AfterSettings?
     private enum AfterSettings { case remote, licenses }
@@ -206,6 +208,16 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showLicenses) {
             LicensesView()
+                .onAppear { Diagnostics.log("ライセンス: 画面が開いた") }
+        }
+        .alert("前回、画面が固まりました", isPresented: $showHangNotice) {
+            Button("記録をコピー") {
+                UIPasteboard.general.string = (["iOS \(UIDevice.current.systemVersion)"] + Diagnostics.events)
+                    .joined(separator: "\n")
+            }
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text("どこで止まったかの記録を残しました。「記録をコピー」を押して、その中身を送ってください。")
         }
         .fullScreenCover(isPresented: $showAlbum) {
             AlbumView()
@@ -466,7 +478,9 @@ struct ContentView: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        // iPad は中央の窓で開くので、半分の高さにすると中が途中で切れる。iPad は高さいっぱいにする
+        .presentationDetents(UIDevice.current.userInterfaceIdiom == .pad ? [.large] : [.medium, .large])
+        .onAppear { Diagnostics.log("設定: 画面が開いた") }
     }
 
     /// 一致度・録画時間・連続撮影の進み具合。
