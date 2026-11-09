@@ -66,7 +66,8 @@ struct ContentView: View {
     @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     @Environment(\.colorScheme) private var colorScheme
 
-    private let topBarHeight: CGFloat = 50
+    /// 上のバーの高さ。iPad はボタンを大きくし、少し下げる（押しにくかった）
+    private let topBarHeight: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 66 : 50
 
     var body: some View {
         GeometryReader { geo in
@@ -293,6 +294,8 @@ struct ContentView: View {
             // タップ（ピント・露出）・長押し（AE/AF ロック）・上下（露出）・つまむ（ズーム）・本体のボタン（シャッター）
             CameraGestureView(hardwareShutterEnabled: hardwareShutterEnabled,
                               ignoreBelow: touchFloor - top,
+                              // フルの比率では上のバーも映像に重なるので、その範囲の指も受け取らない
+                              ignoreAbove: camera.aspect == .full ? topInset + topBarHeight - top : 0,
                               onTap: { point, size in handleTap(point, size) },
                               onLongPress: { point, size in handleLongPress(point, size) },
                               onVerticalPan: { dy in handlePan(dy) },
@@ -460,6 +463,8 @@ struct ContentView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
+        // iPad はボタンを少し下げる（画面の上端に近すぎて押しにくかった）
+        .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 10 : 0)
     }
 
     /// 設定の画面のいちばん下に出す版の情報。例: 「バージョン 0.1.0（ビルド 152）\nab12cd3・2026-11-10 09:30」
@@ -745,6 +750,7 @@ struct ContentView: View {
                                   onLongPressStart: { camera.startQuickVideo() },
                                   onLongPressEnd: { camera.stopQuickVideo() })
                     Spacer()
+                    Group {
                     if camera.isRecording && !camera.isQuickVideo {
                         // 録画中は、カメラの切り替えの代わりに静止画のシャッター（録画中のコマを写真にする）
                         Button {
@@ -768,8 +774,10 @@ struct ContentView: View {
                         }
                         .disabled(camera.isRecording || camera.isSequenceRunning)
                     }
+                    }
+                    .frame(width: Self.sideButtonWidth)
                 }
-                .padding(.horizontal, 30)
+                .padding(.horizontal, 22)
                 // 映像の上に重なる段は、外観の設定によらず白い文字（9:16 ではシャッターの段が映像に重なる）
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { shutterRowTop = $0 }
                 .environment(\.colorScheme, shutterRowTop < previewBottom - 1 ? .dark : colorScheme)
@@ -830,9 +838,13 @@ struct ContentView: View {
                 camera.directFlashDark = false
             }
         }
-        // 「ダイレクト1」「ダイレクト2」が「ダイレ…」と切れないよう、幅は文字に合わせて広げる
-        .frame(minWidth: 48, minHeight: 48)
+        // 「ダイレクト1」「ダイレクト2」が切れない幅。右のカメラの切り替えと同じ幅にして、シャッターを真ん中に保つ
+        // （文字に合わせて幅を変えると、ダイレクトにしたときにシャッターが横にずれていた）
+        .frame(width: Self.sideButtonWidth, height: 48)
     }
+
+    /// シャッターの左右のボタン（フラッシュ・カメラの切り替え）の幅
+    private static let sideButtonWidth: CGFloat = 72
 
     private func next(after value: Int, in values: [Int]) -> Int {
         guard let index = values.firstIndex(of: value) else { return values[0] }

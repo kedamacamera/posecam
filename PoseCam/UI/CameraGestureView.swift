@@ -15,6 +15,8 @@ struct CameraGestureView: UIViewRepresentable {
     var hardwareShutterEnabled: Bool
     /// この高さより下（この面の座標）に触れた指は受け取らない（上に重なっているボタンに任せる）
     var ignoreBelow: CGFloat = .infinity
+    /// この高さより上（この面の座標）に触れた指も受け取らない（フルの比率で映像に重なる上のバーのボタンに任せる）
+    var ignoreAbove: CGFloat = 0
     let onTap: (CGPoint, CGSize) -> Void
     let onLongPress: (CGPoint, CGSize) -> Void
     /// 上下になぞった量（ポイント、上が負）。指を離したら nil
@@ -30,6 +32,7 @@ struct CameraGestureView: UIViewRepresentable {
         let view = PassThroughView()
         view.backgroundColor = .clear
         view.ignoreBelow = ignoreBelow
+        view.ignoreAbove = ignoreAbove
         let c = context.coordinator
         let tap = UITapGestureRecognizer(target: c, action: #selector(Coordinator.tap(_:)))
         let long = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.longPress(_:)))
@@ -63,6 +66,7 @@ struct CameraGestureView: UIViewRepresentable {
         // （そのため、画面を開いている間は音量ボタンで音量が変わらない）
         context.coordinator.parent = self
         (view as? PassThroughView)?.ignoreBelow = ignoreBelow
+        (view as? PassThroughView)?.ignoreAbove = ignoreAbove
     }
 
     /// ignoreBelow より下では指を受け取らない面。
@@ -71,9 +75,10 @@ struct CameraGestureView: UIViewRepresentable {
     /// ここで受け取らなければ、指はそのまま上に重なったボタンに届く
     final class PassThroughView: UIView {
         var ignoreBelow: CGFloat = .infinity
+        var ignoreAbove: CGFloat = 0
 
         override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-            point.y < ignoreBelow && super.point(inside: point, with: event)
+            point.y < ignoreBelow && point.y >= ignoreAbove && super.point(inside: point, with: event)
         }
     }
 
@@ -111,7 +116,8 @@ struct CameraGestureView: UIViewRepresentable {
         /// 下のボタン（撮影モード・シャッターなど）の所に触れた指は受け取らない
         func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             guard let view = recognizer.view else { return true }
-            return touch.location(in: view).y < parent.ignoreBelow
+            let y = touch.location(in: view).y
+            return y < parent.ignoreBelow && y >= parent.ignoreAbove
         }
 
         /// 上下になぞったときだけ露出の補正にする（横になぞったときは何もしない）

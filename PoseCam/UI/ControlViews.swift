@@ -18,6 +18,8 @@ struct LabeledIconButton: View {
 }
 
 struct LabeledIcon: View {
+    /// iPad は画面が大きく押しにくかったので、ボタンを大きくする
+    static let scale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.25 : 1
     let systemImage: String
     let label: String
     var active = false
@@ -25,14 +27,16 @@ struct LabeledIcon: View {
     var body: some View {
         VStack(spacing: 2) {
             Image(systemName: systemImage)
-                .font(.system(size: 19))
-                .frame(height: 24)
+                .font(.system(size: 19 * Self.scale))
+                .frame(height: 24 * Self.scale)
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 10 * Self.scale, weight: .medium))
                 .lineLimit(1)
                 .fixedSize()
         }
-        .frame(minWidth: 48)
+        // 押せる所を、絵と文字だけでなくボタンの枠全体にする（iPad は大きく）
+        .frame(minWidth: 48 * Self.scale, minHeight: 44 * Self.scale)
+        .contentShape(Rectangle())
         .foregroundStyle(active ? Color.chromeAccent : .chromeText)
         .shadow(color: .chromeShadow, radius: 2)
     }
@@ -881,19 +885,17 @@ struct ModePicker: View {
     let onSelect: (CaptureMode) -> Void
 
     var body: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 4) {
             ForEach(CaptureMode.allCases) { item in
                 Button { onSelect(item) } label: {
                     Text(item.rawValue)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(item == mode ? Color.chromeAccent : Color.chromeText.opacity(0.75))
                         .shadow(color: .chromeShadow, radius: 2)
-                        // 文字だけだと押せる所が狭いので、上下左右に広げる（並びの位置は変えない）
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 4)
+                        // 文字だけだと押せる所が狭く、少し外れた指は後ろの映像（ピント）が取っていた。
+                        // ボタンそのものを大きくする
+                        .frame(minWidth: 60, minHeight: 40)
                         .contentShape(Rectangle())
-                        .padding(.vertical, -8)
-                        .padding(.horizontal, -4)
                 }
                 .disabled(isLocked)
             }
