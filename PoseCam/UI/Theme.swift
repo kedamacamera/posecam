@@ -28,6 +28,23 @@ enum Appearance: String, CaseIterable, Identifiable {
         case .dark: return .dark
         }
     }
+
+    /// アプリのすべてのウィンドウに外観を直接設定する。
+    /// 設定を全画面で開くようにしてから、SwiftUI の preferredColorScheme だけでは
+    /// 実機で外観が切り替わらなくなっていた（全画面の上からは後ろの画面の指定が届かない）
+    @MainActor
+    func applyToWindows() {
+        let style: UIUserInterfaceStyle
+        switch self {
+        case .system: style = .unspecified
+        case .light: style = .light
+        case .dark: style = .dark
+        }
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows { window.overrideUserInterfaceStyle = style }
+        }
+    }
 }
 
 /// 撮影画面の上下の帯（プレビューの外）の色。ダークでは今までどおり黒地に白、ライトでは明るい灰色の地に黒。
