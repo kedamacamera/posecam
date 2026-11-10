@@ -92,13 +92,13 @@ enum DirectFlash {
     /// 人物の切り抜き（人物 1・背景 0、写真と同じ大きさ、境目はぼかす）。人が写っていなければ nil。
     /// 以前は粗い精度（balanced・長辺 1024）で切り抜き、境目を長辺の 0.6% ぼかしていたので、
     /// 人物の外側（髪の周りの壁・椅子など）まで明るさがはみ出していた。
-    /// 精度を上げ（accurate・長辺 2048）、ぼかしを狭くし、ぼかした境目を人物の側へ寄せる
+    /// 精度を上げ（accurate・長辺 2048）、縁を内側へ削り、ぼかしを狭くし、ぼかした境目を人物の側へ寄せる
     static func personMask(_ photo: CIImage) -> CIImage? {
         let extent = photo.extent
         let scale = min(1, 2048 / max(extent.width, extent.height))
         let small = photo.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let request = VNGeneratePersonSegmentationRequest()
-        request.qualityLevel = .balanced
+        request.qualityLevel = .accurate
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
         let handler = VNImageRequestHandler(ciImage: small, options: [:])
         guard (try? handler.perform([request])) != nil,
@@ -110,12 +110,27 @@ enum DirectFlash {
         context.render(average, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
                        format: .RGBAf, colorSpace: nil)
         guard pixel[0] > 0.02 else { return nil }
-        let mask = raw
+        // 切り抜きは髪の外側（壁・椅子）まで少し広く取られがちなので、まず縁を内側へ削る（長辺の 0.35%）。
+        // 削らないと、髪の輪郭の外まで白く明るいまま残っていた（実機の写真で確認）
+        let erodeRadius = max(2, max(raw.extent.width, raw.extent.height) * 0.0035)
+        let eroded = raw.applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: erodeRadius])
+            .cropped(to: raw.extent)
+        let mask = eroded
             .transformed(by: CGAffineTransform(scaleX: extent.width / raw.extent.width,
                                                y: extent.height / raw.extent.height))
             .clampedToExtent()
-            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.006)
+            .applyingGaussianBlur(sigma: max(extent.width, extent.height) * 0.003)
             .cropped(to: extent)
+            // ぼかした境目のうち、外側（0.45 未満）は背景として暗くし、0.95 以上を人物として明るさを保つ。
+            // 境目が人物の輪郭の内側に来て、外側へはみ出さない
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 2, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 2, y: 0, z: 0, w: 0),
+                "inputBVector": CIVector(x: 2, y: 0, z: 0, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: -0.9, y: -0.9, z: -0.9, w: 1),
+            ])
+            .applyingFilter("CIColorClamp")
         return mask
     }
 

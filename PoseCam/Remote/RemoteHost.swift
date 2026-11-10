@@ -50,6 +50,9 @@ struct RemoteState: Codable, Equatable {
     var sample: String?
     /// 見本写真を左右反転して見せているか
     var sampleMirrored = false
+    /// 連続撮影の途中: 撮り終えた枚数と全部の枚数（連続撮影していないときは nil）
+    var burstShot: Int?
+    var burstTotal: Int?
 }
 
 enum RemoteWire {

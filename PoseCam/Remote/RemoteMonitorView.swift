@@ -404,9 +404,14 @@ struct RemoteMonitorView: View {
                         if client.state?.recording == true, let seconds = client.state?.recordingSeconds {
                             Badge(text: String(format: "%02d:%02d", seconds / 60, seconds % 60), dot: .red)
                         }
+                        // 連続撮影の途中は、撮り終えた枚数
+                        if let shot = client.state?.burstShot, let total = client.state?.burstTotal {
+                            Badge(text: "連続撮影 \(shot) / \(total)枚", color: .black.opacity(0.55))
+                        }
                     }
                     if let sample = client.state?.sample {
-                        PoseSampleCard(imageName: sample, mirrored: client.state?.sampleMirrored ?? false,
+                        // モニターで左右反転して見ているときは、見本写真も一緒に反転する
+                        PoseSampleCard(imageName: sample, mirrored: (client.state?.sampleMirrored ?? false) != mirror,
                                        shown: $showSample)
                     }
                 }

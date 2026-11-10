@@ -105,7 +105,7 @@ enum WebMonitorPage {
         <img id="v" alt="" draggable="false">
         <div id="msg">つないでいます…</div>
         <div id="info">
-          <div class="badges"><span id="score" class="badge" hidden></span><span id="rec" class="badge" hidden></span></div>
+          <div class="badges"><span id="score" class="badge" hidden></span><span id="rec" class="badge" hidden></span><span id="burst" class="badge" hidden></span></div>
           <div id="sample" class="nofocus" hidden><img id="sImg" alt="" draggable="false"><span class="x">✕</span></div>
           <button id="sampleShow" class="nofocus" hidden>🖼</button>
         </div>
@@ -151,7 +151,7 @@ enum WebMonitorPage {
       $('lFull').textContent=full?'戻す':'全画面';$('iFull').textContent=full?'⤡':'⤢';
       $('bHide').hidden=!full;$('bShow').hidden=!(full&&!chrome);
     }
-    $('bMirror').onclick=()=>{mirror=!mirror;save('mirror',mirror);render();};
+    $('bMirror').onclick=()=>{mirror=!mirror;save('mirror',mirror);render();if(!firstState)update(st);};
     $('bPrev').onclick=()=>{showPrev=!showPrev;save('preview',showPrev);render();};
     $('bTouch').onclick=()=>{touch=!touch;save('touch',touch);render();};
     $('bFull').onclick=()=>{
@@ -313,13 +313,15 @@ enum WebMonitorPage {
       const sc=$('score');sc.hidden=s.score==null;sc.textContent='一致度 '+s.score+'%';sc.className='badge'+(s.matched?' ok':'');
       const r=$('rec');r.hidden=!s.recording;
       r.textContent='● '+pad(Math.floor((s.recordingSeconds||0)/60))+':'+pad((s.recordingSeconds||0)%60);
+      const bu=$('burst');bu.hidden=s.burstShot==null;bu.textContent='連続撮影 '+s.burstShot+' / '+s.burstTotal+'枚';
       const c=$('count');c.hidden=s.countdown==null;c.textContent=s.countdown==null?'':s.countdown;
       $('lTimer').textContent=s.timerSeconds?s.timerSeconds+'秒':'タイマー';
       $('bTimer').classList.toggle('on',!!s.timerSeconds);
       $('shutter').className=(s.recording?'rec':(s.mode==='動画'||s.mode==='スナップ')?'video':'')+(s.busy?' busy':'');
       $('bFlip').disabled=s.canFlip===false;
       if(s.sample!==sampleName){sampleName=s.sample;if(s.sample)$('sImg').src=q('/sample','&n='+encodeURIComponent(s.sample));}
-      $('sImg').style.transform=s.sampleMirrored?'scaleX(-1)':'';
+      // モニターで左右反転して見ているときは、見本写真も一緒に反転する
+      $('sImg').style.transform=(!!s.sampleMirrored!==mirror)?'scaleX(-1)':'';
       updateSample();
       const ids=s.photos||[];
       if(ids.join(',')!==photos.join(',')){photos=ids;renderThumb();if(!$('album').hidden)renderGrid();}

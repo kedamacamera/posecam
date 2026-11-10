@@ -1233,8 +1233,9 @@ final class CameraManager: NSObject, ObservableObject {
         guard preview || monitor else { return }
         photoQueue.async {
             // モニターへは、横向きで撮った写真は横向きにして送る
+            // 大きく見せるかはモニター側の「プレビュー」で決める（撮る側の設定がオフでも、モニターでは見られる）
             if monitor, let small = Self.smallJPEG(jpeg, maxSide: 1600) {
-                self.remote.sendPhoto(small.data, showPreview: preview)
+                self.remote.sendPhoto(small.data, showPreview: true)
             }
             // この画面のプレビューは、撮ったときの持ち方のまま（横に持って見ているので回さない）
             if preview, let small = Self.smallJPEG(jpeg, maxSide: 1600, applyOrientation: false) {

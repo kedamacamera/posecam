@@ -347,6 +347,11 @@ final class SlideCollectionView: UICollectionView {
     private var scrollTouch: UITouch?
     private var activeTouches = Set<UITouch>()
     private var suppressEnd = false
+    /// 2 本目の指の速さ（ポイント/秒、下向きが正）と、離したあとの惰性
+    private var scrollVelocity: CGFloat = 0
+    private var lastScrollTime: TimeInterval = 0
+    private var coast: CADisplayLink?
+    private var lastCoastTime: CFTimeInterval = 0
 
     /// なぞっている指（1 本目）の位置
     func slideLocation() -> CGPoint? { slideTouch?.location(in: self) }
@@ -355,6 +360,11 @@ final class SlideCollectionView: UICollectionView {
         activeTouches.formUnion(touches)
         if sliding, scrollTouch == nil {
             scrollTouch = touches.first { $0 !== slideTouch }
+            if scrollTouch != nil {
+                stopCoast()
+                scrollVelocity = 0
+                lastScrollTime = scrollTouch?.timestamp ?? 0
+            }
         }
         super.touchesBegan(touches, with: event)
     }
@@ -363,10 +373,11 @@ final class SlideCollectionView: UICollectionView {
         if sliding, let touch = scrollTouch, touches.contains(touch), let window {
             // 指が上へ動けば一覧も上へ（標準のスクロールと同じ向き）
             let dy = touch.location(in: window).y - touch.previousLocation(in: window).y
-            let minY = -adjustedContentInset.top
-            let maxY = max(minY, contentSize.height + adjustedContentInset.bottom - bounds.height)
-            contentOffset.y = min(max(contentOffset.y - dy, minY), maxY)
-            onSecondFingerScroll?()
+            // 速さは直近の動きに寄せてならす（離したときの惰性に使う）
+            let dt = touch.timestamp - lastScrollTime
+            if dt > 0.001 { scrollVelocity = scrollVelocity * 0.3 + (dy / CGFloat(dt)) * 0.7 }
+            lastScrollTime = touch.timestamp
+            scroll(by: dy)
         }
         super.touchesMoved(touches, with: event)
     }
@@ -387,9 +398,49 @@ final class SlideCollectionView: UICollectionView {
         if activeTouches.isEmpty { suppressEnd = false }
     }
 
+    /// 一覧を dy（指が下へ動いた量）だけ動かす
+    private func scroll(by dy: CGFloat) {
+        let minY = -adjustedContentInset.top
+        let maxY = max(minY, contentSize.height + adjustedContentInset.bottom - bounds.height)
+        contentOffset.y = min(max(contentOffset.y - dy, minY), maxY)
+        onSecondFingerScroll?()
+    }
+
+    /// 2 本目の指を離したあと、標準のスクロールと同じように少しずつ遅くなりながら動き続ける
+    private func startCoast() {
+        guard abs(scrollVelocity) > 60 else { return }
+        stopCoast()
+        lastCoastTime = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(coastTick))
+        link.add(to: .main, forMode: .common)
+        coast = link
+    }
+
+    @objc private func coastTick() {
+        let now = CACurrentMediaTime()
+        let dt = CGFloat(now - lastCoastTime)
+        lastCoastTime = now
+        let before = contentOffset.y
+        scroll(by: scrollVelocity * dt)
+        // 1 ミリ秒ごとに 0.998 倍（UIScrollView のふつうの減速と同じ）
+        scrollVelocity *= pow(0.998, dt * 1000)
+        if abs(scrollVelocity) < 20 || contentOffset.y == before { stopCoast() }
+    }
+
+    private func stopCoast() {
+        coast?.invalidate()
+        coast = nil
+    }
+
     private func finish(_ touches: Set<UITouch>) {
         activeTouches.subtract(touches)
-        if let t = scrollTouch, touches.contains(t) { scrollTouch = nil }
+        if let t = scrollTouch, touches.contains(t) {
+            scrollTouch = nil
+            // 指を止めてから離したときは惰性をつけない
+            if let window, t.timestamp - lastScrollTime < 0.08 || t.location(in: window) != t.previousLocation(in: window) {
+                startCoast()
+            }
+        }
         if let t = slideTouch, touches.contains(t) { slideTouch = nil }
     }
 }

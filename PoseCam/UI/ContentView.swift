@@ -431,16 +431,20 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack {
+            // どのボタンも同じ幅にして、文字の長さ（グリッドの種類など）でほかのボタンの位置がずれないようにする
             AspectMenu(aspect: $camera.aspect)
                 .disabled(camera.isRecording)
+                .frame(width: Self.topItemWidth)
             Spacer()
             GridMenu(style: $gridStyle)
+                .frame(width: Self.topItemWidth)
             Spacer()
             LabeledIconButton(systemImage: "timer",
                               label: camera.timerSeconds == 0 ? "タイマー" : "\(camera.timerSeconds)秒",
                               active: camera.timerSeconds > 0) {
                 camera.timerSeconds = next(after: camera.timerSeconds, in: [0, 3, 6, 10])
             }
+            .frame(width: Self.topItemWidth)
             Spacer()
             LabeledIconButton(systemImage: "square.stack.3d.down.right",
                               label: camera.burstCount == 1 ? "連続撮影" : "\(camera.burstCount)枚",
@@ -451,6 +455,7 @@ struct ContentView: View {
             }
             .disabled(camera.mode != .photo)
             .opacity(camera.mode == .photo ? 1 : 0.4)
+            .frame(width: Self.topItemWidth)
             Spacer()
             // 以前はメニュー（Menu）にしていたが、メニューからシートを出すと、iPhone では表示されないまま
             // 画面の操作を一切受け付けなくなった（メニューが閉じるのを 0.35 秒待っても直らなかった）。
@@ -461,6 +466,7 @@ struct ContentView: View {
                 LabeledIcon(systemImage: camera.muteShutter ? "speaker.slash" : "ellipsis.circle", label: "設定")
             }
             .buttonStyle(.plain)
+            .frame(width: Self.topItemWidth)
         }
         .padding(.horizontal, 10)
         // iPad はボタンを少し下げる（画面の上端に近すぎて押しにくかった）
@@ -843,6 +849,9 @@ struct ContentView: View {
         .frame(width: Self.sideButtonWidth, height: 48)
     }
 
+    /// 上のバーのボタンの幅（iPad は大きく）
+    private static let topItemWidth: CGFloat = 64 * LabeledIcon.scale
+
     /// シャッターの左右のボタン（フラッシュ・カメラの切り替え）の幅
     private static let sideButtonWidth: CGFloat = 72
 
@@ -870,6 +879,14 @@ struct ContentView: View {
         }
     }
 
+    /// 連続撮影の途中なら、撮り終えた枚数と全部の枚数（撮影画面の円と同じ時間割で数える）
+    private var burstProgress: (shot: Int, total: Int)? {
+        guard let t = camera.burstTimeline else { return nil }
+        let elapsed = Date().timeIntervalSince(t.firstShot)
+        let taken = elapsed < 0 ? 0 : min(t.total, Int(elapsed / max(t.interval, 0.01)) + 1)
+        return (taken, t.total)
+    }
+
     /// 1 秒に 10 回: モニターへ送る状態と、映像に重ねるガイド（型・骨格・グリッド）の絵を作る
     private func updateRemote() {
         let remote = camera.remote
@@ -888,7 +905,9 @@ struct ContentView: View {
             canFlip: !camera.isRecording && !camera.isSequenceRunning,
             burstCount: camera.mode == .photo ? camera.burstCount : 1,
             sample: selectedPose?.imageName,
-            sampleMirrored: mirrorPose))
+            sampleMirrored: mirrorPose,
+            burstShot: burstProgress?.shot,
+            burstTotal: burstProgress?.total))
 
         let size = remote.frameSizeBox.value
         let template = camera.template

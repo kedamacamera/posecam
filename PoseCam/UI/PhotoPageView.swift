@@ -256,7 +256,8 @@ final class ZoomingPhotoController: UIViewController, UIScrollViewDelegate {
 
 /// 下へなぞって一覧へ戻る（写真アプリと同じ動き）。
 /// なぞっている間は写真が指について動き（少し小さくなる）、背景が薄くなって下の一覧が見えてくる。
-/// 画面の高さの 15% 以上下げるか、勢いよく下へ払って離すと、写真が一覧のマスの位置へ縮みながら戻って閉じる。
+/// 画面の高さの 8% 以上下げるか、下へ払って離すと、写真が一覧のマスの位置へ縮みながら戻って閉じる
+/// （以前は 15% で、1 回目のなぞりでは戻ってしまうことが多かった）。
 /// それ以外は元の位置へ戻る
 final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
     struct Handlers {
@@ -307,7 +308,8 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
             handlers.progress(min(1, down / (height * 0.4)), nil)
         case .ended, .cancelled, .failed:
             let v = recognizer.velocity(in: container)
-            if recognizer.state == .ended, v.y > -200, t.y > height * 0.15 || v.y > 900 {
+            // 途中で取り消された（ページめくりと取り合った）ときも、十分に下げていれば閉じる
+            if recognizer.state != .failed, v.y > -200, t.y > height * 0.08 || v.y > 500 {
                 finish(target)
             } else {
                 handlers.progress(0, 0.25)
@@ -329,8 +331,16 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
             handlers.finished()
             return
         }
-        let start = target.convert(target.bounds, to: nil)
         let image = (target as? UIImageView)?.image
+        // 縮め始めは、画面に見えている写真の範囲（上下・左右の黒い余白を除く）から。
+        // 以前は画面全体から始めていたので、写真が一瞬大きく切り抜かれて見え、縮み方がきれいでなかった
+        var shown = target.bounds
+        if let size = image?.size, size.width > 0, size.height > 0 {
+            let s = min(shown.width / size.width, shown.height / size.height)
+            let w = size.width * s, h = size.height * s
+            shown = CGRect(x: shown.midX - w / 2, y: shown.midY - h / 2, width: w, height: h)
+        }
+        let start = target.convert(shown, to: nil)
         guard let image, let end = handlers.target() else {
             handlers.progress(1, 0.2)
             UIView.animate(withDuration: 0.2) {

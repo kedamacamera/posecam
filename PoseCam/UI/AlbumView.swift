@@ -144,24 +144,7 @@ struct AlbumView: View {
                 selection = []
                 Task { await load() }
             } label: {
-                HStack(spacing: 16) {
-                    AssetThumbnail(asset: entry.cover)
-                        .frame(width: 72, height: 72)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(entry.source.title)
-                            .font(.body)
-                            .foregroundStyle(Color.primary)
-                            .lineLimit(1)
-                        Text("\(entry.photos) 枚の写真と \(entry.videos) 件の動画")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if entry.source == source {
-                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
-                    }
-                }
+                AlbumEntryRow(entry: entry, selected: entry.source == source)
             }
         }
         .listStyle(.plain)
@@ -333,58 +316,95 @@ enum AlbumSource: Hashable, Identifiable {
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             .enumerateObjects { collection, _, _ in
                 let title = collection.localizedTitle ?? ""
+                // 中身の数は数えずに、写真ライブラリが覚えているおおよその数で空のアルバムを除く
+                // （以前は 1 つずつ数えていて、写真の多い iPhone では一覧が出るまで 30 秒以上かかった）
                 guard title != MediaSaver.albumTitle, !title.isEmpty,
-                      PHAsset.fetchAssets(in: collection, options: nil).count > 0 else { return }
+                      collection.estimatedAssetCount != 0 else { return }
                 list.append(.album(collection.localIdentifier, title))
             }
         return list
     }
 }
 
-/// アルバムの一覧の 1 行（表紙と、写真・動画の数）
+/// アルバムの一覧の 1 行。一覧はすぐに出し、表紙と写真・動画の数は行ごとに裏で数える
+/// （写真の多い iPhone で、全部数えてから一覧を出すと 30 秒以上かかっていた）
 struct AlbumEntry: Identifiable {
     let source: AlbumSource
-    let photos: Int
-    let videos: Int
-    let cover: PHAsset?
     var id: String { source.id }
 
-    /// 最近の項目・お気に入り・動画・PoseCam・自分で作ったアルバム（中身があるもの）
+    /// 最近の項目・お気に入り・動画・PoseCam・自分で作ったアルバム
     static func all() -> [AlbumEntry] {
+        var list: [AlbumSource] = [.all, .favorites, .videos]
+        if MediaSaver.existingAlbum() != nil { list.append(.poseCam) }
+        list += AlbumSource.userAlbums()
+        return list.map { AlbumEntry(source: $0) }
+    }
+
+    /// 写真・動画の数と表紙（裏のスレッドで呼ぶ）
+    static func details(of source: AlbumSource) -> (photos: Int, videos: Int, cover: PHAsset?) {
         let image = PHAssetMediaType.image.rawValue, video = PHAssetMediaType.video.rawValue
-        func options(_ format: String, _ args: [Any]) -> PHFetchOptions {
+        func options(_ format: String, _ args: [Any], newest: Bool = false) -> PHFetchOptions {
             let o = PHFetchOptions()
             o.predicate = NSPredicate(format: format, argumentArray: args)
-            o.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            if newest {
+                o.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                o.fetchLimit = 1
+            }
             return o
         }
-        func entry(_ source: AlbumSource, extra: String?, in collection: PHAssetCollection?) -> AlbumEntry {
-            let suffix = extra.map { " && " + $0 } ?? ""
-            func fetch(_ o: PHFetchOptions) -> PHFetchResult<PHAsset> {
-                collection.map { PHAsset.fetchAssets(in: $0, options: o) } ?? PHAsset.fetchAssets(with: o)
+        var collection: PHAssetCollection?
+        var extra = ""
+        switch source {
+        case .all: break
+        case .favorites: extra = " && favorite == YES"
+        case .videos:
+            let videos = PHAsset.fetchAssets(with: options("mediaType == %d", [video])).count
+            let cover = PHAsset.fetchAssets(with: options("mediaType == %d", [video], newest: true)).firstObject
+            return (0, videos, cover)
+        case .poseCam: collection = MediaSaver.existingAlbum()
+        case .album(let id, _):
+            collection = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
+        }
+        func fetch(_ o: PHFetchOptions) -> PHFetchResult<PHAsset> {
+            collection.map { PHAsset.fetchAssets(in: $0, options: o) } ?? PHAsset.fetchAssets(with: o)
+        }
+        let photos = fetch(options("mediaType == %d" + extra, [image])).count
+        let videos = fetch(options("mediaType == %d" + extra, [video])).count
+        let cover = fetch(options("(mediaType == %d || mediaType == %d)" + extra, [image, video], newest: true)).firstObject
+        return (photos, videos, cover)
+    }
+}
+
+/// アルバムの一覧の 1 行の中身（表紙・名前・数）。数え終わるまでは「…」
+struct AlbumEntryRow: View {
+    let entry: AlbumEntry
+    let selected: Bool
+    @State private var details: (photos: Int, videos: Int, cover: PHAsset?)?
+
+    var body: some View {
+        HStack(spacing: 16) {
+            AssetThumbnail(asset: details?.cover)
+                .frame(width: 72, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.source.title)
+                    .font(.body)
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                Text(details.map { "\($0.photos) 枚の写真と \($0.videos) 件の動画" } ?? "…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            let photos = fetch(options("mediaType == %d" + suffix, [image])).count
-            let videos = fetch(options("mediaType == %d" + suffix, [video])).count
-            let cover = fetch(options("(mediaType == %d || mediaType == %d)" + suffix, [image, video])).firstObject
-            return AlbumEntry(source: source, photos: photos, videos: videos, cover: cover)
+            Spacer()
+            if selected {
+                Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+            }
         }
-        var list = [
-            entry(.all, extra: nil, in: nil),
-            entry(.favorites, extra: "favorite == YES", in: nil),
-        ]
-        let videos = entry(.videos, extra: nil, in: nil)
-        list.append(AlbumEntry(source: .videos, photos: 0, videos: videos.videos,
-                               cover: PHAsset.fetchAssets(with: options("mediaType == %d", [video])).firstObject))
-        if let album = MediaSaver.existingAlbum() {
-            list.append(entry(.poseCam, extra: nil, in: album))
+        .task(id: entry.id) {
+            let source = entry.source
+            let result = await Task.detached(priority: .userInitiated) { AlbumEntry.details(of: source) }.value
+            details = result
         }
-        for source in AlbumSource.userAlbums() {
-            guard case .album(let id, _) = source,
-                  let collection = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
-            else { continue }
-            list.append(entry(source, extra: nil, in: collection))
-        }
-        return list
     }
 }
 
