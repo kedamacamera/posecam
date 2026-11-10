@@ -113,6 +113,16 @@ struct ContentView: View {
 
                     ShutterBlackout(trigger: camera.shutterCount)
 
+                    // ダイレクトフラッシュの注意は、上の「保存中」と並べず、撮影画面のまん中より少し上に出す
+                    // （並べると「保存中」が出たときに左へずれて読みにくかった）
+                    if let notice = directFlashNotice {
+                        Badge(text: notice, color: Color.orange.opacity(0.9))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .offset(y: -screen.height * 0.18)
+                            .allowsHitTesting(false)
+                            .animation(.easeOut(duration: 0.15), value: notice)
+                    }
+
                     if let countdown = camera.countdown {
                         Text("\(countdown)")
                             .font(.system(size: 120, weight: .bold, design: .rounded))
@@ -575,6 +585,15 @@ struct ContentView: View {
         .onAppear { Diagnostics.log("設定: 画面が開いた") }
     }
 
+    /// ダイレクトフラッシュの注意。撮っている間（ライトが光り始めてから）は「動かないで」、
+    /// 撮る前に動いているときは「止まってから」
+    private var directFlashNotice: String? {
+        guard camera.flashOn && camera.directFlash && camera.mode == .photo else { return nil }
+        if camera.isFlashShooting { return "撮影中は動かないでください" }
+        if camera.isMovingTooMuch { return "動いています。止まってから撮ってください" }
+        return nil
+    }
+
     /// 一致度・録画時間・連続撮影の進み具合。
     private var statusRow: some View {
         HStack {
@@ -585,10 +604,6 @@ struct ContentView: View {
             RemoteStatusBadge(remote: camera.remote)
             if let progress = camera.burstProgress {
                 Badge(text: progress)
-            }
-            if camera.isMovingTooMuch && camera.flashOn && camera.directFlash && camera.mode == .photo {
-                // ダイレクトフラッシュは、発光前と撮影の間に動くと合成がずれる。撮る前に知らせる
-                Badge(text: "動いています。止まってから撮ってください", color: Color.orange.opacity(0.9))
             }
             if showsSaving {
                 Badge(text: camera.savingPhotos > 1 ? "写真を保存中（\(camera.savingPhotos) 枚）・アプリを閉じないでください"

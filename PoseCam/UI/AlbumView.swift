@@ -25,8 +25,10 @@ struct AlbumView: View {
     @State private var viewerKey = 0
     /// 表示しているもの（すべて・PoseCam・お気に入り・動画・自分で作ったアルバム）
     @State private var source: AlbumSource = .all
-    /// 自分で作ったアルバム（中身があるもの）
-    @State private var userAlbums: [AlbumSource] = []
+    /// アルバムを切り替えて、中身を読み込んでいる（前のアルバムを出したままにせず「読み込み中」を出す）
+    @State private var switching = false
+    /// 読み込みの番号。切り替えを続けて押したとき、古い読み込みの結果で上書きしない
+    @State private var loadGeneration = 0
     /// 上の「最近の項目 ▼」を押して、アルバムの一覧を開いている
     @State private var showSources = false
     @State private var sourceEntries: [AlbumEntry] = []
@@ -44,8 +46,14 @@ struct AlbumView: View {
                             }
                         }
                         .padding()
+                    } else if switching || status == .notDetermined {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("読み込み中…").foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else if (assets?.count ?? 0) == 0 {
-                        Text(status == .notDetermined ? "読み込み中…" : emptyText)
+                        Text(emptyText)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                             .padding()
@@ -56,6 +64,8 @@ struct AlbumView: View {
                                       onSelectionChange: { selection = $0 }) { index in
                             withAnimation(.easeOut(duration: 0.2)) { viewing = AlbumPage(index: index) }
                         }
+                        // アルバムごとに作り直す（切り替えたら一番上から表示する）
+                        .id(source.id)
                         .ignoresSafeArea(edges: .bottom)
                         .safeAreaInset(edge: .bottom) {
                             if selecting { selectionBar }
@@ -73,7 +83,20 @@ struct AlbumView: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         if !showSources {
-                            Button("閉じる") { dismiss() }
+                            if source != .all && !selecting {
+                                // アルバムを開いているときは、閉じずに「最近の項目」へ戻る
+                                Button {
+                                    switchSource(to: .all)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "chevron.left").font(.system(size: 16, weight: .semibold))
+                                        Text("戻る")
+                                    }
+                                }
+                                .disabled(working)
+                            } else {
+                                Button("閉じる") { dismiss() }
+                            }
                         }
                     }
                     ToolbarItem(placement: .principal) {
@@ -101,7 +124,7 @@ struct AlbumView: View {
                                 selecting.toggle()
                                 selection = []
                             }
-                            .disabled((assets?.count ?? 0) == 0)
+                            .disabled((assets?.count ?? 0) == 0 || switching)
                         }
                     }
                 }
@@ -128,7 +151,7 @@ struct AlbumView: View {
             }
         }
         .preferredColorScheme(appearance.scheme)
-        .task { await load() }
+        .task { await load(quick: true) }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
             PhotoEditorView(data: input.data)
         }
@@ -140,9 +163,7 @@ struct AlbumView: View {
             Button {
                 withAnimation(.easeOut(duration: 0.2)) { showSources = false }
                 guard entry.source != source else { return }
-                source = entry.source
-                selection = []
-                Task { await load() }
+                switchSource(to: entry.source)
             } label: {
                 AlbumEntryRow(entry: entry, selected: entry.source == source)
             }
@@ -237,41 +258,91 @@ struct AlbumView: View {
         }
     }
 
+    /// 表示するアルバムを替える。前のアルバムの一覧は消して、すぐ「読み込み中」を出す
+    private func switchSource(to newSource: AlbumSource) {
+        source = newSource
+        selection = []
+        selecting = false
+        assets = nil
+        switching = true
+        Task { await load(quick: true) }
+    }
+
+    /// 写真ライブラリから読み込む。重い問い合わせは裏のスレッドで行い、画面を止めない。
+    /// quick のときは、まず新しいほうの数百件だけを読んですぐ表示し、続けて全部を読んで差し替える
+    /// （写真の多い iPhone では、全部を読み終えるまで数秒〜数十秒かかっていた）
     @MainActor
-    private func load() async {
-        status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-        guard status == .authorized || status == .limited else { return }
-        userAlbums = AlbumSource.userAlbums()
-        // 選んでいたアルバムが消えていたら「すべて」に戻す
-        if case .album(let id, _) = source, !userAlbums.contains(where: { $0.id == id }) { source = .all }
-        // 新しい順に、写真と動画をすべて（以前は 2000 件までで、古い写真が出なかった）
+    private func load(quick: Bool = false) async {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        status = current == .notDetermined ? await PHPhotoLibrary.requestAuthorization(for: .readWrite) : current
+        guard status == .authorized || status == .limited else { switching = false; return }
+        // 初めて開いたときも、読み終わるまでは「写真がありません」ではなく「読み込み中」を出す
+        if quick && assets == nil { switching = true }
+        loadGeneration += 1
+        let generation = loadGeneration
+        let target = source
+        if quick {
+            let first = await Task.detached(priority: .userInitiated) {
+                AssetFetch(result: AlbumView.fetch(target, limit: AlbumView.quickCount))
+            }.value
+            guard generation == loadGeneration else { return }
+            if first.missing { source = .all; switching = false; await load(quick: true); return }
+            assets = first.result
+            switching = false
+            // 全部で数百件より少なければ、もう読み終わっている
+            if (first.result?.count ?? 0) < AlbumView.quickCount { return }
+        }
+        let all = await Task.detached(priority: .userInitiated) {
+            AssetFetch(result: AlbumView.fetch(target, limit: nil))
+        }.value
+        guard generation == loadGeneration else { return }
+        if all.missing {
+            // 選んでいたアルバムが消えていたら「最近の項目」に戻す
+            source = .all
+            await load(quick: true)
+            return
+        }
+        assets = all.result
+        switching = false
+    }
+
+    /// 最初に読んで表示する件数（数画面分）
+    nonisolated static let quickCount = 300
+
+    /// アルバムの中身（新しい順）。自分で作ったアルバムが消えていたら .missing を返す（裏のスレッドで呼ぶ）
+    nonisolated static func fetch(_ source: AlbumSource, limit: Int?) -> AssetFetch.Outcome {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        if let limit { options.fetchLimit = limit }
         let image = PHAssetMediaType.image.rawValue, video = PHAssetMediaType.video.rawValue
         switch source {
         case .all:
             options.predicate = NSPredicate(format: "mediaType == %d || mediaType == %d", image, video)
-            assets = PHAsset.fetchAssets(with: options)
+            return .found(PHAsset.fetchAssets(with: options))
         case .favorites:
             options.predicate = NSPredicate(format: "(mediaType == %d || mediaType == %d) && favorite == YES", image, video)
-            assets = PHAsset.fetchAssets(with: options)
+            return .found(PHAsset.fetchAssets(with: options))
         case .videos:
             options.predicate = NSPredicate(format: "mediaType == %d", video)
-            assets = PHAsset.fetchAssets(with: options)
+            return .found(PHAsset.fetchAssets(with: options))
         case .poseCam:
-            if let album = MediaSaver.existingAlbum() {
-                assets = PHAsset.fetchAssets(in: album, options: options)
-            } else {
-                assets = nil
-            }
+            return .found(MediaSaver.existingAlbum().map { PHAsset.fetchAssets(in: $0, options: options) })
         case .album(let id, _):
-            if let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject {
-                assets = PHAsset.fetchAssets(in: album, options: options)
-            } else {
-                assets = nil
-            }
+            guard let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [id], options: nil).firstObject
+            else { return .missing }
+            return .found(PHAsset.fetchAssets(in: album, options: options))
         }
     }
+}
+
+/// 裏のスレッドで読んだアルバムの中身を、画面のスレッドへ渡す入れ物
+/// （PHFetchResult はどのスレッドから読んでもよい）
+struct AssetFetch: @unchecked Sendable {
+    enum Outcome { case found(PHFetchResult<PHAsset>?), missing }
+    let outcome: Outcome
+    init(result: Outcome) { outcome = result }
+    var result: PHFetchResult<PHAsset>? { if case .found(let r) = outcome { return r } else { return nil } }
+    var missing: Bool { if case .missing = outcome { return true } else { return false } }
 }
 
 /// アルバムで表示するもの

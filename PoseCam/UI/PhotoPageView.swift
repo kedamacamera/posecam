@@ -289,8 +289,42 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
     /// 下向きに、横よりはっきり縦に動かし始めたときだけ（左右のめくりと取り合わない）
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         guard let pan = recognizer as? UIPanGestureRecognizer, canBegin() else { return false }
+        // もう左右のめくりが動き出していたら、閉じる操作は始めない
+        if let pager = pagerScrollView, pager.isDragging {
+            let width = max(pager.bounds.width, 1)
+            let offset = pager.contentOffset.x
+            let nearest = (offset / width).rounded() * width
+            if abs(offset - nearest) > 8 { return false }
+        }
         let v = pan.velocity(in: pan.view)
         return v.y > 0 && v.y > abs(v.x) * 1.3
+    }
+
+    /// 左右にめくる面（UIPageViewController の中のスクロール面）
+    private var pagerScrollView: UIScrollView? {
+        var current = view?.superview
+        while let v = current {
+            if let scroll = v as? UIScrollView, scroll.isPagingEnabled { return scroll }
+            current = v.superview
+        }
+        return nil
+    }
+
+    /// 閉じる操作の間は左右のめくりを止める。
+    /// 斜め下になぞったとき、めくりと閉じるが同時に動いて、隣の写真に替わりながら閉じていた
+    private func lockPager(_ locked: Bool) {
+        guard let pager = pagerScrollView else { return }
+        if locked {
+            // 動き始めていためくりを取り消す（めくり面は今のページへ戻る）
+            pager.panGestureRecognizer.isEnabled = false
+            pager.panGestureRecognizer.isEnabled = true
+            let width = max(pager.bounds.width, 1)
+            let page = (pager.contentOffset.x / width).rounded() * width
+            pager.setContentOffset(CGPoint(x: page, y: pager.contentOffset.y), animated: false)
+            pager.isScrollEnabled = false
+        } else {
+            pager.isScrollEnabled = true
+        }
     }
 
     @objc private func handle(_ recognizer: UIPanGestureRecognizer) {
@@ -299,6 +333,7 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
         let t = recognizer.translation(in: container)
         switch recognizer.state {
         case .began:
+            lockPager(true)
             handlers.began()
         case .changed:
             // 写真の大きさは下げた量に合わせて最大 35% 小さく、背景は画面の高さの 40% 下げたところで透明
@@ -307,6 +342,7 @@ final class SwipeDownToDismiss: UIPanGestureRecognizer, UIGestureRecognizerDeleg
             target.transform = CGAffineTransform(translationX: t.x, y: down).scaledBy(x: scale, y: scale)
             handlers.progress(min(1, down / (height * 0.4)), nil)
         case .ended, .cancelled, .failed:
+            lockPager(false)
             let v = recognizer.velocity(in: container)
             // 途中で取り消された（ページめくりと取り合った）ときも、十分に下げていれば閉じる
             if recognizer.state != .failed, v.y > -200, t.y > height * 0.08 || v.y > 500 {

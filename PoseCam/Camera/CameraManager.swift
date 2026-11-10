@@ -110,6 +110,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var savingPhotos = 0
     /// ダイレクトフラッシュで、カメラか被写体が大きく動いている（撮る前に「止まってください」と出す）
     @Published private(set) var isMovingTooMuch = false
+    /// ダイレクトフラッシュで撮っている（ライトが光り始めてから撮り終わるまで）。「撮影中は動かないでください」を出す
+    @Published private(set) var isFlashShooting = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
     let poseFeed = PoseFeed()
     /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
@@ -281,6 +283,11 @@ final class CameraManager: NSObject, ObservableObject {
     private let pendingRecordFrames = Locked(0)
     /// 動きを見張るか（ダイレクトフラッシュの写真のときだけ）
     private let motionWatch = Locked(false)
+    /// フラッシュで撮っている写真（撮影の番号）。光っている間と直後は動きを測らない
+    /// （フラッシュの光で画面全体の明るさが変わり、「動いています」と誤って出ていた）
+    private let flashShotIDs = Locked<Set<Int64>>([])
+    /// この時刻（CACurrentMediaTime）までは動きを測らない。測り直すときは前のコマを捨ててから始める
+    private let motionPausedUntil = Locked<CFTimeInterval>(0)
     /// 動きの判定に使う、前のコマを小さくした明るさ（videoQueue 専用）
     private var motionPrevious: [Float]?
     private var motionLevel: Float = 0
@@ -1159,6 +1166,17 @@ final class CameraManager: NSObject, ObservableObject {
                 frames[photoSettings.uniqueID] = (ambient, latestExifBox.value, options.directDark)
                 ambientFrames.value = frames
             }
+            if options.direct {
+                // ライトが光り始める（シャッターを切る）ときから「撮影中は動かないでください」を出し、
+                // 光っている間は動きを測らない
+                var ids = flashShotIDs.value
+                ids.insert(photoSettings.uniqueID)
+                flashShotIDs.value = ids
+                DispatchQueue.main.async {
+                    self.isMovingTooMuch = false
+                    self.isFlashShooting = true
+                }
+            }
         }
         if options.mute, #available(iOS 18.0, *), photoOutput.isShutterSoundSuppressionSupported {
             photoSettings.isShutterSoundSuppressionEnabled = true
@@ -1799,7 +1817,16 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
 
         let source = CIImage(cvPixelBuffer: pixelBuffer)
         latestSourceBox.value = source
-        if motionWatch.value, frameCount % 3 == 0 { measureMotion(source) }
+        if motionWatch.value, frameCount % 3 == 0 {
+            if !flashShotIDs.value.isEmpty || CACurrentMediaTime() < motionPausedUntil.value {
+                // フラッシュの前後は明るさが大きく変わるので測らず、測り直すときは一から始める
+                motionPrevious = nil
+                motionLevel = 0
+                motionMoving = false
+            } else {
+                measureMotion(source)
+            }
+        }
         if let exif = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil)
             as? [String: Any] {
             latestExifBox.value = exif
@@ -1946,6 +1973,17 @@ extension CameraManager: AVCapturePhotoCaptureDelegate {
     /// 写真 1 枚の撮影（露光・発光）がすべて終わった
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
                      error: Error?) {
+        var ids = flashShotIDs.value
+        if ids.remove(resolvedSettings.uniqueID) != nil {
+            flashShotIDs.value = ids
+            // 光り終わった直後も露出が落ち着くまで少し測らない
+            motionPausedUntil.value = CACurrentMediaTime() + 0.8
+            if ids.isEmpty {
+                DispatchQueue.main.async {
+                    if self.flashShotIDs.value.isEmpty { self.isFlashShooting = false }
+                }
+            }
+        }
         guard endSignalPhotoID.value == resolvedSettings.uniqueID else { return }
         endSignalPhotoID.value = nil
         sessionQueue.async { self.signalSequenceFinished(after: resolvedSettings.isFlashEnabled ? 0.4 : 0.15) }
