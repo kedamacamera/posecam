@@ -809,10 +809,12 @@ struct ContentView: View {
                 // 一番下はアルバムと撮影モード。画面を閉じるときの上スワイプでシャッターに触れないよう、
                 // シャッターは一段上に置く
                 // 撮影モードはまん中、アルバムは左。幅の狭い画面（iPhone SE・拡大表示など）では
-                // 「アルバム」の文字が撮影モードに重なっていたので、入らないときは文字を外す
+                // 「アルバム」の文字が撮影モードに重なっていたので、入る形を順に選ぶ:
+                // まん中にそろえる → 撮影モードを少し右に寄せる → 「アルバム」の文字を外す
                 ViewThatFits(in: .horizontal) {
-                    modeRow(showsAlbumLabel: true)
-                    modeRow(showsAlbumLabel: false)
+                    modeRow(showsAlbumLabel: true, centered: true)
+                    modeRow(showsAlbumLabel: true, centered: false)
+                    modeRow(showsAlbumLabel: false, centered: true)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
@@ -835,7 +837,7 @@ struct ContentView: View {
 
     /// 一番下の段（左にアルバム、まん中に撮影モード）。撮影モードがまん中に来るよう、右にもアルバムと同じ幅の空きを置く。
     /// 重ねずに横に並べるので、入りきらないときは ViewThatFits が次の形（文字なし）を選ぶ
-    private func modeRow(showsAlbumLabel: Bool) -> some View {
+    private func modeRow(showsAlbumLabel: Bool, centered: Bool) -> some View {
         let album = ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving, showsLabel: showsAlbumLabel) {
             showAlbum = true
         }
@@ -848,7 +850,9 @@ struct ContentView: View {
             .fixedSize()
             Spacer(minLength: 0)
             // 右側の空き（アルバムと同じ幅。押せない）
-            album.fixedSize().hidden().allowsHitTesting(false)
+            if centered {
+                album.fixedSize().hidden().allowsHitTesting(false)
+            }
         }
     }
 
