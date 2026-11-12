@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15-intel, macos-26]
+        os: [macos-26]
     runs-on: ${{ matrix.os }}
     steps:
       - run: |
@@ -21,4 +21,6 @@ jobs:
           done
           XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           F="$XC/Contents/Applications/Icon Composer.app/Contents/Frameworks/IconComposerFoundation.framework/Versions/A/IconComposerFoundation"
-          strings -a "$F" | grep -iE '^[a-z]+(-[a-z]+)+$' | sort -u | head -300
+          IC="$XC/Contents/Applications/Icon Composer.app"
+          for f in $(find "$IC/Contents/Frameworks" "$IC/Contents/MacOS" -type f -perm +111); do strings -a "$f"; done | grep -iE 'refract|specular|glass|lighting|light-angle|highlight|translucen|monochrome' | grep -v ' ' | sort -u | head -150
+          "$IC/Contents/Executables/ictool" --help 2>&1 | head -30
