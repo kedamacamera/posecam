@@ -698,7 +698,6 @@ struct PoseLibraryView: View {
     @ObservedObject var library: PoseLibrary
     @Binding var selection: PoseTemplate?
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
 
     private let columns = [GridItem(.adaptive(minimum: 72), spacing: 8)]
 
@@ -731,7 +730,6 @@ struct PoseLibraryView: View {
                 }
             }
         }
-        .preferredColorScheme(appearance.scheme)
     }
 }
 

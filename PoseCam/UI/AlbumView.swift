@@ -6,7 +6,6 @@ import SwiftUI
 /// 写真をタップすると大きく表示し、「編集」で傾き補正・伸縮・肌の補正ができる。
 struct AlbumView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
     /// 端末の写真・動画（新しい順）。件数が多くても、表示するときに 1 件ずつ取り出す
     @State private var assets: PHFetchResult<PHAsset>?
     @State private var status: PHAuthorizationStatus = .notDetermined
@@ -150,7 +149,6 @@ struct AlbumView: View {
                     .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
             }
         }
-        .preferredColorScheme(appearance.scheme)
         .task { await load(quick: true) }
         .fullScreenCover(item: $editing, onDismiss: { Task { await load() } }) { input in
             PhotoEditorView(data: input.data)

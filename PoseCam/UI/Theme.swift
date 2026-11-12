@@ -29,9 +29,9 @@ enum Appearance: String, CaseIterable, Identifiable {
         }
     }
 
-    /// アプリのすべてのウィンドウに外観を直接設定する。
-    /// 設定を全画面で開くようにしてから、SwiftUI の preferredColorScheme だけでは
-    /// 実機で外観が切り替わらなくなっていた（全画面の上からは後ろの画面の指定が届かない）
+    /// アプリのすべてのウィンドウに外観を直接設定する（外観はこれだけで決める）。
+    /// SwiftUI の preferredColorScheme は、全画面の設定の上からは効かず、
+    /// 「端末に合わせる」（nil）に戻しても前のライト/ダークの指定が画面に残ったままになっていた
     @MainActor
     func applyToWindows() {
         let style: UIUserInterfaceStyle

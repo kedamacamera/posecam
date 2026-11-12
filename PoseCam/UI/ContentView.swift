@@ -164,7 +164,6 @@ struct ContentView: View {
             .onAppear { camera.setScreenAspect(screen.width / screen.height) }
             .onChange(of: screen) { camera.setScreenAspect(screen.width / screen.height) }
         }
-        .preferredColorScheme(appearance.scheme)
         .onAppear { appearance.applyToWindows() }
         .onChange(of: appearance) { appearance.applyToWindows() }
         .statusBarHidden()
@@ -584,8 +583,6 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showMonitor) {
             RemoteMonitorView { showMonitor = false }
         }
-        // 設定の画面の中で外観を変えたとき、この画面にもすぐ反映する
-        .preferredColorScheme(appearance.scheme)
         .onAppear { Diagnostics.log("設定: 画面が開いた") }
     }
 
