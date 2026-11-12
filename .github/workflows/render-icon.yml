@@ -1,5 +1,5 @@
 # テスト用：Icon Composer のアイコンを、Icon Composer の ictool で画像に書き出す（liquid-glass-icon ブランチだけ）
-# 書き出した画像は icon-renders ブランチに置く
+# Store previews as workflow artifacts; do not modify another branch.
 name: Render icon
 
 on:
@@ -11,7 +11,7 @@ on:
       - ".github/workflows/render-icon.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   render:
@@ -41,11 +41,9 @@ jobs:
             xcrun actool "$d/AppIcon.icon" --compile "$d" --platform iphoneos --minimum-deployment-target 17.0 --app-icon AppIcon --output-partial-info-plist "$d/p.plist" --target-device iphone --target-device ipad >/dev/null
             cp "$d/AppIcon76x76@2x~ipad.png" "out/${n}_actool152.png"
           done
-      - name: Push renders
-        run: |
-          cd out
-          git init -q -b icon-renders
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add . && git commit -qm "Icon renders for ${GITHUB_SHA::7}"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" icon-renders
+      - name: Upload renders
+        uses: actions/upload-artifact@v4
+        with:
+          name: icon-renders
+          path: out/*.png
+          retention-days: 14
