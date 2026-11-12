@@ -1030,6 +1030,8 @@ struct ThumbnailButton: View {
     let image: UIImage?
     /// 撮った写真をまだ保存している（くるくるを重ねる）
     var busy = false
+    /// 「アルバム」の文字を添える（幅の狭い画面では撮影モードと重なるので、写真だけにする）
+    var showsLabel = true
     /// アプリ内のアルバムを開く
     let action: () -> Void
 
@@ -1056,11 +1058,13 @@ struct ThumbnailButton: View {
                         }
                     }
                 }
-                Text(busy ? "保存中" : "アルバム")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .fixedSize()
-                    .foregroundStyle(Color.chromeText)
+                if showsLabel {
+                    Text(busy ? "保存中" : "アルバム")
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .foregroundStyle(Color.chromeText)
+                }
             }
         }
     }

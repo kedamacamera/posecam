@@ -16,7 +16,7 @@ permissions:
 jobs:
   screens:
     runs-on: macos-15-intel
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
@@ -36,8 +36,8 @@ jobs:
           BUNDLE=com.example.posecam
           mkdir -p shots
           xcrun simctl list runtimes
-          # 入っている iOS のうち一番古いもの（あれば 17）と新しいもので撮る
-          RUNTIMES=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["platform"]=="iOS" and x["isAvailable"]]; r.sort(key=lambda x:[int(p) for p in x["version"].split(".")]); ids=[r[0]["identifier"], r[-1]["identifier"]] if r else []; print(" ".join(dict.fromkeys(ids)))')
+          # 入っている iOS のうち一番古いもの（あれば 17）で撮る
+          RUNTIMES=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["platform"]=="iOS" and x["isAvailable"]]; r.sort(key=lambda x:[int(p) for p in x["version"].split(".")]); ids=[r[0]["identifier"]] if r else []; print(" ".join(dict.fromkeys(ids)))')
           for RT in $RUNTIMES; do
             VER=${RT##*iOS-}
             for DEV in "iPhone SE (3rd generation)" "iPhone 15"; do
@@ -52,7 +52,12 @@ jobs:
               xcrun simctl privacy "$UDID" grant photos "$BUNDLE" || true
               NAME=$(echo "$DEV" | tr -cd 'A-Za-z0-9')
               shoot() {
+                # 入れ直してから開く（シミュレーターにはカメラがなく、続けて開くと「前回の起動で問題」の画面になる）
                 xcrun simctl terminate "$UDID" "$BUNDLE" || true
+                xcrun simctl uninstall "$UDID" "$BUNDLE" || true
+                xcrun simctl install "$UDID" "$APP"
+                xcrun simctl privacy "$UDID" grant camera "$BUNDLE" || true
+                xcrun simctl privacy "$UDID" grant microphone "$BUNDLE" || true
                 xcrun simctl launch "$UDID" "$BUNDLE"
                 sleep 8
                 xcrun simctl io "$UDID" screenshot "shots/iOS${VER}_${NAME}_$1.png"
