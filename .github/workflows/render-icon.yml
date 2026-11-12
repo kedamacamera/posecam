@@ -29,6 +29,8 @@ jobs:
             for r in Default Dark ClearLight TintedLight; do
               "$T" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 2
             done
+            # ホーム画面と同じ大きさ（60pt @3x）
+            "$T" "$ic" --export-image --output-file "out/${n}_home60.png" --platform iOS --rendition Default --width 60 --height 60 --scale 3
           done
           ls -la out
       - name: Push renders
