@@ -2,13 +2,39 @@
   "fill-specializations": [
     {
       "value": {
-        "solid": "extended-srgb:0.07843,0.12941,0.23922,1.00000"
+        "linear-gradient": [
+          "extended-srgb:0.16078,0.27059,0.40784,1.00000",
+          "extended-srgb:0.03137,0.05490,0.12549,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
+        }
       }
     },
     {
       "appearance": "dark",
       "value": {
-        "solid": "extended-srgb:0.03137,0.05098,0.10980,1.00000"
+        "linear-gradient": [
+          "extended-srgb:0.10196,0.18039,0.30196,1.00000",
+          "extended-srgb:0.01569,0.02745,0.07059,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
+        }
       }
     }
   ],
@@ -62,7 +88,20 @@
           "glass": true,
           "image-name": "stems.png",
           "fill": {
-            "solid": "extended-srgb:0.16078,0.47843,1.00000,1.00000"
+            "linear-gradient": [
+              "extended-srgb:0.40784,0.70980,1.00000,1.00000",
+              "extended-srgb:0.14118,0.38824,0.85098,1.00000"
+            ],
+            "orientation": {
+              "start": {
+                "x": 0.5,
+                "y": 0
+              },
+              "stop": {
+                "x": 0.5,
+                "y": 1
+              }
+            }
           }
         }
       ],
