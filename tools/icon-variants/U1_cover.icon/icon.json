@@ -16,37 +16,60 @@
     {
       "layers": [
         {
-          "name": "lens",
+          "name": "glass",
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "d13.png"
+              "value": "d10.png"
             }
           ],
           "fill-specializations": [
             {
               "value": {
-                "solid": "extended-srgb:0.15686,0.17255,0.23529,1.00000"
+                "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
               }
             },
             {
               "appearance": "dark",
               "value": {
-                "solid": "extended-srgb:0.78431,0.80392,0.86275,1.00000"
+                "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
               }
             }
-          ]
+          ],
+          "opacity": 0.35
         }
       ],
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.6
+        "value": 0.9
       },
-      "blur-material": 0.6,
+      "blur-material": 0.0,
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      }
+    },
+    {
+      "layers": [
+        {
+          "name": "lens",
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "lens-l.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "lens-d.png"
+            }
+          ]
+        }
+      ],
+      "specular": false,
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.5
+        "opacity": 0.3
       }
     },
     {
@@ -56,11 +79,11 @@
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "Hhole-k.png"
+              "value": "whole-k.png"
             },
             {
               "appearance": "dark",
-              "value": "Hhole-w.png"
+              "value": "whole-w.png"
             }
           ],
           "fill-specializations": [
@@ -104,14 +127,14 @@
           ]
         }
       ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
       "specular": true,
       "translucency": {
         "enabled": true,
         "value": 0.2
-      },
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
       }
     }
   ],

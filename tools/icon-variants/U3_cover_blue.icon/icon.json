@@ -16,7 +16,7 @@
     {
       "layers": [
         {
-          "name": "lens",
+          "name": "glass",
           "glass": true,
           "image-name-specializations": [
             {
@@ -26,27 +26,50 @@
           "fill-specializations": [
             {
               "value": {
-                "solid": "extended-srgb:0.92157,0.93333,0.96078,1.00000"
+                "solid": "extended-srgb:0.66667,0.76471,1.00000,1.00000"
               }
             },
             {
               "appearance": "dark",
               "value": {
-                "solid": "extended-srgb:0.23529,0.24314,0.27451,1.00000"
+                "solid": "extended-srgb:0.66667,0.76471,1.00000,1.00000"
               }
             }
-          ]
+          ],
+          "opacity": 0.45
         }
       ],
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.8
+        "value": 0.85
       },
-      "blur-material": 0.5,
+      "blur-material": 0.0,
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      }
+    },
+    {
+      "layers": [
+        {
+          "name": "lens",
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "lens-l.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "lens-d.png"
+            }
+          ]
+        }
+      ],
+      "specular": false,
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.5
+        "opacity": 0.3
       }
     },
     {
@@ -56,11 +79,11 @@
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "Hhole-k.png"
+              "value": "whole-k.png"
             },
             {
               "appearance": "dark",
-              "value": "Hhole-w.png"
+              "value": "whole-w.png"
             }
           ],
           "fill-specializations": [
@@ -104,14 +127,14 @@
           ]
         }
       ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
       "specular": true,
       "translucency": {
         "enabled": true,
         "value": 0.2
-      },
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
       }
     }
   ],
