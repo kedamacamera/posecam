@@ -74,6 +74,28 @@
         "opacity": 0
       },
       "specular": false
+    },
+    {
+      "layers": [
+        {
+          "name": "glass-bg",
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "bg-light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "bg-dark.png"
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false
     }
   ],
   "supported-platforms": {
