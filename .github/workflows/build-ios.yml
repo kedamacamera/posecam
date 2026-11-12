@@ -16,19 +16,43 @@ on:
 jobs:
   build:
     # Apple シリコンの macOS ランナーは混雑で割り当てられないことがあるので、Intel 版を使う
-    runs-on: macos-15-intel
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
+      # Icon Composer のアイコン（AppIcon.icon）は Xcode 26 以降でないとビルドできないので、Xcode 26 を選ぶ
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=/Applications/Xcode_26.6.app
+          sudo xcode-select -s "$XC"
+
       - name: Show Xcode version
         run: xcodebuild -version
+
+      # Xcode 26 は Metal のコンパイラが別ダウンロード（美肌の Core Image カーネルのコンパイルに要る）
+      - name: Download Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          # XcodeGen は .icon の種類を知らないので、Icon Composer のアイコンとして扱うように書き換える
+          python3 - <<'PY'
+          import re
+          p = "PoseCam.xcodeproj/project.pbxproj"
+          s = open(p).read()
+          def fix(m):
+              line = re.sub(r"(lastKnownFileType|explicitFileType) = [^;]*; ", "", m.group(0))
+              return line.replace("isa = PBXFileReference; ", "isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; ")
+          s = re.sub(r"[^\n]*isa = PBXFileReference;[^\n]*path = AppIcon\.icon;[^\n]*", fix, s)
+          open(p, "w").write(s)
+          PY
+          grep -n 'AppIcon.icon' PoseCam.xcodeproj/project.pbxproj
 
       - name: Build
         run: |

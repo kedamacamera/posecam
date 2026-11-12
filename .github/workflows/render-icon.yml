@@ -1,0 +1,49 @@
+# テスト用：Icon Composer のアイコンを、Icon Composer の ictool で画像に書き出す（liquid-glass-icon ブランチだけ）
+# Store previews as workflow artifacts; do not modify another branch.
+name: Render icon
+
+on:
+  push:
+    branches: [liquid-glass-icon]
+    paths:
+      - "PoseCam/AppIcon.icon/**"
+      - "tools/icon-variants/**"
+      - ".github/workflows/render-icon.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render
+        run: |
+          XC=/Applications/Xcode_26.6.app
+          T="$XC/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
+          mkdir -p out
+          for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
+            n=$(basename "$ic" .icon)
+            for r in Default Dark ClearLight TintedLight; do
+              "$T" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 2
+            done
+            # ホーム画面と同じ大きさ（60pt @3x）
+            "$T" "$ic" --export-image --output-file "out/${n}_home60.png" --platform iOS --rendition Default --width 60 --height 60 --scale 3
+          done
+          ls -la out
+      - name: Flatten with actool (what Xcode bakes into the app)
+        run: |
+          XC=/Applications/Xcode_26.6.app; sudo xcode-select -s "$XC"
+          for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
+            n=$(basename "$ic" .icon); d="act/$n"; mkdir -p "$d"; cp -R "$ic" "$d/AppIcon.icon"
+            xcrun actool "$d/AppIcon.icon" --compile "$d" --platform iphoneos --minimum-deployment-target 17.0 --app-icon AppIcon --output-partial-info-plist "$d/p.plist" --target-device iphone --target-device ipad >/dev/null
+            cp "$d/AppIcon76x76@2x~ipad.png" "out/${n}_actool152.png"
+          done
+      - name: Upload renders
+        uses: actions/upload-artifact@v4
+        with:
+          name: icon-renders
+          path: out/*.png
+          retention-days: 14

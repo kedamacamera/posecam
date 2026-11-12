@@ -15,7 +15,7 @@ enum WebMonitorPage {
     <!doctype html><html lang="ja"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>ポーズカメラ モニター</title>
+    <title>Hamera モニター</title>
     <style>
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;overflow:hidden;

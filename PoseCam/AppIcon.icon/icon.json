@@ -1,0 +1,155 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "extended-srgb:0.00000,0.00000,0.00000,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "name": "lens",
+          "glass": true,
+          "image-name": "lens.png",
+          "fill": {
+            "solid": "extended-srgb:0.69804,0.85882,1.00000,1.00000"
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.25
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.7
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "name": "camera",
+          "glass": true,
+          "image-name": "cam.png",
+          "fill-specializations": [
+            {
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:0.00000,0.00000,0.00000,1.00000",
+                  "extended-srgb:0.24314,0.24314,0.25882,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:1.00000,1.00000,1.00000,1.00000",
+                  "extended-srgb:0.78431,0.80000,0.83137,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.25
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.65
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "name": "H",
+          "glass": true,
+          "image-name": "stems.png",
+          "fill-specializations": [
+            {
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:0.00000,0.00000,0.00000,1.00000",
+                  "extended-srgb:0.24314,0.24314,0.25882,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:1.00000,1.00000,1.00000,1.00000",
+                  "extended-srgb:0.78431,0.80000,0.83137,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.25
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.65
+      },
+      "specular": true
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

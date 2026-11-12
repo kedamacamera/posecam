@@ -4,6 +4,11 @@ options:
   deploymentTarget:
     iOS: "17.0"
     watchOS: "10.0"
+  # Icon Composer のアイコン（AppIcon.icon）はフォルダだが、1 つのファイルとしてリソースに入れる
+  fileTypes:
+    icon:
+      file: true
+      buildPhase: resources
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -25,7 +30,7 @@ targets:
     info:
       path: PoseCam/Info.plist
       properties:
-        CFBundleDisplayName: ポーズカメラ
+        CFBundleDisplayName: Hamera
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # どのビルドか（設定の画面に出す）。GitHub Actions のビルドで、コミットとビルド日時を入れる
@@ -50,6 +55,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.posecam
+        # アプリアイコン（PoseCam/AppIcon.icon、Icon Composer 形式。Xcode 26 以降でビルドする）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # 美肌の Core Image カーネル（BeautyKernels.ci.metal）を Core Image 用にコンパイルする
         MTL_COMPILER_FLAGS: -fcikernel
         MTLLINKER_FLAGS: -cikernel
@@ -66,7 +73,7 @@ targets:
     info:
       path: PoseCamWatch/Info.plist
       properties:
-        CFBundleDisplayName: ポーズカメラ
+        CFBundleDisplayName: Hamera
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true
