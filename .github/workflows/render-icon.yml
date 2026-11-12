@@ -1,0 +1,40 @@
+# テスト用：Icon Composer のアイコンを、Xcode 26 の ictool で画像に書き出してログに出す（liquid-glass-icon ブランチだけ）
+name: Render icon
+
+on:
+  push:
+    branches: [liquid-glass-icon]
+    paths:
+      - "PoseCam/AppIcon.icon/**"
+      - "tools/icon-variants/**"
+      - ".github/workflows/render-icon.yml"
+
+jobs:
+  render:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find ictool
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          find "$XC" -iname "*ictool*" -maxdepth 8 2>/dev/null | head
+          find "$XC" -iname "Icon Composer*.app" -maxdepth 4 2>/dev/null | head
+          T=$(find "$XC" -iname "ictool" -type f -maxdepth 8 2>/dev/null | head -1)
+          echo "ICTOOL=$T" >> "$GITHUB_ENV"
+          "$T" --help || true
+      - name: Render
+        run: |
+          mkdir -p out
+          for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
+            [ -d "$ic" ] || continue
+            n=$(basename "$ic" .icon)
+            for r in Default Dark ClearLight TintedLight; do
+              "$ICTOOL" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 1 2>&1 | tail -3 || true
+            done
+          done
+          ls -la out
+      - name: Print images
+        run: |
+          for f in out/*.png; do echo "===IMG $f"; base64 -i "$f" | tr -d '\n'; echo; echo "===END"; done
