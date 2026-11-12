@@ -22,9 +22,13 @@ jobs:
           ls "$XC/Contents/Applications" || true
           sudo find /Applications /Library /usr/local -iname "*ictool*" 2>/dev/null | head
           sudo find / -maxdepth 3 -iname "Icon Composer*" 2>/dev/null | head
-          T="$XC/Contents/Developer/usr/bin/ictool"
+          IC="$XC/Contents/Applications/Icon Composer.app"
+          find "$IC" -type f -perm +111 | head -20
+          T=$(find "$IC" -type f -iname "ictool" | head -1)
+          MANPATH="$XC/Contents/Developer/usr/share/man:$IC/Contents/Resources/man" man ictool 2>/dev/null | col -b | head -120 || true
+          find "$XC" -name "ictool.1*" 2>/dev/null | head
           echo "ICTOOL=$T" >> "$GITHUB_ENV"
-          "$T" -h 2>&1 | head -60 || true; "$T" 2>&1 | head -60 || true
+          [ -n "$T" ] && { "$T" --help 2>&1 | head -60; "$T" 2>&1 | head -60; } || true
       - name: Render
         run: |
           mkdir -p out
@@ -45,4 +49,4 @@ jobs:
           ls -la out
       - name: Print images
         run: |
-          for f in out/*.png; do echo "===IMG $f"; base64 -i "$f" | tr -d '\n'; echo; echo "===END"; done
+          for f in out/*.png; do echo "===IMG $f"; base64 -b 0 -i "$f" | tr -d '\n'; echo; echo "===END"; done
