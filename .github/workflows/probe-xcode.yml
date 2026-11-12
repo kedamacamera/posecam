@@ -1,0 +1,24 @@
+# テスト用：ランナーにある Xcode と Icon Composer の版、icon.json のキーを調べる
+name: Probe Xcode
+on:
+  push:
+    branches: [liquid-glass-icon]
+    paths: [".github/workflows/probe-xcode.yml"]
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: |
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          for x in /Applications/Xcode_26*.app; do
+            p="$x/Contents/Applications/Icon Composer.app/Contents/Info.plist"
+            [ -f "$p" ] && echo "$x Icon Composer $(defaults read "$p" CFBundleShortVersionString)"
+          done
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          F="$XC/Contents/Applications/Icon Composer.app/Contents/Frameworks/IconComposerFoundation.framework/Versions/A/IconComposerFoundation"
+          strings -a "$F" | grep -iE '^[a-z]+(-[a-z]+)+$' | sort -u | head -300
