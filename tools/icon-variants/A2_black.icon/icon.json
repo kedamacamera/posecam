@@ -20,55 +20,13 @@
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "lens2.png"
-            }
-          ]
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
-      },
-      "specular": true
-    },
-    {
-      "layers": [
-        {
-          "name": "cam",
-          "glass": true,
-          "image-name-specializations": [
-            {
-              "value": "cam-k.png"
-            }
-          ]
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
-      },
-      "specular": true,
-      "translucency": {
-        "enabled": true,
-        "value": 0.5
-      },
-      "blur-material": 0.5
-    },
-    {
-      "layers": [
-        {
-          "name": "stems",
-          "glass": true,
-          "image-name-specializations": [
-            {
-              "value": "stems-k.png"
+              "value": "lens-l.png"
             },
             {
               "appearance": "dark",
-              "value": "stems-w.png"
+              "value": "lens-d.png"
             }
-          ],
-          "opacity": 0.85
+          ]
         }
       ],
       "shadow": {
@@ -78,9 +36,34 @@
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.6
+        "value": 0.3
+      }
+    },
+    {
+      "layers": [
+        {
+          "name": "H",
+          "glass": true,
+          "image-name-specializations": [
+            {
+              "value": "whole-k.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "whole-w.png"
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "blur-material": 0.3
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.2
+      }
     }
   ],
   "supported-platforms": {
