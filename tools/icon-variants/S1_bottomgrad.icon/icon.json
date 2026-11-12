@@ -58,13 +58,12 @@
               "value": {
                 "linear-gradient": [
                   "extended-srgb:0.05490,0.05490,0.06275,1.00000",
-                  "extended-srgb:0.06275,0.06275,0.07059,1.00000",
                   "extended-srgb:0.24314,0.24314,0.25882,1.00000"
                 ],
                 "orientation": {
                   "start": {
                     "x": 0.5,
-                    "y": 0
+                    "y": 0.5
                   },
                   "stop": {
                     "x": 0.5,
@@ -78,13 +77,12 @@
               "value": {
                 "linear-gradient": [
                   "extended-srgb:1.00000,1.00000,1.00000,1.00000",
-                  "extended-srgb:0.98039,0.98039,0.98824,1.00000",
                   "extended-srgb:0.76863,0.76863,0.79216,1.00000"
                 ],
                 "orientation": {
                   "start": {
                     "x": 0.5,
-                    "y": 0
+                    "y": 0.5
                   },
                   "stop": {
                     "x": 0.5,
