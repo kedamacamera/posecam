@@ -16,7 +16,7 @@ on:
 jobs:
   build:
     # Apple シリコンの macOS ランナーは混雑で割り当てられないことがあるので、Intel 版を使う
-    runs-on: macos-15-intel
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
       - name: Select Xcode 26
         run: |
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          XC=/Applications/Xcode_26.6.app
           sudo xcode-select -s "$XC"
 
       - name: Show Xcode version
