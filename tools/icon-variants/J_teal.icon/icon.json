@@ -52,7 +52,10 @@
               "appearance": "dark",
               "value": "whole-w.png"
             }
-          ]
+          ],
+          "fill": {
+            "automatic-gradient": "extended-srgb:0.00000,0.58824,0.62745,1.00000"
+          }
         }
       ],
       "shadow": {
@@ -62,7 +65,7 @@
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.2
+        "value": 0.3
       }
     }
   ],
