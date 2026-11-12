@@ -19,20 +19,28 @@ jobs:
         run: |
           XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           sudo xcode-select -s "$XC"
-          find "$XC" -iname "*ictool*" -maxdepth 8 2>/dev/null | head
-          find "$XC" -iname "Icon Composer*.app" -maxdepth 4 2>/dev/null | head
-          T=$(find "$XC" -iname "ictool" -type f -maxdepth 8 2>/dev/null | head -1)
+          ls "$XC/Contents/Applications" || true
+          sudo find /Applications /Library /usr/local -iname "*ictool*" 2>/dev/null | head
+          sudo find / -maxdepth 3 -iname "Icon Composer*" 2>/dev/null | head
+          T=$(sudo find /Applications /Library -iname "ictool" -type f 2>/dev/null | head -1)
           echo "ICTOOL=$T" >> "$GITHUB_ENV"
-          "$T" --help || true
+          [ -n "$T" ] && "$T" --help || true
       - name: Render
         run: |
           mkdir -p out
           for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
             [ -d "$ic" ] || continue
             n=$(basename "$ic" .icon)
-            for r in Default Dark ClearLight TintedLight; do
-              "$ICTOOL" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 1 2>&1 | tail -3 || true
-            done
+            if [ -n "$ICTOOL" ]; then
+              for r in Default Dark ClearLight TintedLight; do
+                "$ICTOOL" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 1 2>&1 | tail -3 || true
+              done
+            fi
+            # actool が作る平らな PNG（古い iOS 用）も見る
+            mkdir -p "act/$n"; cp -R "$ic" "act/$n/AppIcon.icon"
+            xcrun actool "act/$n/AppIcon.icon" --compile "act/$n" --platform iphoneos --minimum-deployment-target 17.0 --app-icon AppIcon --output-partial-info-plist "act/$n/p.plist" --target-device iphone --output-format human-readable-text 2>&1 | tail -5
+            ls "act/$n"
+            big=$(ls -S act/$n/*.png 2>/dev/null | head -1); [ -n "$big" ] && sips -Z 512 "$big" --out "out/${n}_actool.png" >/dev/null
           done
           ls -la out
       - name: Print images
