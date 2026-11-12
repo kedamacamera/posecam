@@ -15,13 +15,13 @@ permissions:
 
 jobs:
   render:
-    runs-on: macos-15-intel
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Render
         run: |
-          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          XC=/Applications/Xcode_26.6.app
           T="$XC/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
           mkdir -p out
           for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
@@ -35,7 +35,7 @@ jobs:
           ls -la out
       - name: Inspect Assets.car
         run: |
-          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1); sudo xcode-select -s "$XC"
+          XC=/Applications/Xcode_26.6.app; sudo xcode-select -s "$XC"
           for dt in 17.0 26.0; do
             mkdir -p "car$dt"
             xcrun actool PoseCam/AppIcon.icon --compile "car$dt" --platform iphoneos --minimum-deployment-target $dt --app-icon AppIcon --output-partial-info-plist "car$dt/p.plist" --target-device iphone --target-device ipad > /dev/null
