@@ -46,50 +46,11 @@
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "whole-k.png"
+              "value": "Pk1.png"
             },
             {
               "appearance": "dark",
-              "value": "whole-w.png"
-            }
-          ],
-          "fill-specializations": [
-            {
-              "value": {
-                "linear-gradient": [
-                  "extended-srgb:0.23529,0.23529,0.25882,1.00000",
-                  "extended-srgb:0.03137,0.03137,0.03922,1.00000"
-                ],
-                "orientation": {
-                  "start": {
-                    "x": 0.5,
-                    "y": 0
-                  },
-                  "stop": {
-                    "x": 0.5,
-                    "y": 1
-                  }
-                }
-              }
-            },
-            {
-              "appearance": "dark",
-              "value": {
-                "linear-gradient": [
-                  "extended-srgb:1.00000,1.00000,1.00000,1.00000",
-                  "extended-srgb:0.78431,0.78431,0.80784,1.00000"
-                ],
-                "orientation": {
-                  "start": {
-                    "x": 0.5,
-                    "y": 0
-                  },
-                  "stop": {
-                    "x": 0.5,
-                    "y": 1
-                  }
-                }
-              }
+              "value": "Pw1.png"
             }
           ]
         }
