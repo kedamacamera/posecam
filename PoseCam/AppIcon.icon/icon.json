@@ -2,7 +2,7 @@
   "fill-specializations": [
     {
       "value": {
-        "solid": "extended-srgb:0.00000,0.00000,0.00000,1.00000"
+        "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
       }
     },
     {
@@ -74,22 +74,45 @@
           "name": "H",
           "glass": true,
           "image-name": "stems.png",
-          "fill": {
-            "linear-gradient": [
-              "extended-srgb:0.40784,0.70980,1.00000,1.00000",
-              "extended-srgb:0.14118,0.38824,0.85098,1.00000"
-            ],
-            "orientation": {
-              "start": {
-                "x": 0.5,
-                "y": 0
-              },
-              "stop": {
-                "x": 0.5,
-                "y": 1
+          "fill-specializations": [
+            {
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:0.00000,0.00000,0.00000,1.00000",
+                  "extended-srgb:0.24314,0.24314,0.25882,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "linear-gradient": [
+                  "extended-srgb:1.00000,1.00000,1.00000,1.00000",
+                  "extended-srgb:0.78431,0.80000,0.83137,1.00000"
+                ],
+                "orientation": {
+                  "start": {
+                    "x": 0.5,
+                    "y": 0
+                  },
+                  "stop": {
+                    "x": 0.5,
+                    "y": 1
+                  }
+                }
               }
             }
-          }
+          ]
         }
       ],
       "shadow": {
