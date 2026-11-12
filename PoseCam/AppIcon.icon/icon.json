@@ -1,111 +1,28 @@
 {
-  "fill-specializations": [
+  "fill" : {
+    "solid" : "extended-srgb:0.85000,0.86500,0.89000,1.00000"
+  },
+  "groups" : [
     {
-      "value": {
-        "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
-      }
-    },
-    {
-      "appearance": "dark",
-      "value": {
-        "solid": "extended-srgb:0.00000,0.00000,0.00000,1.00000"
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "hamera.png",
+          "name" : "hamera"
+        }
+      ],
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
       }
     }
   ],
-  "groups": [
-    {
-      "layers": [
-        {
-          "name": "lens",
-          "glass": true,
-          "image-name-specializations": [
-            {
-              "value": "lens-l.png"
-            },
-            {
-              "appearance": "dark",
-              "value": "lens-d.png"
-            }
-          ]
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
-      },
-      "specular": true,
-      "translucency": {
-        "enabled": true,
-        "value": 0.3
-      }
-    },
-    {
-      "layers": [
-        {
-          "name": "H",
-          "glass": true,
-          "image-name-specializations": [
-            {
-              "value": "whole-k.png"
-            },
-            {
-              "appearance": "dark",
-              "value": "whole-w.png"
-            }
-          ],
-          "fill-specializations": [
-            {
-              "value": {
-                "linear-gradient": [
-                  "extended-srgb:0.05490,0.05490,0.06275,1.00000",
-                  "extended-srgb:0.24314,0.24314,0.25882,1.00000"
-                ],
-                "orientation": {
-                  "start": {
-                    "x": 0.5,
-                    "y": 0.5
-                  },
-                  "stop": {
-                    "x": 0.5,
-                    "y": 1
-                  }
-                }
-              }
-            },
-            {
-              "appearance": "dark",
-              "value": {
-                "linear-gradient": [
-                  "extended-srgb:1.00000,1.00000,1.00000,1.00000",
-                  "extended-srgb:0.11765,0.11765,0.13333,1.00000"
-                ],
-                "orientation": {
-                  "start": {
-                    "x": 0.5,
-                    "y": 0.4
-                  },
-                  "stop": {
-                    "x": 0.5,
-                    "y": 1
-                  }
-                }
-              }
-            }
-          ]
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
-      },
-      "specular": true,
-      "translucency": {
-        "enabled": true,
-        "value": 0.2
-      }
-    }
-  ],
-  "supported-platforms": {
-    "squares": "shared"
+  "supported-platforms" : {
+    "squares" : "shared"
   }
 }
