@@ -161,6 +161,8 @@ struct ContentView: View {
             }
             .frame(width: screen.width, height: screen.height)
             .ignoresSafeArea()
+            // 端末の「ボタンの形」「文字を太くする」「文字の大きさ」で撮影画面が崩れないようにする
+            .cameraChromeLayout()
             .onAppear { camera.setScreenAspect(screen.width / screen.height) }
             .onChange(of: screen) { camera.setScreenAspect(screen.width / screen.height) }
         }

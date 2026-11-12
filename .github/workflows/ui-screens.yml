@@ -1,0 +1,73 @@
+# 撮影画面を iOS シミュレーターで開いて、端末の表示の設定ごとにスクリーンショットを撮る。
+# （「ボタンの形」「文字を太くする」「文字の大きさ」「iOS 17」で崩れないかを、実機の前に確かめる）
+name: UI screenshots
+
+on:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "PoseCam/UI/**"
+      - ".github/workflows/ui-screens.yml"
+  workflow_dispatch:
+
+jobs:
+  screens:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project PoseCam.xcodeproj -scheme PoseCam -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -30
+      - name: Screenshots
+        run: |
+          set -x
+          APP=build/Build/Products/Debug-iphonesimulator/PoseCam.app
+          BUNDLE=com.example.posecam
+          mkdir -p shots
+          xcrun simctl list runtimes
+          # 入っている iOS のうち一番古いもの（あれば 17）と新しいもので撮る
+          RUNTIMES=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["platform"]=="iOS" and x["isAvailable"]]; r.sort(key=lambda x:[int(p) for p in x["version"].split(".")]); ids=[r[0]["identifier"], r[-1]["identifier"]] if r else []; print(" ".join(dict.fromkeys(ids)))')
+          for RT in $RUNTIMES; do
+            VER=${RT##*iOS-}
+            for DEV in "iPhone SE (3rd generation)" "iPhone 15"; do
+              DT=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys; print(next((d['identifier'] for d in json.load(sys.stdin)['devicetypes'] if d['name']=='$DEV'), ''))")
+              [ -z "$DT" ] && continue
+              UDID=$(xcrun simctl create "shot" "$DT" "$RT") || continue
+              xcrun simctl boot "$UDID"
+              xcrun simctl bootstatus "$UDID" -b
+              xcrun simctl install "$UDID" "$APP"
+              xcrun simctl privacy "$UDID" grant camera "$BUNDLE" || true
+              xcrun simctl privacy "$UDID" grant microphone "$BUNDLE" || true
+              xcrun simctl privacy "$UDID" grant photos "$BUNDLE" || true
+              NAME=$(echo "$DEV" | tr -cd 'A-Za-z0-9')
+              shoot() {
+                xcrun simctl terminate "$UDID" "$BUNDLE" || true
+                xcrun simctl launch "$UDID" "$BUNDLE"
+                sleep 8
+                xcrun simctl io "$UDID" screenshot "shots/iOS${VER}_${NAME}_$1.png"
+              }
+              shoot normal
+              # ボタンの形・文字を太くする・文字を大きく
+              xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility ButtonShapesEnabled -bool YES
+              xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility EnhancedTextLegibilityEnabled -bool YES
+              xcrun simctl ui "$UDID" content_size extra-extra-extra-large || true
+              shoot a11y
+              xcrun simctl shutdown "$UDID"
+              xcrun simctl delete "$UDID"
+            done
+          done
+          ls -la shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screens
+          path: shots
+          retention-days: 7
