@@ -31,6 +31,10 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      # Xcode 26 は Metal のコンパイラが別ダウンロード（美肌の Core Image カーネルのコンパイルに要る）
+      - name: Download Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
