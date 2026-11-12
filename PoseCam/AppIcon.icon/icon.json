@@ -1,28 +1,82 @@
 {
-  "fill" : {
-    "solid" : "extended-srgb:0.85000,0.86500,0.89000,1.00000"
-  },
-  "groups" : [
+  "fill-specializations": [
     {
-      "layers" : [
-        {
-          "glass" : false,
-          "image-name" : "hamera.png",
-          "name" : "hamera"
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.89412,0.90588,0.92549,1.00000",
+          "extended-srgb:0.82745,0.84314,0.87059,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
         }
-      ],
-      "shadow" : {
-        "kind" : "none",
-        "opacity" : 0
-      },
-      "specular" : false,
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.10196,0.10588,0.12549,1.00000",
+          "extended-srgb:0.01961,0.01961,0.02353,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
+        }
       }
     }
   ],
-  "supported-platforms" : {
-    "squares" : "shared"
+  "groups": [
+    {
+      "layers": [
+        {
+          "name": "lens",
+          "glass": false,
+          "image-name": "lens.png"
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false
+    },
+    {
+      "layers": [
+        {
+          "name": "H",
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "H-light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "H-dark.png"
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
   }
 }
