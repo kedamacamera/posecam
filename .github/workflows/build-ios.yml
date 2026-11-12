@@ -21,6 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Icon Composer のアイコン（AppIcon.icon）は Xcode 26 以降でないとビルドできないので、Xcode 26 を選ぶ
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+
       - name: Show Xcode version
         run: xcodebuild -version
 
@@ -28,7 +35,20 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          # XcodeGen は .icon の種類を知らないので、Icon Composer のアイコンとして扱うように書き換える
+          python3 - <<'PY'
+          import re
+          p = "PoseCam.xcodeproj/project.pbxproj"
+          s = open(p).read()
+          def fix(m):
+              line = re.sub(r"(lastKnownFileType|explicitFileType) = [^;]*; ", "", m.group(0))
+              return line.replace("isa = PBXFileReference; ", "isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; ")
+          s = re.sub(r"[^\n]*isa = PBXFileReference;[^\n]*path = AppIcon\.icon;[^\n]*", fix, s)
+          open(p, "w").write(s)
+          PY
+          grep -n 'AppIcon.icon' PoseCam.xcodeproj/project.pbxproj
 
       - name: Build
         run: |
