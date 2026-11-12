@@ -20,6 +20,27 @@
           "glass": true,
           "image-name": "lens.png",
           "fill": {
+            "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "name": "camera",
+          "glass": true,
+          "image-name": "cam.png",
+          "fill": {
             "solid": "extended-srgb:1.00000,0.78824,0.23529,1.00000"
           }
         }
@@ -30,7 +51,7 @@
       },
       "translucency": {
         "enabled": true,
-        "value": 0.4
+        "value": 0.6
       },
       "specular": true
     },
@@ -39,7 +60,7 @@
         {
           "name": "H",
           "glass": true,
-          "image-name": "H.png",
+          "image-name": "stems.png",
           "fill": {
             "solid": "extended-srgb:0.23922,0.48235,1.00000,1.00000"
           }
@@ -51,7 +72,7 @@
       },
       "translucency": {
         "enabled": true,
-        "value": 0.4
+        "value": 0.3
       },
       "specular": true
     }
