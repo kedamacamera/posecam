@@ -46,29 +46,13 @@
           "glass": true,
           "image-name-specializations": [
             {
-              "value": "whole-k.png"
+              "value": "Pk2.png"
             },
             {
               "appearance": "dark",
-              "value": "whole-w.png"
+              "value": "Pw2.png"
             }
-          ],
-          "fill": {
-            "linear-gradient": [
-              "extended-srgb:0.43137,0.62745,1.00000,1.00000",
-              "extended-srgb:0.09804,0.29412,0.82353,1.00000"
-            ],
-            "orientation": {
-              "start": {
-                "x": 0.5,
-                "y": 0
-              },
-              "stop": {
-                "x": 0.5,
-                "y": 1
-              }
-            }
-          }
+          ]
         }
       ],
       "shadow": {
@@ -78,7 +62,7 @@
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.5
+        "value": 0.2
       }
     }
   ],
