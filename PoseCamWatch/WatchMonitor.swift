@@ -107,7 +107,7 @@ struct WatchMonitorView: View {
             } else {
                 VStack(spacing: 6) {
                     ProgressView()
-                    Text(link.reachable ? "映像を待っています" : "iPhone でポーズカメラを開いてください")
+                    Text(link.reachable ? "映像を待っています" : "iPhone でHamera を開いてください")
                         .font(.footnote)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)

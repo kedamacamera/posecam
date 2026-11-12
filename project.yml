@@ -30,7 +30,7 @@ targets:
     info:
       path: PoseCam/Info.plist
       properties:
-        CFBundleDisplayName: ポーズカメラ
+        CFBundleDisplayName: Hamera
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # どのビルドか（設定の画面に出す）。GitHub Actions のビルドで、コミットとビルド日時を入れる
@@ -73,7 +73,7 @@ targets:
     info:
       path: PoseCamWatch/Info.plist
       properties:
-        CFBundleDisplayName: ポーズカメラ
+        CFBundleDisplayName: Hamera
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true

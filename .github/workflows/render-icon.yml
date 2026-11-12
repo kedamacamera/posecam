@@ -22,9 +22,9 @@ jobs:
           ls "$XC/Contents/Applications" || true
           sudo find /Applications /Library /usr/local -iname "*ictool*" 2>/dev/null | head
           sudo find / -maxdepth 3 -iname "Icon Composer*" 2>/dev/null | head
-          T=$(sudo find /Applications /Library -iname "ictool" -type f 2>/dev/null | head -1)
+          T="$XC/Contents/Developer/usr/bin/ictool"
           echo "ICTOOL=$T" >> "$GITHUB_ENV"
-          [ -n "$T" ] && "$T" --help || true
+          "$T" -h 2>&1 | head -60 || true; "$T" 2>&1 | head -60 || true
       - name: Render
         run: |
           mkdir -p out

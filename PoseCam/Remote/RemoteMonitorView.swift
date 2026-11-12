@@ -579,7 +579,7 @@ struct RemoteSheet: View {
                         // 見出しは大文字にしない（iPhone が IPHONE になる）
                         .textCase(nil)
                 } footer: {
-                    Text("もう一台の iPhone・iPad でポーズカメラを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
+                    Text("もう一台の iPhone・iPad でHameraを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
                          + "ここに出ます。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながります。"
                          + "シャッターを押すと、この \(Self.deviceWord) のカメラで撮ります。")
                 }
