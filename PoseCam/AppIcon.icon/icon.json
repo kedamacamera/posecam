@@ -1,70 +1,72 @@
 {
-  "fill-specializations" : [
+  "fill-specializations": [
     {
-      "value" : {
-        "solid" : "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+      "value": {
+        "solid": "extended-srgb:1.00000,1.00000,1.00000,1.00000"
       }
     },
     {
-      "appearance" : "dark",
-      "value" : {
-        "solid" : "extended-srgb:0.10980,0.10980,0.11765,1.00000"
+      "appearance": "dark",
+      "value": {
+        "solid": "extended-srgb:0.10980,0.10980,0.11765,1.00000"
       }
     }
   ],
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : true,
-          "image-name-specializations" : [
+          "name": "lens",
+          "glass": true,
+          "image-name-specializations": [
             {
-              "value" : "lens-light.png"
+              "value": "lens-l.png"
             },
             {
-              "appearance" : "dark",
-              "value" : "lens-dark.png"
+              "appearance": "dark",
+              "value": "lens-d.png"
             }
-          ],
-          "name" : "lens"
+          ]
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.3
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : true,
-          "image-name-specializations" : [
+          "name": "H",
+          "glass": true,
+          "image-name-specializations": [
             {
-              "value" : "body-light.png"
+              "value": "whole-k.png"
             },
             {
-              "appearance" : "dark",
-              "value" : "body-dark.png"
+              "appearance": "dark",
+              "value": "whole-w.png"
             }
-          ],
-          "name" : "H"
+          ]
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.4
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.2
       }
     }
   ],
-  "supported-platforms" : {
-    "squares" : "shared"
+  "supported-platforms": {
+    "squares": "shared"
   }
 }
