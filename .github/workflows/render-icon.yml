@@ -1,4 +1,5 @@
-# テスト用：Icon Composer のアイコンを、Xcode 26 の ictool で画像に書き出してログに出す（liquid-glass-icon ブランチだけ）
+# テスト用：Icon Composer のアイコンを、Icon Composer の ictool で画像に書き出す（liquid-glass-icon ブランチだけ）
+# 書き出した画像は icon-renders ブランチに置く
 name: Render icon
 
 on:
@@ -9,44 +10,32 @@ on:
       - "tools/icon-variants/**"
       - ".github/workflows/render-icon.yml"
 
+permissions:
+  contents: write
+
 jobs:
   render:
     runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Find ictool
-        run: |
-          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
-          sudo xcode-select -s "$XC"
-          ls "$XC/Contents/Applications" || true
-          sudo find /Applications /Library /usr/local -iname "*ictool*" 2>/dev/null | head
-          sudo find / -maxdepth 3 -iname "Icon Composer*" 2>/dev/null | head
-          IC="$XC/Contents/Applications/Icon Composer.app"
-          find "$IC" -type f -perm +111 | head -20
-          T=$(find "$IC" -type f -iname "ictool" | head -1)
-          MANPATH="$XC/Contents/Developer/usr/share/man:$IC/Contents/Resources/man" man ictool 2>/dev/null | col -b | head -120 || true
-          find "$XC" -name "ictool.1*" 2>/dev/null | head
-          echo "ICTOOL=$T" >> "$GITHUB_ENV"
-          [ -n "$T" ] && { "$T" --help 2>&1 | head -60; "$T" 2>&1 | head -60; } || true
       - name: Render
         run: |
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          T="$XC/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
           mkdir -p out
           for ic in PoseCam/AppIcon.icon tools/icon-variants/*.icon; do
-            [ -d "$ic" ] || continue
             n=$(basename "$ic" .icon)
-            if [ -n "$ICTOOL" ]; then
-              for r in Default Dark ClearLight TintedLight; do
-                "$ICTOOL" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 1 2>&1 | tail -3 || true
-              done
-            fi
-            # actool が作る平らな PNG（古い iOS 用）も見る
-            mkdir -p "act/$n"; cp -R "$ic" "act/$n/AppIcon.icon"
-            xcrun actool "act/$n/AppIcon.icon" --compile "act/$n" --platform iphoneos --minimum-deployment-target 17.0 --app-icon AppIcon --output-partial-info-plist "act/$n/p.plist" --target-device iphone --output-format human-readable-text 2>&1 | tail -5
-            ls "act/$n"
-            big=$(ls -S act/$n/*.png 2>/dev/null | head -1); [ -n "$big" ] && sips -Z 512 "$big" --out "out/${n}_actool.png" >/dev/null
+            for r in Default Dark ClearLight TintedLight; do
+              "$T" "$ic" --export-image --output-file "out/${n}_${r}.png" --platform iOS --rendition "$r" --width 512 --height 512 --scale 2
+            done
           done
           ls -la out
-      - name: Print images
+      - name: Push renders
         run: |
-          for f in out/*.png; do echo "===IMG $f"; base64 -b 0 -i "$f" | tr -d '\n'; echo; echo "===END"; done
+          cd out
+          git init -q -b icon-renders
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add . && git commit -qm "Icon renders for ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" icon-renders
