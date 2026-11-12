@@ -1,6 +1,32 @@
 import SwiftUI
 import CoreImage
 
+// MARK: - 撮影画面のボタンの見た目
+
+/// 撮影画面のボタンの見た目。iOS 標準の見た目（.automatic）だと、端末の
+/// 「ボタンの形」がオンのときにすべてのボタンへ灰色の枠が付き、撮影画面が崩れていた。
+/// 自前の見た目にして枠を付けない（押している間は少し薄くする）。
+/// 撮影画面のボタンは中で色を決めているので、色はボタンの側では変えない
+struct CameraButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+extension View {
+    /// 撮影画面の文字・ボタンを、端末の表示の設定（ボタンの形・文字を太くする・文字の大きさ）で崩さない。
+    /// 撮影画面はボタンを詰めて並べているので、どれかが大きくなると折り返したり重なったりしていた
+    func cameraChromeLayout() -> some View {
+        self
+            .buttonStyle(CameraButtonStyle())
+            .environment(\.legibilityWeight, .regular)
+            .dynamicTypeSize(.large)
+    }
+}
+
 // MARK: - 上部のバー
 
 /// アイコンの下に短い説明を付けたボタン（意味が分かるように必ず文字を添える）。
@@ -400,6 +426,8 @@ struct PanelChips: View {
                     HStack(spacing: 4) {
                         Image(systemName: item.systemImage)
                         Text(item.rawValue)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                         Image(systemName: active ? "chevron.down" : "chevron.up")
                             .font(.system(size: 9, weight: .bold))
                     }
@@ -890,6 +918,8 @@ struct ModePicker: View {
                 Button { onSelect(item) } label: {
                     Text(item.rawValue)
                         .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .fixedSize()
                         .foregroundStyle(item == mode ? Color.chromeAccent : Color.chromeText.opacity(0.75))
                         .shadow(color: .chromeShadow, radius: 2)
                         // 文字だけだと押せる所が狭く、少し外れた指は後ろの映像（ピント）が取っていた。
@@ -1000,6 +1030,8 @@ struct ThumbnailButton: View {
     let image: UIImage?
     /// 撮った写真をまだ保存している（くるくるを重ねる）
     var busy = false
+    /// 「アルバム」の文字を添える（幅の狭い画面では撮影モードと重なるので、写真だけにする）
+    var showsLabel = true
     /// アプリ内のアルバムを開く
     let action: () -> Void
 
@@ -1026,9 +1058,13 @@ struct ThumbnailButton: View {
                         }
                     }
                 }
-                Text(busy ? "保存中" : "アルバム")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.chromeText)
+                if showsLabel {
+                    Text(busy ? "保存中" : "アルバム")
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .foregroundStyle(Color.chromeText)
+                }
             }
         }
     }

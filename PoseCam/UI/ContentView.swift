@@ -161,6 +161,8 @@ struct ContentView: View {
             }
             .frame(width: screen.width, height: screen.height)
             .ignoresSafeArea()
+            // 端末の「ボタンの形」「文字を太くする」「文字の大きさ」で撮影画面が崩れないようにする
+            .cameraChromeLayout()
             .onAppear { camera.setScreenAspect(screen.width / screen.height) }
             .onChange(of: screen) { camera.setScreenAspect(screen.width / screen.height) }
         }
@@ -806,16 +808,15 @@ struct ContentView: View {
 
                 // 一番下はアルバムと撮影モード。画面を閉じるときの上スワイプでシャッターに触れないよう、
                 // シャッターは一段上に置く
-                ZStack {
-                    ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
-                        camera.setMode($0)
-                    }
-                    HStack {
-                        ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving) { showAlbum = true }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 20)
+                // 撮影モードはまん中、アルバムは左。幅の狭い画面（iPhone SE・拡大表示など）では
+                // 「アルバム」の文字が撮影モードに重なっていたので、入る形を順に選ぶ:
+                // まん中にそろえる → 撮影モードを少し右に寄せる → 「アルバム」の文字を外す
+                ViewThatFits(in: .horizontal) {
+                    modeRow(showsAlbumLabel: true, centered: true)
+                    modeRow(showsAlbumLabel: true, centered: false)
+                    modeRow(showsAlbumLabel: false, centered: true)
                 }
+                .padding(.horizontal, 20)
                 .padding(.top, 4)
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { modeRowTop = $0 }
                 .environment(\.colorScheme, modeRowTop < previewBottom - 1 ? .dark : colorScheme)
@@ -832,6 +833,27 @@ struct ContentView: View {
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
         )
+    }
+
+    /// 一番下の段（左にアルバム、まん中に撮影モード）。撮影モードがまん中に来るよう、右にもアルバムと同じ幅の空きを置く。
+    /// 重ねずに横に並べるので、入りきらないときは ViewThatFits が次の形（文字なし）を選ぶ
+    private func modeRow(showsAlbumLabel: Bool, centered: Bool) -> some View {
+        let album = ThumbnailButton(image: camera.lastThumbnail, busy: showsSaving, showsLabel: showsAlbumLabel) {
+            showAlbum = true
+        }
+        return HStack(spacing: 8) {
+            album.fixedSize()
+            Spacer(minLength: 0)
+            ModePicker(mode: camera.mode, isLocked: camera.isRecording || camera.isSequenceRunning) {
+                camera.setMode($0)
+            }
+            .fixedSize()
+            Spacer(minLength: 0)
+            // 右側の空き（アルバムと同じ幅。押せない）
+            if centered {
+                album.fixedSize().hidden().allowsHitTesting(false)
+            }
+        }
     }
 
     /// 写真: オフ → オン → ダイレクト 1 → ダイレクト 2 → オフ。動画・スナップはライトのオン・オフ。
