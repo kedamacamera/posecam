@@ -33,6 +33,16 @@ jobs:
             "$T" "$ic" --export-image --output-file "out/${n}_home60.png" --platform iOS --rendition Default --width 60 --height 60 --scale 3
           done
           ls -la out
+      - name: Inspect Assets.car
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1); sudo xcode-select -s "$XC"
+          for dt in 17.0 26.0; do
+            mkdir -p "car$dt"
+            xcrun actool PoseCam/AppIcon.icon --compile "car$dt" --platform iphoneos --minimum-deployment-target $dt --app-icon AppIcon --output-partial-info-plist "car$dt/p.plist" --target-device iphone --target-device ipad > /dev/null
+            echo "=== deployment $dt"; ls "car$dt"; cat "car$dt/p.plist"
+            xcrun assetutil --info "car$dt/Assets.car" > "out/assetinfo_$dt.json"
+            python3 -c "import json,sys,collections;d=json.load(open('out/assetinfo_$dt.json'));print(collections.Counter((x.get('AssetType'),x.get('Name')) for x in d[1:]))"
+          done
       - name: Push renders
         run: |
           cd out
