@@ -54,7 +54,7 @@
             }
           ],
           "fill": {
-            "automatic-gradient": "extended-srgb:0.23529,0.54902,1.00000,1.00000"
+            "automatic-gradient": "extended-srgb:0.06667,0.06667,0.07451,1.00000"
           }
         }
       ],
@@ -65,7 +65,7 @@
       "specular": true,
       "translucency": {
         "enabled": true,
-        "value": 0.6
+        "value": 0.2
       }
     }
   ],

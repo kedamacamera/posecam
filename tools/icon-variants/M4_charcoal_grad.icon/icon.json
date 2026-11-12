@@ -54,7 +54,20 @@
             }
           ],
           "fill": {
-            "automatic-gradient": "extended-srgb:0.11765,0.35294,0.86275,1.00000"
+            "linear-gradient": [
+              "extended-srgb:0.35294,0.35294,0.38431,1.00000",
+              "extended-srgb:0.07843,0.07843,0.09412,1.00000"
+            ],
+            "orientation": {
+              "start": {
+                "x": 0.5,
+                "y": 0
+              },
+              "stop": {
+                "x": 0.5,
+                "y": 1
+              }
+            }
           }
         }
       ],
