@@ -1,0 +1,53 @@
+# 骨格検出・人物の切り抜きが、写真の種類ごとにどれだけ当たるかを測る（撮ってもらう人ガイドの判定に使えるかの確認）。
+# 正解は COCO val2017 の人物の関節。結果は report.md として残す。
+name: Pose bench
+
+on:
+  push:
+    branches: [pose-bench]
+    paths:
+      - "tools/posebench/**"
+      - ".github/workflows/pose-bench.yml"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          mkdir -p bin
+          swiftc -O -target x86_64-apple-macos14 -o bin/posebench tools/posebench/main.swift
+
+      - name: Select images
+        working-directory: tools/posebench
+        run: |
+          curl -sSL -o ann.zip http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+          unzip -q -o ann.zip annotations/person_keypoints_val2017.json annotations/captions_val2017.json
+          python3 select_images.py 60
+          mkdir -p img
+          python3 -c "
+          import json
+          for s in json.load(open('selection.json')): print(s['url'])
+          " | sort -u > urls.txt
+          (cd img && xargs -n 1 -P 8 curl -sSLO < ../urls.txt)
+          ls img | wc -l
+
+      - name: Run Vision
+        working-directory: tools/posebench
+        run: |
+          ../../bin/posebench vision.json img/*.jpg
+          python3 eval.py
+          sw_vers
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pose-bench
+          path: |
+            tools/posebench/report.md
+            tools/posebench/vision.json
+            tools/posebench/selection.json
