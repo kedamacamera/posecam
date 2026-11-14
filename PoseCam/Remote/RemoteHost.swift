@@ -89,8 +89,39 @@ enum RemoteWire {
         return data
     }
 
-    /// 相手の画面に出る名前（iOS 16 からは端末名ではなく「iPhone」になる）
-    static let peerID = MCPeerID(displayName: String(UIDevice.current.name.prefix(40)))
+    /// 相手の画面に出る名前（iOS 16 からは端末名ではなく「iPhone」になる）。
+    /// 起動のたびに作らず、保存して使い回す。毎回作ると、Wi-Fi のない所（Bluetooth・端末同士の Wi-Fi）では
+    /// 前に起動したときの古い相手がなかなか消えずに一覧に残り、名前も同じ「iPhone」なので、
+    /// 古い方を選ぶと 3 回試しても繋がらなかった（Apple も使い回すよう勧めている）
+    static let peerID: MCPeerID = {
+        let name = String(UIDevice.current.name.prefix(40))
+        let key = "remote.peerID"
+        if let data = UserDefaults.standard.data(forKey: key),
+           let saved = try? NSKeyedUnarchiver.unarchivedObject(ofClass: MCPeerID.self, from: data),
+           saved.displayName == name {
+            return saved
+        }
+        let peer = MCPeerID(displayName: name)
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: peer, requiringSecureCoding: true) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+        return peer
+    }()
+
+    /// この端末の印（入れ直すまで変わらない）。見つけた相手に付けて送り、同じ端末が 2 つ並ばないようにする
+    static let deviceID: String = {
+        let key = "remote.deviceID"
+        if let id = UserDefaults.standard.string(forKey: key) { return id }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }()
+    /// 見つけてもらうときに添える情報のキー
+    static let deviceIDKey = "id"
+
+    /// 誘いを待つ時間（秒）。Wi-Fi のない所では端末同士の Wi-Fi を立ち上げるのに時間がかかり、
+    /// 以前の 10 秒では間に合わずに切って作り直し、また最初からになることがあった
+    static let inviteTimeout: TimeInterval = 20
 }
 
 /// 撮る側。映像を JPEG にしてモニター（アプリ・ブラウザ）へ送り、モニターからの操作を受け取る。
@@ -161,10 +192,23 @@ final class RemoteHost: NSObject, ObservableObject {
     /// いまの相手に何回つなごうとしたか（メインスレッド用）
     private var inviteAttempts = 0
 
+    /// 暗号化はしない（.none）。.required だとつなぐときの鍵のやり取りが増え、Wi-Fi のない所
+    /// （Bluetooth・端末同士の Wi-Fi）では遅くなったり失敗したりしやすい。送るのは近くの 2 台の間だけ
     static func makeSession() -> MCSession {
-        MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
+        MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .none)
     }
     private var browser: MCNearbyServiceBrowser?
+    /// 見つけたモニターの端末の印（メインスレッド用）
+    private var monitorIDs: [MCPeerID: String] = [:]
+    /// 最後につないだモニターの端末の印。途中で切れたら、また見つかったときに自動でつなぎ直す。
+    /// 「切る」を押したら nil（メインスレッド用）
+    private var lastMonitorID: String?
+    /// 自動でつなごうとした相手（同じ相手に何度も自動で誘わない。メインスレッド用）
+    private var autoInvited: Set<MCPeerID> = []
+    /// 「切る」を押した後は、勝手につなぎ直さない（画面を開き直すまで。メインスレッド用）
+    private var userDisconnected = false
+    /// リモートモニターの画面を開いているか（メインスレッド用）
+    private var sheetOpen = false
     private var listener: NWListener?
     private var lastState: RemoteState?
 
@@ -276,9 +320,16 @@ final class RemoteHost: NSObject, ObservableObject {
 
     // MARK: - A: アプリのモニター（Multipeer Connectivity）
 
-    /// 近くのモニターを探す（リモートモニターの画面を開いている間）
+    /// 近くのモニターを探す（リモートモニターの画面を開いている間。つないだ後も、切れたときに
+    /// つなぎ直せるよう探し続ける）
     func startBrowsing() {
-        guard browser == nil else { return }
+        sheetOpen = true
+        userDisconnected = false
+        autoInvited = []
+        guard browser == nil else {
+            autoConnectIfOnlyOne()
+            return
+        }
         Diagnostics.log("リモート: 探し始める")
         let browser = MCNearbyServiceBrowser(peer: RemoteWire.peerID, serviceType: RemoteWire.serviceType)
         browser.delegate = self
@@ -287,19 +338,28 @@ final class RemoteHost: NSObject, ObservableObject {
         Diagnostics.log("リモート: 探し始めた")
     }
 
+    /// 画面を閉じた。つないでいる（つなごうとしている）間は、切れたときのために探し続ける
     func stopBrowsing() {
+        sheetOpen = false
+        if connectedMonitor == nil && invitingMonitor == nil { endBrowsing() }
+    }
+
+    private func endBrowsing() {
         browser?.stopBrowsingForPeers()
         browser = nil
         nearbyMonitors = []
+        monitorIDs = [:]
     }
 
     func invite(_ peer: MCPeerID) {
+        userDisconnected = false
         inviteAttempts = 0
         attemptInvite(peer)
     }
 
     /// 新しいつながりを作って誘う。1 台だけつなぐ（つないでいるモニターは切ってから）
     private func attemptInvite(_ peer: MCPeerID) {
+        guard let browser else { return }
         inviteAttempts += 1
         let old = session
         old.delegate = nil
@@ -310,7 +370,25 @@ final class RemoteHost: NSObject, ObservableObject {
         connectedMonitor = nil
         invitingMonitor = peer
         Diagnostics.log("リモート: つなぐ（\(inviteAttempts) 回目）")
-        browser?.invitePeer(peer, to: fresh, withContext: nil, timeout: 10)
+        browser.invitePeer(peer, to: fresh, withContext: nil, timeout: RemoteWire.inviteTimeout)
+    }
+
+    /// 自動でつなぐ: 前につないでいたモニターがまた見つかったとき（途中で切れたとき）か、
+    /// 画面を開いていて、見つかったモニターが 1 台だけのとき（選ぶ手間を省く）
+    private func autoConnectIfOnlyOne() {
+        guard browser != nil, !userDisconnected, connectedMonitor == nil, invitingMonitor == nil else { return }
+        let candidate: MCPeerID?
+        if let last = lastMonitorID, let peer = nearbyMonitors.first(where: { monitorIDs[$0] == last }) {
+            candidate = peer
+        } else if sheetOpen, nearbyMonitors.count == 1 {
+            candidate = nearbyMonitors[0]
+        } else {
+            candidate = nil
+        }
+        guard let peer = candidate, !autoInvited.contains(peer) else { return }
+        autoInvited.insert(peer)
+        Diagnostics.log("リモート: 自動でつなぐ")
+        invite(peer)
     }
 
     /// アプリのモニターがつながっているか（どのスレッドから読んでもよい）
@@ -335,9 +413,12 @@ final class RemoteHost: NSObject, ObservableObject {
     }
 
     func disconnectMonitor() {
+        userDisconnected = true
+        lastMonitorID = nil
         session.disconnect()
         connectedMonitor = nil
         invitingMonitor = nil
+        if !sheetOpen { endBrowsing() }
         updateStreaming()
     }
 
@@ -620,13 +701,29 @@ private final class WebStream {
 
 extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        let id = info?[RemoteWire.deviceIDKey]
         DispatchQueue.main.async {
+            guard browser === self.browser else { return }
+            // 同じ端末の古い印（前の起動・前のつながり）が残っていたら、新しい方に置き換える
+            if let id {
+                let stale = self.monitorIDs.filter { $0.value == id && $0.key != peerID }.map(\.key)
+                for old in stale where old != self.invitingMonitor {
+                    self.nearbyMonitors.removeAll { $0 == old }
+                    self.monitorIDs[old] = nil
+                }
+                self.monitorIDs[peerID] = id
+            }
             if !self.nearbyMonitors.contains(peerID) { self.nearbyMonitors.append(peerID) }
+            self.autoConnectIfOnlyOne()
         }
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        DispatchQueue.main.async { self.nearbyMonitors.removeAll { $0 == peerID } }
+        DispatchQueue.main.async {
+            guard browser === self.browser else { return }
+            self.nearbyMonitors.removeAll { $0 == peerID }
+            if self.invitingMonitor != peerID { self.monitorIDs[peerID] = nil }
+        }
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
@@ -652,7 +749,9 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
                 Diagnostics.log("リモート: つながった（\(self.inviteAttempts) 回目）")
                 self.connectedMonitor = peerID.displayName
                 self.invitingMonitor = nil
+                if let id = self.monitorIDs[peerID] { self.lastMonitorID = id }
             case .notConnected:
+                let wasConnected = self.connectedMonitor != nil && self.invitingMonitor == nil
                 if self.invitingMonitor == peerID {
                     if self.inviteAttempts < 3, self.browser != nil {
                         // 失敗したら、新しいつながりを作って自動でもう一度誘う（3 回まで）
@@ -664,9 +763,23 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
                     } else {
                         Diagnostics.log("リモート: つながらなかった（\(self.inviteAttempts) 回）")
                         self.invitingMonitor = nil
+                        // 応えない相手は、もう近くにいない古い印のことが多い。一覧から外す
+                        // （本当にいれば、また見つかって出てくる）
+                        self.nearbyMonitors.removeAll { $0 == peerID }
+                        self.monitorIDs[peerID] = nil
+                        if !self.sheetOpen { self.endBrowsing() }
                     }
                 }
-                if session.connectedPeers.isEmpty { self.connectedMonitor = nil }
+                if session.connectedPeers.isEmpty {
+                    self.connectedMonitor = nil
+                    if wasConnected {
+                        // 途中で切れた（離れた・相手のアプリが一時止まった など）。同じモニターが近くにいれば
+                        // つなぎ直す。いなければ、また見つかったときにつなぐ
+                        Diagnostics.log("リモート: 切れた。つなぎ直す")
+                        self.autoInvited = []
+                        self.autoConnectIfOnlyOne()
+                    }
+                }
             default:
                 break
             }
@@ -700,6 +813,11 @@ extension RemoteHost: MCNearbyServiceBrowserDelegate, MCSessionDelegate {
                  with progress: Progress) {}
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID,
                  at localURL: URL?, withError error: Error?) {}
+    /// 相手の証明書は確かめずに受け入れる（すぐ答えないと、つながるまで待たされる）
+    func session(_ session: MCSession, didReceiveCertificate certificate: [Any]?, fromPeer peerID: MCPeerID,
+                 certificateHandler: @escaping (Bool) -> Void) {
+        certificateHandler(true)
+    }
 }
 
 // MARK: - C: Apple Watch（WatchConnectivity）

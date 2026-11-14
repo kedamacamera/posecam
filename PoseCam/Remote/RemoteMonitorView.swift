@@ -25,7 +25,8 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
 
     func start() {
         guard advertiser == nil else { return }
-        let advertiser = MCNearbyServiceAdvertiser(peer: RemoteWire.peerID, discoveryInfo: nil,
+        let advertiser = MCNearbyServiceAdvertiser(peer: RemoteWire.peerID,
+                                                   discoveryInfo: [RemoteWire.deviceIDKey: RemoteWire.deviceID],
                                                    serviceType: RemoteWire.serviceType)
         advertiser.delegate = self
         advertiser.startAdvertisingPeer()
@@ -36,6 +37,14 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
         advertiser?.stopAdvertisingPeer()
         advertiser = nil
         session.disconnect()
+    }
+
+    /// 切れた後、見つけてもらう知らせを出し直す（古い知らせのままだと、撮る側から見つけにくいことがある）
+    private func restartAdvertising() {
+        guard advertiser != nil else { return }
+        advertiser?.stopAdvertisingPeer()
+        advertiser = nil
+        start()
     }
 
     func send(_ command: RemoteCommand) {
@@ -61,7 +70,10 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
         // 「モニターになる」を開いている間だけ届く。撮る側を 1 台だけ受け入れる。
         // つながっていなければ、新しいつながりを作ってから受け入れる
         DispatchQueue.main.async {
-            guard self.advertiser != nil, self.session.connectedPeers.isEmpty else {
+            // 同じ撮る側からの誘い直しは受け入れる。撮る側が待ちきれずに誘い直したとき、こちらでは前のつながりが
+            // まだ残っていて断ってしまい、何度試しても繋がらないことがあった
+            let others = self.session.connectedPeers.filter { $0 != peerID }
+            guard self.advertiser != nil, others.isEmpty else {
                 invitationHandler(false, nil)
                 return
             }
@@ -82,14 +94,22 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
 
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         DispatchQueue.main.async {
+            // 作り直す前の古いつながりからの知らせは無視する
+            guard session === self.session else { return }
             switch state {
             case .connected:
+                Diagnostics.log("モニター: つながった")
                 self.cameraName = peerID.displayName
             case .notConnected:
                 if session.connectedPeers.isEmpty {
+                    let wasConnected = self.cameraName != nil
                     self.cameraName = nil
                     self.image = nil
                     self.state = nil
+                    if wasConnected {
+                        Diagnostics.log("モニター: 切れた")
+                        self.restartAdvertising()
+                    }
                 }
             default:
                 break
@@ -136,6 +156,11 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
                  with progress: Progress) {}
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID,
                  at localURL: URL?, withError error: Error?) {}
+    /// 相手の証明書は確かめずに受け入れる（すぐ答えないと、つながるまで待たされる）
+    func session(_ session: MCSession, didReceiveCertificate certificate: [Any]?, fromPeer peerID: MCPeerID,
+                 certificateHandler: @escaping (Bool) -> Void) {
+        certificateHandler(true)
+    }
 }
 
 /// モニターで受け取った写真
@@ -596,7 +621,7 @@ struct RemoteSheet: View {
                         .textCase(nil)
                 } footer: {
                     Text("もう一台の iPhone・iPad でHameraを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
-                         + "ここに出ます。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながります。"
+                         + "ここに出ます（1 台だけなら自動でつなぎます）。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながり、途中で切れてもつなぎ直します。"
                          + "シャッターを押すと、この \(Self.deviceWord) のカメラで撮ります。")
                 }
 
