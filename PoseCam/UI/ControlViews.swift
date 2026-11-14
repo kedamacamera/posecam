@@ -1097,9 +1097,9 @@ struct HeatWarning: View {
             Image(systemName: "thermometer.high")
                 .font(.title3.weight(.semibold))
             VStack(alignment: .leading, spacing: 2) {
-                Text("本体が熱いため、フラッシュが使えません")
+                Text("フラッシュが使えません")
                     .font(.subheadline.weight(.semibold))
-                Text("冷ます必要があります")
+                Text("本体が熱いため、冷ます必要があります")
                     .font(.footnote)
                     .opacity(0.9)
             }
