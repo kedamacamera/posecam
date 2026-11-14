@@ -15,6 +15,20 @@ import WatchConnectivity
 // どちらも、撮る側が映像にガイドを重ねた JPEG を作って送る。受け取った側が 1 枚表示し終えてから次を送るので、
 // 回線が遅くてもコマがたまって遅れていくことはない（古いコマは捨てて、いつも最新のコマを送る）。
 
+/// 画面を自動で消さない理由をまとめて持つ。理由が 1 つでも残っていれば消さない。
+/// （以前はそれぞれが isIdleTimerDisabled を直接書いていて、モニターを開いた直後に撮る側の
+/// 「送信をやめる」処理が false に戻し、モニター中でも画面が消えていた）
+enum ScreenAwake {
+    enum Reason { case streaming, monitor }
+    private static var reasons: Set<Reason> = []
+
+    /// メインスレッドで呼ぶ
+    static func set(_ reason: Reason, _ on: Bool) {
+        if on { reasons.insert(reason) } else { reasons.remove(reason) }
+        UIApplication.shared.isIdleTimerDisabled = !reasons.isEmpty
+    }
+}
+
 /// モニターから撮る側への操作
 enum RemoteCommand: String, Codable {
     case shutter
@@ -256,7 +270,7 @@ final class RemoteHost: NSObject, ObservableObject {
             self.watchBox.value = self.watchViewing
             if !on { self.overlayBox.value = nil }
             // 送っている間は撮る側の画面を消さない（消えるとアプリが止まり、モニターに映らなくなる）
-            UIApplication.shared.isIdleTimerDisabled = on
+            ScreenAwake.set(.streaming, on)
         }
     }
 

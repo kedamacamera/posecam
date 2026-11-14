@@ -153,6 +153,7 @@ struct MonitorPhoto: Identifiable, Equatable {
 struct RemoteMonitorView: View {
     let onClose: () -> Void
     @StateObject private var client = RemoteMonitorClient()
+    @Environment(\.scenePhase) private var scenePhase
     /// 映像を左右反転して見る（背面カメラで自分を撮るとき、鏡のように見るため）。初めはしない。覚えておく
     @AppStorage("monitorMirror") private var mirror = false
     /// 撮る側が撮影後のプレビューをオンにしているとき、このモニターでも表示する。覚えておく
@@ -244,11 +245,15 @@ struct RemoteMonitorView: View {
         .onAppear {
             client.start()
             // 見ている間は画面を消さない
-            UIApplication.shared.isIdleTimerDisabled = true
+            ScreenAwake.set(.monitor, true)
         }
         .onDisappear {
             client.stop()
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.set(.monitor, false)
+        }
+        // アプリに戻ってきたときも、念のため掛け直す
+        .onChange(of: scenePhase) {
+            if scenePhase == .active { ScreenAwake.set(.monitor, true) }
         }
     }
 
@@ -412,7 +417,7 @@ struct RemoteMonitorView: View {
                     if let sample = client.state?.sample {
                         // モニターで左右反転して見ているときは、見本写真も一緒に反転する
                         PoseSampleCard(imageName: sample, mirrored: (client.state?.sampleMirrored ?? false) != mirror,
-                                       shown: $showSample)
+                                       shown: $showSample, width: Self.sampleWidth(for: geo.size))
                     }
                 }
                 .padding(10)
@@ -442,6 +447,17 @@ struct RemoteMonitorView: View {
         }
         .padding(30)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// モニターの見本写真の幅。撮影画面の iPhone の大きさ（92）より 1 割大きい 101 を、
+    /// 幅 390 の画面（iPhone 15 など）での大きさにして、画面の短い辺に比例して大きくする。
+    /// 小さい画面でも 101 より小さくはしない。映像の幅の 4 割までにする
+    static func sampleWidth(for size: CGSize) -> CGFloat {
+        let base: CGFloat = 92 * 1.1
+        let short = min(size.width, size.height)
+        guard short > 0 else { return base }
+        let proportional = base * short / 390
+        return min(max(base, proportional), max(base, size.width * 0.4))
     }
 
     /// 画像を枠の中に比率を保って収めたときの位置

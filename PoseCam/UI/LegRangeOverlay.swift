@@ -92,6 +92,8 @@ struct PoseSampleCard: View {
     let imageName: String
     let mirrored: Bool
     @Binding var shown: Bool
+    /// 幅。指定がなければ撮影画面の大きさ（iPad は画面が広いので 1 割大きくする）
+    var width: CGFloat? = nil
 
     var body: some View {
         if shown, let image = PoseImageCache.sample(named: imageName) {
@@ -99,8 +101,7 @@ struct PoseSampleCard: View {
                 .resizable()
                 .scaledToFit()
                 .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                // iPad は画面が広いので 1 割大きくする
-                .frame(width: UIDevice.current.userInterfaceIdiom == .pad ? 101 : 92)
+                .frame(width: width ?? (UIDevice.current.userInterfaceIdiom == .pad ? 101 : 92))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.7), lineWidth: 1))
                 .overlay(alignment: .topTrailing) {

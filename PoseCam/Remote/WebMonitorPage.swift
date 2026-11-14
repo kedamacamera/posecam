@@ -42,7 +42,7 @@ enum WebMonitorPage {
     .badges{display:flex;gap:6px}
     .badge{background:#0008;border-radius:14px;padding:5px 11px;font-weight:600;font-size:14px}
     .badge.ok{background:#1db954}
-    #sample{position:relative;width:92px;border-radius:8px;overflow:hidden;border:1px solid #fffb;box-shadow:0 2px 6px #0007}
+    #sample{position:relative;width:min(max(101px,25.9vmin),max(101px,40vw));border-radius:8px;overflow:hidden;border:1px solid #fffb;box-shadow:0 2px 6px #0007}
     #sample img{display:block;width:100%}
     #sample .x{position:absolute;right:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#0009;
       font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
@@ -138,6 +138,12 @@ enum WebMonitorPage {
     const q=(path,extra)=>path+'?k='+k+(extra||'');
     function load(key,def){try{const v=localStorage.getItem('posecam-'+key);return v==null?def:v==='1';}catch(e){return def;}}
     function save(key,v){try{localStorage.setItem('posecam-'+key,v?'1':'0');}catch(e){}}
+    // 見ている間は画面を消さない（対応しているブラウザだけ。https でないと使えないブラウザもある）
+    let wake=null;
+    async function keepAwake(){try{if(navigator.wakeLock&&!wake&&document.visibilityState==='visible'){wake=await navigator.wakeLock.request('screen');wake.addEventListener('release',()=>{wake=null;});}}catch(e){}}
+    document.addEventListener('visibilitychange',keepAwake);
+    document.addEventListener('pointerdown',keepAwake);
+    keepAwake();
     function buzz(){if(navigator.vibrate)navigator.vibrate(15);}
     let mirror=load('mirror',false),showPrev=load('preview',true),touch=load('touch',false);
     let full=false,chrome=false,st={},photos=[],lastPreview=null,firstState=true,sampleShown=true,sampleName=null;
