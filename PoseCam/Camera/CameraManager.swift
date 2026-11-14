@@ -112,6 +112,10 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isMovingTooMuch = false
     /// ダイレクトフラッシュで撮っている（ライトが光り始めてから撮り終わるまで）。「撮影中は動かないでください」を出す
     @Published private(set) var isFlashShooting = false
+    /// 本体が熱くなって、写真のフラッシュが使えなくなっている（iOS が止めている）。「冷ます必要があります」と出す
+    @Published private(set) var isFlashBlocked = false
+    /// 同じく、動画・スナップのライトが使えなくなっている
+    @Published private(set) var isTorchBlocked = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
     let poseFeed = PoseFeed()
     /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
@@ -256,6 +260,12 @@ final class CameraManager: NSObject, ObservableObject {
     /// 表示倍率 1x に当たるデバイスの videoZoomFactor（超広角を含むカメラでは 2.0 など）
     private var zoomBase: CGFloat = 1
     private var lensObservation: NSKeyValueObservation?
+    /// フラッシュ・ライトが使えるかの見張り（熱で使えなくなったら知らせる）
+    private var flashObservations: [NSKeyValueObservation] = []
+    // メインスレッド専用: 使えない状態が少し続いてから知らせる（光った瞬間などの一瞬の変化では出さない）
+    private var flashBlockedRaw = false
+    private var torchBlockedRaw = false
+    private var flashBlockWork: DispatchWorkItem?
     /// セルフタイマー中に背面のライトを弱く点けているか
     private var timerLightOn = false
     /// 合図のライトの点滅を止めるための番号（増やすと、それより前に始めた点滅は止まる）
@@ -382,6 +392,7 @@ final class CameraManager: NSObject, ObservableObject {
            session.canAddInput(input) {
             session.addInput(input)
             videoInput = input
+            watchFlashAvailability(device)
         }
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -507,6 +518,7 @@ final class CameraManager: NSObject, ObservableObject {
             if self.session.canAddInput(newInput) {
                 self.session.addInput(newInput)
                 self.videoInput = newInput
+                self.watchFlashAvailability(device)
             } else if let old = self.videoInput {
                 self.session.addInput(old)
             }
@@ -680,6 +692,55 @@ final class CameraManager: NSObject, ObservableObject {
             session.removeOutput(audioOutput)
         }
     }
+
+    /// フラッシュ・ライトが使えるかを見張る（sessionQueue から呼ぶ）。
+    /// 本体が熱くなると iOS がフラッシュとライトを止める（isFlashAvailable / isTorchAvailable が false になる）。
+    /// 前のカメラ（フラッシュもライトもない）では見張らない。
+    private func watchFlashAvailability(_ device: AVCaptureDevice) {
+        flashObservations = []
+        guard device.hasFlash || device.hasTorch else {
+            reportFlashAvailability(flashBlocked: false, torchBlocked: false)
+            return
+        }
+        let check: (AVCaptureDevice) -> Void = { [weak self] device in
+            self?.reportFlashAvailability(flashBlocked: device.hasFlash && !device.isFlashAvailable,
+                                          torchBlocked: device.hasTorch && !device.isTorchAvailable)
+        }
+        flashObservations = [
+            device.observe(\.isFlashAvailable, options: [.initial, .new]) { device, _ in check(device) },
+            device.observe(\.isTorchAvailable, options: [.new]) { device, _ in check(device) },
+        ]
+    }
+
+    private func reportFlashAvailability(flashBlocked: Bool, torchBlocked: Bool) {
+        DispatchQueue.main.async {
+            if flashBlocked != self.flashBlockedRaw || torchBlocked != self.torchBlockedRaw {
+                Diagnostics.log("フラッシュ: 使える \(!flashBlocked)、ライト: 使える \(!torchBlocked)（本体の温度 \(ProcessInfo.processInfo.thermalState.rawValue)）")
+            }
+            self.flashBlockedRaw = flashBlocked
+            self.torchBlockedRaw = torchBlocked
+            self.flashBlockWork?.cancel()
+            // 使えるようになったらすぐ消す。使えなくなったときは 1.5 秒続いてから出す
+            if !flashBlocked { self.isFlashBlocked = false }
+            if !torchBlocked { self.isTorchBlocked = false }
+            guard flashBlocked || torchBlocked else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.isFlashBlocked = self.flashBlockedRaw
+                self.isTorchBlocked = self.torchBlockedRaw
+            }
+            self.flashBlockWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        }
+    }
+
+    #if DEBUG
+    /// シミュレーターで警告の見た目を確かめる（起動引数 -demoHeatWarning）
+    func showHeatWarningForPreview() {
+        isFlashBlocked = true
+        isTorchBlocked = true
+    }
+    #endif
 
     private func applyTorch() {
         let on = flashOn && mode != .photo
