@@ -115,7 +115,14 @@ struct ContentView: View {
 
                     // ダイレクトフラッシュの注意は、上の「保存中」と並べず、撮影画面のまん中より少し上に出す
                     // （並べると「保存中」が出たときに左へずれて読みにくかった）
-                    if let notice = directFlashNotice {
+                    // 熱でフラッシュ・ライトが使えないときは、ダイレクトフラッシュの注意より優先して同じ場所に出す
+                    if heatBlocksFlash {
+                        HeatWarning()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .offset(y: -screen.height * 0.18)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    } else if let notice = directFlashNotice {
                         Badge(text: notice, color: Color.orange.opacity(0.9))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .offset(y: -screen.height * 0.18)
@@ -173,6 +180,12 @@ struct ContentView: View {
         .onAppear {
             // 前回カメラ起動中に落ちていたら、記録を見せるまでカメラは起動しない
             if crashReport == nil { camera.start() }
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-demoHeatWarning") {
+                camera.flashOn = true
+                camera.showHeatWarningForPreview()
+            }
+            #endif
             camera.remote.onCommand = { handleRemote($0) }
             // モニターでタップした所にピント・露出を合わせ、この画面にもピントの印を出す
             camera.remote.onFocus = { focus in
@@ -586,6 +599,12 @@ struct ContentView: View {
             RemoteMonitorView { showMonitor = false }
         }
         .onAppear { Diagnostics.log("設定: 画面が開いた") }
+    }
+
+    /// 本体が熱くなって、いま使おうとしているフラッシュ（写真）・ライト（動画・スナップ）が止められている
+    private var heatBlocksFlash: Bool {
+        guard camera.flashOn else { return false }
+        return camera.mode == .photo ? camera.isFlashBlocked : camera.isTorchBlocked
     }
 
     /// ダイレクトフラッシュの注意。撮っている間（ライトが光り始めてから）は「動かないで」、
