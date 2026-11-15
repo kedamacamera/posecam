@@ -143,6 +143,11 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
+                // モニターで見ている間は、撮る側の画面を黒くして明るさを下げ、プレビューの描画を止める（発熱対策）
+                if camera.cameraAuthorized {
+                    MonitorPowerSaveCover(remote: camera.remote) { camera.setPreviewPaused($0) }
+                }
+
                 if let capture = shownCapture {
                     CapturePreviewOverlay(image: capture.image) {
                         withAnimation(.easeIn(duration: 0.15)) { shownCapture = nil }
