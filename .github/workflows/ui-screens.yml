@@ -58,11 +58,13 @@ jobs:
                 xcrun simctl install "$UDID" "$APP"
                 xcrun simctl privacy "$UDID" grant camera "$BUNDLE" || true
                 xcrun simctl privacy "$UDID" grant microphone "$BUNDLE" || true
-                xcrun simctl launch "$UDID" "$BUNDLE"
+                xcrun simctl launch "$UDID" "$BUNDLE" "${@:2}"
                 sleep 8
                 xcrun simctl io "$UDID" screenshot "shots/iOS${VER}_${NAME}_$1.png"
               }
               shoot normal
+              # 熱でフラッシュが使えないときの警告（Debug ビルドの起動引数で出す）
+              shoot heat -demoHeatWarning
               # ボタンの形・文字を太くする・文字を大きく
               xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility ButtonShapesEnabled -bool YES
               xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility EnhancedTextLegibilityEnabled -bool YES
