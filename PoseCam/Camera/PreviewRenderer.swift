@@ -17,6 +17,8 @@ final class PreviewRenderer {
     private var layer: CAMetalLayer?
     private var drawableSize: CGSize = .zero
     private var frozen = false
+    /// true の間は描かない（モニターで見ていて、撮る側の画面を暗くしている間。描画の発熱を抑える）
+    private var paused = false
     private var hasDrawnOnce = false
 
     init() {
@@ -43,15 +45,22 @@ final class PreviewRenderer {
         lock.unlock()
     }
 
+    func setPaused(_ value: Bool) {
+        lock.lock()
+        paused = value
+        lock.unlock()
+    }
+
     /// 映像のキューから呼ぶ。
     func display(_ image: CIImage) {
         lock.lock()
         let layer = self.layer
         let size = drawableSize
         let frozen = self.frozen
+        let paused = self.paused
         lock.unlock()
 
-        guard !frozen, let layer, size.width > 0, size.height > 0,
+        guard !frozen, !paused, let layer, size.width > 0, size.height > 0,
               image.extent.width > 0, image.extent.height > 0,
               let drawable = layer.nextDrawable(),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
