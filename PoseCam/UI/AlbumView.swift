@@ -22,7 +22,7 @@ struct AlbumView: View {
     @State private var working = false
     /// 写真の画面で削除したら増やして、写真の画面を作り直す（次の写真を表示する）
     @State private var viewerKey = 0
-    /// 表示しているもの（すべて・PoseCam・お気に入り・動画・自分で作ったアルバム）
+    /// 表示しているもの（すべて・Hamera・お気に入り・動画・自分で作ったアルバム）
     @State private var source: AlbumSource = .all
     /// アルバムを切り替えて、中身を読み込んでいる（前のアルバムを出したままにせず「読み込み中」を出す）
     @State private var switching = false
@@ -173,7 +173,7 @@ struct AlbumView: View {
     private var emptyText: String {
         switch source {
         case .poseCam:
-            return "PoseCam のアルバムはまだ空です。\nこれから撮った写真・動画がここに入ります（前に撮ったものは「すべて」にあります）。"
+            return "Hamera のアルバムはまだ空です。\nこれから撮った写真・動画がここに入ります（前に撮ったものは「すべて」にあります）。"
         case .favorites: return "お気に入りはありません"
         case .videos: return "動画はありません"
         default: return "写真がありません"
@@ -362,7 +362,7 @@ enum AlbumSource: Hashable, Identifiable {
     var title: String {
         switch self {
         case .all: return "最近の項目"
-        case .poseCam: return "PoseCam"
+        case .poseCam: return MediaSaver.albumTitle
         case .favorites: return "お気に入り"
         case .videos: return "動画"
         case .album(_, let name): return name
@@ -379,7 +379,7 @@ enum AlbumSource: Hashable, Identifiable {
         }
     }
 
-    /// 自分で作ったアルバムのうち、中身があるもの（PoseCam のアルバムは別に出すので除く）
+    /// 自分で作ったアルバムのうち、中身があるもの（Hamera のアルバムは別に出すので除く）
     static func userAlbums() -> [AlbumSource] {
         var list: [AlbumSource] = []
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
@@ -387,7 +387,7 @@ enum AlbumSource: Hashable, Identifiable {
                 let title = collection.localizedTitle ?? ""
                 // 中身の数は数えずに、写真ライブラリが覚えているおおよその数で空のアルバムを除く
                 // （以前は 1 つずつ数えていて、写真の多い iPhone では一覧が出るまで 30 秒以上かかった）
-                guard title != MediaSaver.albumTitle, !title.isEmpty,
+                guard title != MediaSaver.albumTitle, title != MediaSaver.oldAlbumTitle, !title.isEmpty,
                       collection.estimatedAssetCount != 0 else { return }
                 list.append(.album(collection.localIdentifier, title))
             }
@@ -401,7 +401,7 @@ struct AlbumEntry: Identifiable {
     let source: AlbumSource
     var id: String { source.id }
 
-    /// 最近の項目・お気に入り・動画・PoseCam・自分で作ったアルバム
+    /// 最近の項目・お気に入り・動画・Hamera・自分で作ったアルバム
     static func all() -> [AlbumEntry] {
         var list: [AlbumSource] = [.all, .favorites, .videos]
         if MediaSaver.existingAlbum() != nil { list.append(.poseCam) }
