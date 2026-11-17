@@ -11,6 +11,7 @@ on:
       - ".github/workflows/convert-model.yml"
       - ".github/workflows/verify-processing.yml"
       - ".github/workflows/build-shapes.yml"
+      - ".github/workflows/beauty-compare.yml"
   workflow_dispatch:
 
 jobs:

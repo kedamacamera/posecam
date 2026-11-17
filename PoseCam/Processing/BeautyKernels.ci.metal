@@ -8,7 +8,8 @@ namespace coreimage {
 /// 肌のむらや毛穴はならされるが、メガネのフチ・眉・目のように色が大きく違う境目は混ざらずに残る。
 /// 重みで割って平均するので、全体の明るさや色は変わらない。
 /// radius: ならす範囲（ピクセル）、sigmaColor: 「色が近い」とみなす差（0〜1）
-float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) {
+/// neighbors: src を点の間隔の半分ほどぼかしたもの（周りの画素はここから取る）
+float4 bilateral(sampler src, sampler neighbors, float radius, float sigmaColor, destination dest) {
     float2 coord = dest.coord();
     float4 center = src.sample(src.transform(coord));
     float4 sum = float4(0.0);
@@ -19,7 +20,9 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
     for (int y = -4; y <= 4; y++) {
         for (int x = -4; x <= 4; x++) {
             float2 offset = float2(float(x), float(y)) * step;
-            float4 color = src.sample(src.transform(coord + offset));
+            // 周りの画素は、少しぼかした画像から取る。範囲が広いと 9x9 の点の間が空き、
+            // 1 画素ずつ拾うと毛穴などの細かい模様が飛び飛びに拾われて、まだらなむらになるため
+            float4 color = neighbors.sample(neighbors.transform(coord + offset));
             float3 difference = color.rgb - center.rgb;
             float weight = exp(-dot(offset, offset) / spatialDenominator)
                          * exp(-dot(difference, difference) / colorDenominator);
@@ -28,6 +31,24 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
         }
     }
     return sum / weightSum;
+}
+
+/// 質感を戻す。なめらかにした画像（smooth）に、なめらかにする前にあった細かい凹凸（毛穴・うぶ毛・肌のきめ）のうち、
+/// なめらかにして消えた分を keep の割合だけ足し戻す（周波数分離: 色むら・くすみの大きな模様はならしたまま、細かい質感だけ残す）。
+/// 細かい凹凸 = 画像 - ごく少しぼかした画像。src と smooth それぞれで求めて差をとるので、
+/// なめらかにしても残っていた輪郭（鼻の縁など）には何も足さない（二重に足して縁が白く光るのを防ぐ）。
+/// limit を超える大きな差（ほくろ・ニキビの芯・影の縁）は戻さない。
+float4 restoreTexture(sampler src, sampler srcBlur, sampler smooth, sampler smoothBlur,
+                      float keep, float limit, destination dest) {
+    float2 coord = dest.coord();
+    float4 s = smooth.sample(smooth.transform(coord));
+    float3 fineSrc = src.sample(src.transform(coord)).rgb - srcBlur.sample(srcBlur.transform(coord)).rgb;
+    float3 fineSmooth = s.rgb - smoothBlur.sample(smoothBlur.transform(coord)).rgb;
+    float3 lost = fineSrc - fineSmooth;
+    // 明るさの凹凸として戻す（色の凹凸まで戻すと、赤み消しで消した細かい赤い点が戻るため）
+    float l = dot(lost, float3(0.299, 0.587, 0.114));
+    l = clamp(l, -limit, limit) * keep;
+    return float4(clamp(s.rgb + l, 0.0, 1.0), s.a);
 }
 
 /// 周りより「少しだけ」暗い部分（シミ・シワ）を、周りの平均の色で埋める。

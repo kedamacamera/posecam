@@ -37,7 +37,7 @@ final class FrameProcessor {
 
     private func beautify(_ image: CIImage, settings: ProcessingSettings, masks: BeautyMasks) -> CIImage {
         let extent = image.extent
-        let longSide = max(extent.width, extent.height)
+        let longSide = Self.beautyUnit(extent, masks: masks)
         let base = skinBase(image, masks: masks, longSide: longSide)
         let mask = applyFeatures(base, masks.features)
         var result = image
@@ -104,8 +104,11 @@ final class FrameProcessor {
         if settings.smoothing > 0.01 {
             // なめらかにした画像は元の画像と同じ明るさ・色なので、混ぜても肌の色は変わらない。
             // 強くしたときはほぼ置き換え、弱いときは元の質感を残す
-            let smooth = bilateralSmooth(result, amount: settings.smoothing, longSide: longSide)
             let a = settings.smoothing
+            var smooth = bilateralSmooth(result, amount: a, longSide: longSide)
+            // 置き換えると毛穴・肌のきめまで消えて、塗ったようなのっぺりした肌になっていた。
+            // 色むら・くすみはならしたまま、細かい質感だけを一部戻す（強くするほど戻す量は減らす）
+            smooth = restoreTexture(original: result, smooth: smooth, keep: 0.6 - 0.3 * a, longSide: longSide)
             result = blend(smooth, over: result, mask: mask, amount: min(1, 0.15 + 0.85 * a))
         }
         if settings.brightening > 0.01 {
@@ -127,6 +130,16 @@ final class FrameProcessor {
             result = blend(shaded, over: result, mask: shadeMask, amount: 1)
         }
         return result
+    }
+
+    /// 美肌の「ものさし」。ならす範囲・シミを探す範囲などは、すべてこの長さに対する割合で決める。
+    /// 以前は写真の長い辺をそのまま使っていたので、顔が小さい全身の写真では目鼻まで溶け、
+    /// 顔が大きい自撮りでは効きが弱かった。顔が見つかったときは顔の幅の 3 倍（顔が写真の幅の 4 割ほどの
+    /// 自撮りで、以前とほぼ同じ強さ）にする。顔がない（体の肌だけ）ときは以前どおり長い辺。
+    static func beautyUnit(_ extent: CGRect, masks: BeautyMasks) -> CGFloat {
+        let longSide = max(extent.width, extent.height)
+        guard let face = masks.faceWidth, face > 0 else { return longSide }
+        return min(max(face * 3, longSide * 0.06), longSide * 1.5)
     }
 
     /// 1 チャンネルのマスク（肌のモデル・人物の判定の結果は赤にしか値がない）を、R・G・B すべて同じ値の灰色にする。
@@ -195,7 +208,7 @@ final class FrameProcessor {
     func beardDebug(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
         guard let beard = masks.beard else { return nil }
         let extent = image.extent
-        let longSide = max(extent.width, extent.height)
+        let longSide = Self.beautyUnit(extent, masks: masks)
         let base = skinBase(image, masks: masks, longSide: longSide)
         let mask = applyFeatures(base, masks.features)
         let skinRegion = Self.gray(masks.skin ?? masks.person ?? base)
@@ -210,7 +223,7 @@ final class FrameProcessor {
     func beardMask(_ image: CIImage, masks: BeautyMasks) -> CIImage? {
         guard let beard = masks.beard else { return nil }
         let extent = image.extent
-        let longSide = max(extent.width, extent.height)
+        let longSide = Self.beautyUnit(extent, masks: masks)
         let base = skinBase(image, masks: masks, longSide: longSide)
         let skinRegion = Self.gray(masks.skin ?? masks.person ?? base)
             .clampedToExtent().applyingGaussianBlur(sigma: longSide * 0.006).cropped(to: extent)
@@ -222,13 +235,13 @@ final class FrameProcessor {
     /// メガネのフチ・髪の毛・眉は肌の色ではないので、肌の色の判定で外れる。
     /// 確認用のツール（tools/verify）からも使う。
     func beautyMask(_ image: CIImage, masks: BeautyMasks) -> CIImage {
-        let longSide = max(image.extent.width, image.extent.height)
+        let longSide = Self.beautyUnit(image.extent, masks: masks)
         return applyFeatures(skinBase(image, masks: masks, longSide: longSide), masks.features)
     }
 
     /// 赤み消しをかける範囲（白）。確認用のツールから使う。
     func rednessMask(_ image: CIImage, masks: BeautyMasks) -> CIImage {
-        let longSide = max(image.extent.width, image.extent.height)
+        let longSide = Self.beautyUnit(image.extent, masks: masks)
         return applyFeatures(skinBase(image, masks: masks, longSide: longSide), masks.redFeatures)
     }
 
@@ -288,17 +301,40 @@ final class FrameProcessor {
         return output?.cropped(to: image.extent) ?? image
     }
 
+    static let textureKernel: CIKernel? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? CIKernel(functionName: "restoreTexture", fromMetalLibraryData: data)
+    }()
+
+    /// なめらかにして消えた細かい質感（毛穴・きめ）を keep の割合だけ戻す（BeautyKernels.ci.metal の restoreTexture）。
+    /// 「細かい」は、ものさしの 0.1%（顔の幅の 0.3%。顔の幅 1000 ピクセルで 3 ピクセル）までの凹凸
+    private func restoreTexture(original: CIImage, smooth: CIImage, keep: Double, longSide: CGFloat) -> CIImage {
+        guard let kernel = Self.textureKernel, keep > 0.01 else { return smooth }
+        let extent = original.extent
+        let sigma = max(0.7, longSide * 0.001)
+        func blur(_ x: CIImage) -> CIImage { x.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent) }
+        let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
+                                  arguments: [original, blur(original), smooth, blur(smooth), Float(keep), Float(0.06)])
+        return output?.cropped(to: extent) ?? smooth
+    }
+
     /// 色が近い画素どうしだけを平均して、肌をなめらかにする（境目は混ざらない・明るさは変わらない）。
     private func bilateralSmooth(_ image: CIImage, amount: Double, longSide: CGFloat) -> CIImage {
         guard let kernel = Self.bilateralKernel else { return edgePreservingSmooth(image, amount: amount) }
-        // 長辺 1280 なら 半径 4〜13 ピクセル。強くするほど広い範囲・大きい色の差までならす。
+        // ものさし 1280 なら 半径 4〜13 ピクセル。強くするほど広い範囲・大きい色の差までならす。
         // 鼻などの陰影（もっと大きい明暗）は色の差が大きいので残る
         let radius = longSide * CGFloat(0.003 + 0.007 * amount)
         let sigmaColor = 0.04 + 0.07 * amount
+        // 9x9 の点の間隔（radius / 4）の半分ほどぼかした画像から周りの画素を取る
+        let step = radius / 4
+        let neighbors = step > 1.5
+            ? image.clampedToExtent().applyingGaussianBlur(sigma: step * 0.5)
+            : image.clampedToExtent()
         let output = kernel.apply(
             extent: image.extent,
-            roiCallback: { _, rect in rect.insetBy(dx: -radius - 1, dy: -radius - 1) },
-            arguments: [image.clampedToExtent(), Float(radius), Float(sigmaColor)])
+            roiCallback: { _, rect in rect.insetBy(dx: -radius - step * 2 - 1, dy: -radius - step * 2 - 1) },
+            arguments: [image.clampedToExtent(), neighbors, Float(radius), Float(sigmaColor)])
         return output?.cropped(to: image.extent) ?? edgePreservingSmooth(image, amount: amount)
     }
 
