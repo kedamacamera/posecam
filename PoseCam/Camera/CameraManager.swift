@@ -43,6 +43,8 @@ final class PoseFeed: ObservableObject {
     /// 2 人目以降の、検出した骨格と顔（画像座標）。2 人以上の型のときだけ表示に使う
     @Published fileprivate(set) var others: [[Joint: CGPoint]] = []
     @Published fileprivate(set) var otherFaces: [FaceShape] = []
+    /// 人物の切り抜きの上端（画面の高さに対する割合）。撮ってもらう人ガイドの「頭の上の余白」に使う
+    @Published fileprivate(set) var personTop: CGFloat?
 
     /// 写真の編集画面で、写真から求めた骨格を脚長の範囲の線に使う
     func showStill(pose: [Joint: CGPoint]?) {
@@ -178,6 +180,15 @@ final class CameraManager: NSObject, ObservableObject {
             updatePoseNeeded()
         }
     }
+    /// 撮ってもらう人ガイド（撮影目標のチェックリスト）を出す。覚えておく
+    @Published var shootingGuide = UserDefaults.standard.bool(forKey: CameraManager.shootingGuideKey) {
+        didSet {
+            UserDefaults.standard.set(shootingGuide, forKey: Self.shootingGuideKey)
+            shootingGuideBox.value = shootingGuide
+            updatePoseNeeded()
+        }
+    }
+    static let shootingGuideKey = "shootingGuide"
     /// 脚長で伸ばす範囲の線を表示している（脚長が 0 でも、線の位置を決めるために骨格を検出する）
     var showsLegRange = false {
         didSet { updatePoseNeeded() }
@@ -242,6 +253,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 骨格の検出が要るか（型・骨格の表示・自動撮影・脚長のどれかを使っているときだけ検出する）
     private let poseNeeded = Locked(false)
     private let showSkeletonBox = Locked(false)
+    private let shootingGuideBox = Locked(UserDefaults.standard.bool(forKey: CameraManager.shootingGuideKey))
     /// 無音撮影に使う、加工前の最新のコマ。シャッターの瞬間にすぐ取り出せるよう、映像のキューを待たずに読める箱に入れる
     private let latestSourceBox = Locked<CIImage?>(nil)
     /// 最新のコマの撮影情報（Exif: 絞り・シャッター速度・ISO・レンズ名）。無音撮影の写真とダイレクトフラッシュに使う
@@ -943,12 +955,13 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func updatePoseNeeded() {
         let needed = (template != nil && template?.isObject != true) || showSkeleton || autoShutter
-            || settings.legLength > 0.01 || showsLegRange
+            || settings.legLength > 0.01 || showsLegRange || shootingGuide
         poseNeeded.value = needed
         if !needed {
             poseFeed.detected = nil
             poseFeed.face = nil
             poseFeed.score = nil
+            poseFeed.personTop = nil
         }
     }
 
@@ -1785,9 +1798,14 @@ final class CameraManager: NSObject, ObservableObject {
             let gridWidth = 48
             // 顔のパーツは、型に顔があるとき（顔の位置の一致度）と骨格を表示するときだけ求める
             let wantsFace = template?.face != nil || self.showSkeletonBox.value
+            // 撮ってもらう人ガイドは、人の形の上端（頭の上の余白）に使う
+            let wantsGuide = self.shootingGuideBox.value
             let result = self.detector.poseAndSilhouette(pixelBuffer: pixelBuffer,
-                                                         silhouetteWidth: outlines.isEmpty ? nil : gridWidth,
+                                                         silhouetteWidth: outlines.isEmpty && !wantsGuide ? nil : gridWidth,
                                                          face: wantsFace)
+            // 人の形は、型に輪郭があるときだけ一致度に使う（ガイドのためだけに求めたときは使わない）
+            let scoringSilhouette = outlines.isEmpty ? nil : result.silhouette
+            let personTop = wantsGuide ? result.silhouette.flatMap(ShootingGuide.top(of:)) : nil
             let face = result.face
             let pose = result.pose
             self.poseBox.value = pose
@@ -1799,7 +1817,7 @@ final class CameraManager: NSObject, ObservableObject {
                 let people = template.people
                 let jointScore = PoseMatcher.score(people: people.map(\.joints), detected: detected, aspect: aspect)
                 var silhouetteScore: Double?
-                if let silhouette = result.silhouette {
+                if let silhouette = scoringSilhouette {
                     let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
                     if self.templateCells?.key != key {
                         self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
@@ -1823,7 +1841,7 @@ final class CameraManager: NSObject, ObservableObject {
                     return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect)
                 }
                 var silhouetteScore: Double?
-                if let silhouette = result.silhouette {
+                if let silhouette = scoringSilhouette {
                     let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
                     if self.templateCells?.key != key {
                         self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
@@ -1858,6 +1876,7 @@ final class CameraManager: NSObject, ObservableObject {
                 guard self.poseNeeded.value else { return }
                 if self.poseFeed.detected != pose { self.poseFeed.detected = pose }
                 if self.poseFeed.face != face { self.poseFeed.face = face }
+                if self.poseFeed.personTop != personTop { self.poseFeed.personTop = personTop }
                 let others = isGroup ? Array(result.poses.dropFirst()) : []
                 let otherFaces = isGroup ? Array(result.faces.dropFirst()) : []
                 if self.poseFeed.others != others { self.poseFeed.others = others }

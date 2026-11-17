@@ -65,6 +65,7 @@ jobs:
               shoot normal
               # 熱でフラッシュが使えないときの警告（Debug ビルドの起動引数で出す）
               shoot heat -demoHeatWarning
+              shoot guide -shootingGuide YES
               # ボタンの形・文字を太くする・文字を大きく
               xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility ButtonShapesEnabled -bool YES
               xcrun simctl spawn "$UDID" defaults write com.apple.Accessibility EnhancedTextLegibilityEnabled -bool YES
