@@ -81,7 +81,7 @@ enum PhotoMetadata {
             kCGImagePropertyTIFFMake as String: "Apple",
             kCGImagePropertyTIFFModel as String: model,
             kCGImagePropertyTIFFDateTime as String: dateText,
-            kCGImagePropertyTIFFSoftware as String: "PoseCam",
+            kCGImagePropertyTIFFSoftware as String: "Hamera",
         ]
         return [exifKey: exif, tiffKey: tiff]
     }

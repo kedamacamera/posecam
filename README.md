@@ -1,4 +1,6 @@
-# ポーズカメラ（PoseCam）
+# Hamera（ハメラ）
+
+ポーズにハメるだけで撮れるカメラ。開発中の仮の名前は PoseCam だったので、コードやフォルダの名前には PoseCam が残っている。
 
 ポーズの「型」を画面に重ねて、型に合わせるだけでポーズが決まる iOS カメラアプリ。
 美肌・美白・脚長の加工とフィルターをリアルタイムでかけられる。
@@ -27,7 +29,7 @@
 手元の Mac（macOS 12）では現行の Xcode が動かないため、GitHub Actions でビルドしている。
 
 1. `main` に push すると `.github/workflows/build-ios.yml` が署名なしの `.ipa` を作る（10 分ほど）
-2. `gh run download <run id> -n PoseCam-ipa -D dist` で `dist/PoseCam.ipa` を取得
+2. `gh run download <run id> -n Hamera-ipa -D dist` で `dist/Hamera.ipa` を取得
 3. Windows の Sideloadly で、自分の Apple ID で署名して iPhone に入れる
    - 無料の Apple ID では 7 日で起動できなくなるので、入れ直す
 

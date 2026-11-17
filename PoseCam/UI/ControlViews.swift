@@ -1090,6 +1090,30 @@ struct Badge: View {
     }
 }
 
+/// 本体が熱くなってフラッシュが使えないときの警告（撮影画面のまん中より少し上に出す）
+struct HeatWarning: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "thermometer.high")
+                .font(.title3.weight(.semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("フラッシュが使えません")
+                    .font(.subheadline.weight(.semibold))
+                Text("本体が熱いため、冷ます必要があります")
+                    .font(.footnote)
+                    .opacity(0.9)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.red.opacity(0.85)))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 24)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 // MARK: - 連続撮影
 
 /// 次のシャッターまでの残り時間を、減っていく円で表す。円がなくなった瞬間にシャッターが切れる。

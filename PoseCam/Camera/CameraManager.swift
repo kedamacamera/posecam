@@ -112,6 +112,10 @@ final class CameraManager: NSObject, ObservableObject {
     @Published private(set) var isMovingTooMuch = false
     /// ダイレクトフラッシュで撮っている（ライトが光り始めてから撮り終わるまで）。「撮影中は動かないでください」を出す
     @Published private(set) var isFlashShooting = false
+    /// 本体が熱くなって、写真のフラッシュが使えなくなっている（iOS が止めている）。「冷ます必要があります」と出す
+    @Published private(set) var isFlashBlocked = false
+    /// 同じく、動画・スナップのライトが使えなくなっている
+    @Published private(set) var isTorchBlocked = false
     @Published private(set) var frameAspect: CGFloat = 3.0 / 4.0
     let poseFeed = PoseFeed()
     /// 撮影した瞬間に 1 増える（画面を一瞬暗くして、シャッターが切れたことを知らせる）
@@ -256,6 +260,12 @@ final class CameraManager: NSObject, ObservableObject {
     /// 表示倍率 1x に当たるデバイスの videoZoomFactor（超広角を含むカメラでは 2.0 など）
     private var zoomBase: CGFloat = 1
     private var lensObservation: NSKeyValueObservation?
+    /// フラッシュ・ライトが使えるかの見張り（熱で使えなくなったら知らせる）
+    private var flashObservations: [NSKeyValueObservation] = []
+    // メインスレッド専用: 使えない状態が少し続いてから知らせる（光った瞬間などの一瞬の変化では出さない）
+    private var flashBlockedRaw = false
+    private var torchBlockedRaw = false
+    private var flashBlockWork: DispatchWorkItem?
     /// セルフタイマー中に背面のライトを弱く点けているか
     private var timerLightOn = false
     /// 合図のライトの点滅を止めるための番号（増やすと、それより前に始めた点滅は止まる）
@@ -267,6 +277,20 @@ final class CameraManager: NSObject, ObservableObject {
 
     // videoQueue 専用
     private var lastDetectionTime: CFTimeInterval = 0
+    /// 直前の一致度（型から遠いときはポーズの判定を減らすのに使う）。検出のキューで書き、映像のキューで読む
+    private let lastPoseScore = Locked<Double?>(nil)
+
+    // MARK: 発熱対策
+    /// 本体の温度に合わせて処理を軽くする段階（0: ふつう、1: 少し熱い、2: 熱い、3: とても熱い）。どのキューからも読む
+    private let heatLevelBox = Locked(0)
+    private var thermalObserver: NSObjectProtocol?
+    /// 無音撮影（映像のコマを写真にする）の形式か。sessionQueue で書き、映像のキューで読む
+    private let silentFramesBox = Locked(false)
+    /// プレビューの描画を止めているか（モニターで見ていて、撮る側の画面を暗くしている間）。映像のキューで読む
+    private let previewPausedBox = Locked(false)
+    // 映像のキュー専用: プレビューのコマを間引く・美肌のマスクを使い回す
+    private var nextPreviewFrameDue: CFTimeInterval = 0
+    private var cachedMasks: (key: String, time: CFTimeInterval, masks: BeautyMasks?)?
     private var lastSlowFrameLog: CFTimeInterval = 0
     private var smoothedLegs: LegLayout?
     private var lastFrameSize: CGSize = .zero
@@ -382,6 +406,7 @@ final class CameraManager: NSObject, ObservableObject {
            session.canAddInput(input) {
             session.addInput(input)
             videoInput = input
+            watchFlashAvailability(device)
         }
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -393,6 +418,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         updateConnections(position: .back)
         refreshLenses(keepingDisplayZoom: nil)
+        watchThermalState()
         // セッションが止まったら（マイクの切り替え・他のアプリとの取り合いなど）記録して動かし直す
         NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification,
                                                object: session, queue: nil) { [weak self] note in
@@ -507,6 +533,7 @@ final class CameraManager: NSObject, ObservableObject {
             if self.session.canAddInput(newInput) {
                 self.session.addInput(newInput)
                 self.videoInput = newInput
+                self.watchFlashAvailability(device)
             } else if let old = self.videoInput {
                 self.session.addInput(old)
             }
@@ -525,6 +552,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// 以前は 4K（16:9）のプリセットを使っていたが、16:9 はセンサーの上下を切り捨てるので、
     /// 3:4 に切り抜くと通常の写真より画角が狭くなっていた。
     private func configureVideoFormat(preset: AVCaptureSession.Preset, silent: Bool) {
+        silentFramesBox.value = silent
         if silent, let device = videoInput?.device, let format = Self.fullSensorVideoFormat(device) {
             do {
                 try device.lockForConfiguration()
@@ -679,6 +707,116 @@ final class CameraManager: NSObject, ObservableObject {
         if session.outputs.contains(where: { $0 === audioOutput }) {
             session.removeOutput(audioOutput)
         }
+    }
+
+    /// フラッシュ・ライトが使えるかを見張る（sessionQueue から呼ぶ）。
+    /// 本体が熱くなると iOS がフラッシュとライトを止める（isFlashAvailable / isTorchAvailable が false になる）。
+    /// 前のカメラ（フラッシュもライトもない）では見張らない。
+    private func watchFlashAvailability(_ device: AVCaptureDevice) {
+        flashObservations = []
+        guard device.hasFlash || device.hasTorch else {
+            reportFlashAvailability(flashBlocked: false, torchBlocked: false)
+            return
+        }
+        let check: (AVCaptureDevice) -> Void = { [weak self] device in
+            self?.reportFlashAvailability(flashBlocked: device.hasFlash && !device.isFlashAvailable,
+                                          torchBlocked: device.hasTorch && !device.isTorchAvailable)
+        }
+        flashObservations = [
+            device.observe(\.isFlashAvailable, options: [.initial, .new]) { device, _ in check(device) },
+            device.observe(\.isTorchAvailable, options: [.new]) { device, _ in check(device) },
+        ]
+    }
+
+    private func reportFlashAvailability(flashBlocked: Bool, torchBlocked: Bool) {
+        DispatchQueue.main.async {
+            if flashBlocked != self.flashBlockedRaw || torchBlocked != self.torchBlockedRaw {
+                Diagnostics.log("フラッシュ: 使える \(!flashBlocked)、ライト: 使える \(!torchBlocked)（本体の温度 \(ProcessInfo.processInfo.thermalState.rawValue)）")
+            }
+            self.flashBlockedRaw = flashBlocked
+            self.torchBlockedRaw = torchBlocked
+            self.flashBlockWork?.cancel()
+            // 使えるようになったらすぐ消す。使えなくなったときは 1.5 秒続いてから出す
+            if !flashBlocked { self.isFlashBlocked = false }
+            if !torchBlocked { self.isTorchBlocked = false }
+            guard flashBlocked || torchBlocked else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.isFlashBlocked = self.flashBlockedRaw
+                self.isTorchBlocked = self.torchBlockedRaw
+            }
+            self.flashBlockWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        }
+    }
+
+    #if DEBUG
+    /// シミュレーターで警告の見た目を確かめる（起動引数 -demoHeatWarning）
+    func showHeatWarningForPreview() {
+        isFlashBlocked = true
+        isTorchBlocked = true
+    }
+    #endif
+
+    /// 本体の温度の変化を見張る（sessionQueue から 1 回だけ呼ぶ）
+    private func watchThermalState() {
+        guard thermalObserver == nil else { return }
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.updateHeatLevel()
+        }
+        DispatchQueue.main.async { self.updateHeatLevel() }
+    }
+
+    /// 本体の温度に合わせて処理の軽さを決める。熱いほどプレビュー・ポーズの判定・モニターへの送信を減らし、
+    /// 冷えたら元に戻す。撮った写真・録画の画質は変えない
+    private func updateHeatLevel() {
+        let level: Int
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: level = 0
+        case .fair: level = 1
+        case .serious: level = 2
+        case .critical: level = 3
+        @unknown default: level = 0
+        }
+        guard level != heatLevelBox.value else { return }
+        heatLevelBox.value = level
+        remote.heatLevel.value = level
+        Diagnostics.log("本体の温度: 段階 \(level)（\(["ふつうの処理", "少し軽くする", "軽くする", "かなり軽くする"][level])）")
+    }
+
+    /// モニターで見ている間、撮る側の画面を暗くしてプレビューの描画を止める（メインスレッドから呼ぶ）
+    func setPreviewPaused(_ paused: Bool) {
+        guard previewPausedBox.value != paused else { return }
+        previewPausedBox.value = paused
+        renderer.setPaused(paused)
+        Diagnostics.log(paused ? "発熱対策: モニターで表示中なので撮る側の画面を暗くした" : "発熱対策: 撮る側の画面を元に戻した")
+    }
+
+    /// 録画していない間に処理するプレビューのコマ数（1 秒あたり）。カメラ自体は 30 コマのまま受け取るので、
+    /// 撮った写真（無音撮影も、その瞬間の最新のコマを使う）や録画には影響しない
+    static func previewFPS(silent: Bool, heat: Int, paused: Bool) -> Double {
+        var fps: Double
+        switch heat {
+        case 3: fps = silent ? 10 : 15
+        case 2: fps = silent ? 12 : 20
+        default: fps = silent ? 15 : 30
+        }
+        // 画面を暗くしている間は、モニターへ送る分（1 秒に 10 コマまで）だけ処理する
+        if paused { fps = min(fps, 10) }
+        return fps
+    }
+
+    /// ポーズの判定の間隔（秒）。型から遠いとき（一致度 50% 未満）は 1 秒に 5〜6 回に減らし、近づいたら 12 回に戻す。
+    /// 骨格の表示・脚長は動きについていく必要があるので減らさない。本体が熱いときはさらに間をあける。映像のキューから呼ぶ
+    private func poseInterval() -> CFTimeInterval {
+        var interval: CFTimeInterval = 0.08
+        if let score = lastPoseScore.value, score < 50, !showSkeletonBox.value, settingsBox.value.legLength <= 0.01 {
+            interval = 0.18
+        }
+        let factors: [Double] = [1, 1.5, 2, 3]
+        return interval * factors[min(max(heatLevelBox.value, 0), 3)]
     }
 
     private func applyTorch() {
@@ -1634,7 +1772,7 @@ final class CameraManager: NSObject, ObservableObject {
     /// pixelBuffer は切り抜き・縮小済みのコマ（aspect はその縦横比）。
     private func analyzeIfIdle(_ pixelBuffer: CVPixelBuffer, aspect: CGFloat) {
         let now = CACurrentMediaTime()
-        guard now - lastDetectionTime > 0.08, !isDetecting.value else { return }
+        guard now - lastDetectionTime > poseInterval(), !isDetecting.value else { return }
         lastDetectionTime = now
         isDetecting.value = true
 
@@ -1713,6 +1851,7 @@ final class CameraManager: NSObject, ObservableObject {
                 score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore, face: faceScore,
                                             faceWidth: template.face?.width ?? 0)
             }
+            self.lastPoseScore.value = template == nil ? nil : score
             self.isDetecting.value = false
 
             DispatchQueue.main.async {
@@ -1839,6 +1978,19 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
             return
         }
 
+        // 発熱を抑えるため、録画していない間はプレビューのコマを間引く（無音撮影・ダイレクトフラッシュは
+        // 上で覚えた最新のコマを使うので、間引いたコマでも撮れる）
+        let recording = recordingTake.value != nil
+        let heat = heatLevelBox.value
+        if !recording {
+            let fps = Self.previewFPS(silent: modeBox.value == .photo && silentFramesBox.value, heat: heat,
+                                      paused: previewPausedBox.value)
+            if fps < 29 {
+                if frameStarted + 0.004 < nextPreviewFrameDue { return }
+                nextPreviewFrameDue = max(nextPreviewFrameDue + 1 / fps, frameStarted + 0.5 / fps)
+            }
+        }
+
         // 写真モードのプレビューは画質を落として軽くする（撮った写真は別に高画質で処理する）。
         // 動画・スナップはこのコマがそのまま保存されるので 1080p のまま
         let isPhoto = modeBox.value == .photo
@@ -1851,24 +2003,41 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         let image = geometry.apply(source)
         publishFrameSizeIfNeeded(image.extent.size)
 
-        // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）
+        // 美肌のマスク: 録画中のコマはそのまま保存されるので、このコマ自身から毎コマ求める（前のコマのマスクを
+        // 使うと、カメラや顔が動いたときに加工の位置が遅れてずれる。熱いときだけ 1 秒に 15 回）。
+        // 録画していないプレビューでは 1 秒に 10 回にして、間のコマは前に求めたマスクを使う（発熱を抑える）。
+        // 撮った写真は別に高画質で処理するので、写真の仕上がりは変わらない
+        var masks: BeautyMasks?
+        var needsNewMasks = false
+        let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)"
+        if wantsMasks {
+            let maxAge: CFTimeInterval = recording ? (heat >= 2 ? 1.0 / 15 : 0) : 0.1
+            if let cached = cachedMasks, cached.key == maskKey, frameStarted - cached.time < maxAge {
+                masks = cached.masks
+            } else {
+                needsNewMasks = true
+            }
+        } else {
+            cachedMasks = nil
+        }
+        let poseDue = wantsPose && !isDetecting.value && frameStarted - lastDetectionTime > poseInterval()
+
+        // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）。
+        // このコマで判定しないときは作らない
         var visionBuffer: CVPixelBuffer?
-        if wantsMasks || wantsPose {
+        if needsNewMasks || poseDue {
             // 動画・スナップでは毎コマ判定するので小さめにして、コマ落ちを減らす
             visionBuffer = makeVisionBuffer(image, maxLongSide: isPhoto ? 960 : 640)
             // 判定用のコマが描けなかったときは、美肌のかからないコマが混ざらないよう、このコマを捨てる
-            if visionBuffer == nil, wantsMasks { return }
+            if visionBuffer == nil, needsNewMasks { return }
         }
-        if wantsPose, let visionBuffer {
+        if poseDue, let visionBuffer {
             analyzeIfIdle(visionBuffer, aspect: geometry.aspect)
         }
-
-        // 美肌のマスクは、このコマ自身から求める。前のコマのマスクを使うと、カメラや顔が動いたときに
-        // 加工の位置が遅れてずれる。間に合わないコマは捨てられる（alwaysDiscardsLateVideoFrames）
-        var masks: BeautyMasks?
-        if wantsMasks, let visionBuffer {
+        if needsNewMasks, let visionBuffer {
             masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size,
                                          skin: settings.needsSkinMask, person: settings.needsPersonMask)
+            cachedMasks = (maskKey, frameStarted, masks)
         }
         let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil
         let processed = processor.process(image, settings: settings, legs: legs, masks: masks)

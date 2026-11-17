@@ -3,10 +3,12 @@ import Photos
 
 /// 写真アプリへの保存。追加のみの権限（.addOnly）で足りる。
 /// 写真ライブラリの読み書きも許可されていれば（アプリ内のアルバムを開いたことがあれば）、
-/// 「PoseCam」というアルバムにも入れる（アルバムの「PoseCam」で、このアプリで撮ったものだけを見られる）。
+/// 「Hamera」というアルバムにも入れる（アルバムの「Hamera」で、このアプリで撮ったものだけを見られる）。
 enum MediaSaver {
     /// このアプリで撮ったものを入れるアルバムの名前
-    static let albumTitle = "PoseCam"
+    static let albumTitle = "Hamera"
+    /// 前の名前（PoseCam）のときに作ったアルバム。見つかったら次に保存するときに「Hamera」に名前を変える
+    static let oldAlbumTitle = "PoseCam"
     /// 作った・見つけたアルバムの番号（保存は写真ライブラリの順番待ちの列で 1 つずつ行われるので、続けて撮っても 2 つ作らない）
     private static var albumID: String?
 
@@ -34,20 +36,24 @@ enum MediaSaver {
         }
     }
 
-    /// 「PoseCam」のアルバム（なければ nil）
+    /// 「Hamera」のアルバム（なければ、前の名前の「PoseCam」のアルバム。どちらもなければ nil）
     static func existingAlbum() -> PHAssetCollection? {
         if let albumID,
            let found = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [albumID], options: nil).firstObject {
             return found
         }
-        let options = PHFetchOptions()
-        options.predicate = NSPredicate(format: "title == %@", albumTitle)
-        let found = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options).firstObject
-        if let found { albumID = found.localIdentifier }
-        return found
+        for title in [albumTitle, oldAlbumTitle] {
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(format: "title == %@", title)
+            if let found = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options).firstObject {
+                albumID = found.localIdentifier
+                return found
+            }
+        }
+        return nil
     }
 
-    /// 保存できた写真・動画を「PoseCam」のアルバムに入れる（なければ作る）。
+    /// 保存できた写真・動画を「Hamera」のアルバムに入れる（なければ作る。前の名前の「PoseCam」のアルバムなら名前を変える）。
     /// 保存とは別に行うので、ここで失敗しても写真・動画は保存されたまま
     private static func addToAlbum(assetID: String) {
         let readWrite = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -55,14 +61,16 @@ enum MediaSaver {
         PHPhotoLibrary.shared().performChanges({
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil).firstObject else { return }
             if let album = existingAlbum() {
-                PHAssetCollectionChangeRequest(for: album)?.addAssets([asset] as NSArray)
+                let request = PHAssetCollectionChangeRequest(for: album)
+                if album.localizedTitle == oldAlbumTitle { request?.title = albumTitle }
+                request?.addAssets([asset] as NSArray)
             } else {
                 let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumTitle)
                 request.addAssets([asset] as NSArray)
                 albumID = request.placeholderForCreatedAssetCollection.localIdentifier
             }
         }) { _, error in
-            if let error { Diagnostics.log("保存: PoseCam のアルバムに入れられず \(error.localizedDescription)") }
+            if let error { Diagnostics.log("保存: Hamera のアルバムに入れられず \(error.localizedDescription)") }
         }
     }
 

@@ -161,6 +161,8 @@ final class RemoteHost: NSObject, ObservableObject {
     private let watchBox = Locked(false)
     /// 映像のキュー専用
     private var lastOffer: CFTimeInterval = 0
+    /// 本体の温度の段階（0: ふつう … 3: とても熱い）。熱いほど送るコマを減らす
+    let heatLevel = Locked(0)
 
     private let queue = DispatchQueue(label: "posecam.remote", qos: .userInitiated)
     private let encodeQueue = DispatchQueue(label: "posecam.remote.encode", qos: .userInitiated)
@@ -222,11 +224,13 @@ final class RemoteHost: NSObject, ObservableObject {
 
     // MARK: - 映像
 
-    /// 映像のキューから毎コマ呼ぶ。見ているモニターがあるときだけ、1 秒に 15 コマまで JPEG にする
+    /// 映像のキューから毎コマ呼ぶ。見ているモニターがあるときだけ、1 秒に 10 コマまで JPEG にする
+    /// （発熱を抑えるため 15 から減らした。本体が熱いときはさらに 8・6・5 コマに減らす）
     func offer(_ image: CIImage, context: CIContext) {
         guard streamingBox.value else { return }
         let now = CACurrentMediaTime()
-        guard now - lastOffer >= 1.0 / 15, !encodeBusy.value else { return }
+        let fps: [Double] = [10, 8, 6, 5]
+        guard now - lastOffer >= 1.0 / fps[min(max(heatLevel.value, 0), 3)], !encodeBusy.value else { return }
         lastOffer = now
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return }
