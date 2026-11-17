@@ -9,6 +9,8 @@ on:
       - 'PoseCam/Processing/**'
       - 'PoseCam/Pose/PoseDetector.swift'
       - 'tools/beauty-compare/**'
+      - 'tools/reshape-check/**'
+      - 'PoseCam/Resources/Models/**'
       - '.github/workflows/beauty-compare.yml'
 
 permissions:
@@ -41,11 +43,23 @@ jobs:
                 PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
                 PoseCam/Processing/ProcessingSettings.swift PoseCam/Util/Locked.swift PoseCam/Processing/DirectFlash.swift \
                 PoseCam/Processing/LegStretch.swift PoseCam/Camera/PhotoMetadata.swift PoseCam/Camera/PixelBufferRender.swift \
+                $( [ -f PoseCam/Processing/FaceReshape.swift ] && echo PoseCam/Processing/FaceReshape.swift ) \
                 ../new/tools/beauty-compare/main.swift )
             xcrun -sdk macosx metal -fcikernel -c $side/PoseCam/Processing/BeautyKernels.ci.metal -o bin/$side/kernels.air
             xcrun -sdk macosx metallib -cikernel bin/$side/kernels.air -o bin/$side/default.metallib
             xcrun coremlcompiler compile $side/PoseCam/Resources/Models/SkinSegmenter.mlmodel bin/$side/
           done
+          # 顔の形の補正の確認（改善後のコードだけ）
+          if [ -f new/PoseCam/Processing/FaceReshape.swift ]; then
+            ( cd new && swiftc -O -target x86_64-apple-macos14 -o ../bin/new/reshape \
+                PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift \
+                PoseCam/Pose/PoseImporter.swift PoseCam/Pose/PoseTemplate.swift \
+                PoseCam/Processing/FrameProcessor.swift PoseCam/Processing/PhotoFilter.swift \
+                PoseCam/Processing/ProcessingSettings.swift PoseCam/Util/Locked.swift PoseCam/Processing/DirectFlash.swift \
+                PoseCam/Processing/LegStretch.swift PoseCam/Processing/FaceReshape.swift PoseCam/Camera/PhotoMetadata.swift \
+                PoseCam/Camera/PixelBufferRender.swift tools/reshape-check/main.swift )
+            xcrun coremlcompiler compile new/PoseCam/Resources/Models/FaceLandmarks.mlmodel bin/new/
+          fi
 
       - name: Run
         run: |
@@ -57,6 +71,10 @@ jobs:
           venv/bin/pip install --quiet pillow
           venv/bin/python new/tools/beauty-compare/sheet.py out/old out/new out/sheets
           cp photos/credits.txt out/sheets/
+          if [ -x bin/new/reshape ]; then
+            ./bin/new/reshape out/reshape $photos $extra
+            venv/bin/python new/tools/reshape-check/sheet.py out/reshape out/sheets
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
