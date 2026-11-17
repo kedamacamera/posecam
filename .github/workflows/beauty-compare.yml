@@ -11,6 +11,9 @@ on:
       - 'tools/beauty-compare/**'
       - '.github/workflows/beauty-compare.yml'
 
+permissions:
+  contents: write
+
 jobs:
   compare:
     # verify-processing と同じ Intel 版（Apple シリコン版は混雑で割り当てられないことがある）
@@ -60,3 +63,15 @@ jobs:
         with:
           name: beauty-compare
           path: out/sheets/
+
+      # 結果の画像を見られるよう、専用のブランチ（beauty-compare-results）にも置く（main には入れない）
+      - name: Publish sheets
+        if: always()
+        run: |
+          cd out/sheets
+          git init -q -b beauty-compare-results
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "Beauty compare ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" HEAD:beauty-compare-results

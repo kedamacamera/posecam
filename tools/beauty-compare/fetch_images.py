@@ -14,8 +14,9 @@ HEADERS = {"User-Agent": "HameraBeautyCompare/1.0 (GitHub Actions; image quality
 # (検索語, 何枚取るか)。自撮り・上半身・全身が混ざるようにする
 QUERIES = [
     ("portrait woman face close-up natural light", 2),
+    ("headshot portrait woman", 2),
     ("portrait man face close-up", 2),
-    ("selfie young woman", 1),
+    ("selfie young woman", 2),
     ("half-length portrait woman outdoor", 2),
     ("full body portrait standing woman street", 2),
     ("full body portrait man standing", 1),
