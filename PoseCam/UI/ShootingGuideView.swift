@@ -46,7 +46,7 @@ struct ShootingGuideView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(width: 200, alignment: .leading)
+        .frame(width: 176, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.55)))
         .animation(.easeOut(duration: 0.15), value: items)
         // 端末の「文字の大きさ」を大きくしても、映像を覆い尽くさないようにする

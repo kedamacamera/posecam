@@ -323,8 +323,10 @@ struct ContentView: View {
                 if camera.shootingGuide {
                     ShootingGuideView(feed: camera.poseFeed,
                                       template: camera.template?.isObject == true ? nil : camera.template)
+                        // 左上（一致度の表示の下）に置く。まん中だと水平器の線と重なり、下だと足元とポーズの見本に重なる
                         .padding(.leading, 10)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .padding(.top, 48)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
             .allowsHitTesting(false)
