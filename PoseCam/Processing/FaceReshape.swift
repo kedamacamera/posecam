@@ -5,7 +5,7 @@ import CoreImage
 /// （それ以上は不自然になりやすい）。顔ごとに 1 回ずつかける。
 ///
 /// 点の番号は MediaPipe の顔のメッシュの番号（画像の左右ではなく、写っている人から見た左右）:
-/// 輪郭 234/454 = 耳の付け根の高さの左右端、132・58・172・136 / 361・288・397・365 = 頬の下〜あご、
+/// 輪郭 234/454 = 耳の付け根の高さの左右端、93・132・58・172・136 / 323・361・288・397・365 = 頬骨の下〜あご、
 /// 468 / 473 = 黒目の中心、33-133 / 362-263 = 目頭と目尻、129 / 358 = 小鼻の左右、4 = 鼻の先
 enum FaceReshape {
     static let kernel: CIWarpKernel? = {
@@ -15,9 +15,10 @@ enum FaceReshape {
     }()
 
     /// 小顔で内側へ寄せる輪郭の点と、その点を動かす割合（あごの角ほど大きく、あご先の近くは小さく）
+    /// 頬骨の下（93 / 323）から少しずつ動かし始め、へこみが出ないようにする
     private static let slimPoints: [(Int, CGFloat)] = [
-        (132, 0.7), (58, 1.0), (172, 1.0), (136, 0.6),
-        (361, 0.7), (288, 1.0), (397, 1.0), (365, 0.6),
+        (93, 0.35), (132, 0.7), (58, 1.0), (172, 0.9), (136, 0.5),
+        (323, 0.35), (361, 0.7), (288, 1.0), (397, 0.9), (365, 0.5),
     ]
 
     static func apply(_ image: CIImage, meshes: [[CGPoint]], settings: ProcessingSettings) -> CIImage {
@@ -39,15 +40,15 @@ enum FaceReshape {
         let axis = CGVector(dx: (mesh[454].x - mesh[234].x) / faceWidth, dy: (mesh[454].y - mesh[234].y) / faceWidth)
         let noseTip = mesh[4]
 
-        // 小顔: 輪郭の点を顔の中心線の方へ、顔の幅の最大 4.5% 動かす
+        // 小顔: 輪郭の点を顔の中心線の方へ、顔の幅の最大 4% 動かす
         let slim = CGFloat(settings.faceSlim)
         let slimVectors: [CIVector] = slimPoints.map { index, weight in
             let point = mesh[index]
             let side: CGFloat = (point.x - noseTip.x) * axis.dx + (point.y - noseTip.y) * axis.dy > 0 ? -1 : 1
-            let amount = slim * faceWidth * 0.045 * weight
+            let amount = slim * faceWidth * 0.04 * weight
             return CIVector(x: point.x, y: point.y, z: side * axis.dx * amount, w: side * axis.dy * amount)
         }
-        let slimRadius = faceWidth * 0.3
+        let slimRadius = faceWidth * 0.28
 
         // 目: 黒目の中心のまわり、目の幅ほどの範囲を最大 12% 中心寄りから取る
         let eye = CGFloat(settings.eyeSize)

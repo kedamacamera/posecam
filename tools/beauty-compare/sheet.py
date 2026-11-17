@@ -39,6 +39,19 @@ for name in names:
                  os.path.join(NEW, f"{name}_{preset}_face.png")]
         if all(os.path.exists(p) for p in paths):
             rows.append(row([load(p) for p in paths], ["original", f"before fix ({preset})", f"after fix ({preset})"]))
+    # 頬のあたりを等倍で（縮めると毛穴・きめの違いが見えないため）
+    for preset in ("standard", "strong"):
+        paths = [os.path.join(NEW, f"{name}_original_face.png"), os.path.join(OLD, f"{name}_{preset}_face.png"),
+                 os.path.join(NEW, f"{name}_{preset}_face.png")]
+        if all(os.path.exists(p) for p in paths):
+            crops = []
+            for p in paths:
+                image = Image.open(p).convert("RGB")
+                w, h = image.size
+                side = min(HEIGHT, w // 2, h // 2)
+                left, top = int(w * 0.3), int(h * 0.45)
+                crops.append(image.crop((left, top, left + side, top + side)).resize((HEIGHT, HEIGHT), Image.NEAREST))
+            rows.append(row(crops, ["original 1:1", f"before fix ({preset}) 1:1", f"after fix ({preset}) 1:1"]))
     masks = [os.path.join(OLD, f"{name}_mask_face.png"), os.path.join(NEW, f"{name}_mask_face.png")]
     if all(os.path.exists(p) for p in masks):
         rows.append(row([load(p) for p in masks], ["skin area: before fix", "skin area: after fix"]))

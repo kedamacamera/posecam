@@ -112,7 +112,7 @@ final class FrameProcessor {
             var smooth = bilateralSmooth(result, amount: a, longSide: longSide)
             // 置き換えると毛穴・肌のきめまで消えて、塗ったようなのっぺりした肌になっていた。
             // 色むら・くすみはならしたまま、細かい質感だけを一部戻す（強くするほど戻す量は減らす）
-            smooth = restoreTexture(original: result, smooth: smooth, keep: 0.6 - 0.3 * a, longSide: longSide)
+            smooth = restoreTexture(original: result, smooth: smooth, keep: 0.75 - 0.35 * a, longSide: longSide)
             result = blend(smooth, over: result, mask: mask, amount: min(1, 0.15 + 0.85 * a))
         }
         if settings.brightening > 0.01 {
@@ -319,7 +319,7 @@ final class FrameProcessor {
         let sigma = max(0.7, longSide * 0.001)
         func blur(_ x: CIImage) -> CIImage { x.clampedToExtent().applyingGaussianBlur(sigma: sigma).cropped(to: extent) }
         let output = kernel.apply(extent: extent, roiCallback: { _, rect in rect },
-                                  arguments: [original, blur(original), smooth, blur(smooth), Float(keep), Float(0.06)])
+                                  arguments: [original, blur(original), smooth, blur(smooth), Float(keep), Float(0.08)])
         return output?.cropped(to: extent) ?? smooth
     }
 

@@ -271,7 +271,7 @@ float4 legStretch(sampler src, float h, float s, float a, float b, float u, floa
 
 /// 顔の形の補正（小顔・目・鼻）。出力の各画素が、元の画像のどこから来るかを返す（ワープ）。
 /// 動かす量は顔の幅に比べて小さい（数 %）ので、「その場所の動き」を引くだけで逆向きの対応として十分。
-/// - s0〜s7: 小顔で動かす輪郭の点 (x, y, 動かす量 dx, dy)。点から slimRadius の範囲を、点に近いほど大きく動かす
+/// - s0〜s9: 小顔で動かす輪郭の点 (x, y, 動かす量 dx, dy)。点から slimRadius の範囲を、点に近いほど大きく動かす
 /// - eyeL / eyeR: (中心 x, y, 半径, 拡大の強さ)。半径の内側を中心に寄せて取る＝目が大きくなる
 /// - noseA: (中心 x, y, 横の半径, 縦の半径)、noseB: (顔の横向きの単位ベクトル x, y, 細くする強さ, 0)
 static float falloff(float d, float r) {
@@ -279,16 +279,21 @@ static float falloff(float d, float r) {
     return t * t;
 }
 
-static float2 slimShift(float2 p, float4 point, float radius) {
-    return point.zw * falloff(distance(p, point.xy), radius);
-}
-
 float2 faceWarp(float4 s0, float4 s1, float4 s2, float4 s3, float4 s4, float4 s5, float4 s6, float4 s7,
-                float slimRadius, float4 eyeL, float4 eyeR, float4 noseA, float4 noseB, destination dest) {
+                float4 s8, float4 s9, float slimRadius, float4 eyeL, float4 eyeR, float4 noseA, float4 noseB,
+                destination dest) {
     float2 p = dest.coord();
-    float2 shift = slimShift(p, s0, slimRadius) + slimShift(p, s1, slimRadius) + slimShift(p, s2, slimRadius)
-                 + slimShift(p, s3, slimRadius) + slimShift(p, s4, slimRadius) + slimShift(p, s5, slimRadius)
-                 + slimShift(p, s6, slimRadius) + slimShift(p, s7, slimRadius);
+    // 輪郭の点どうしは範囲が重なるので、動きを足し合わせると何倍にもなり、点の間がへこんでいた。
+    // 近い点ほど重くした「動きの平均」をとり、近くに点がある度合い（重みの合計、1 で頭打ち）を掛ける
+    float4 points[10] = { s0, s1, s2, s3, s4, s5, s6, s7, s8, s9 };
+    float2 weighted = float2(0.0);
+    float weightSum = 0.0;
+    for (int i = 0; i < 10; i++) {
+        float w = falloff(distance(p, points[i].xy), slimRadius);
+        weighted += points[i].zw * w;
+        weightSum += w;
+    }
+    float2 shift = weightSum > 0.0001 ? weighted / weightSum * min(weightSum, 1.0) : float2(0.0);
     float2 q = p - shift;
 
     // 目: 中心に近いほど中心寄りから取る（f(d) = d * (1 - k * w) は k <= 0.3 で単調なので折り返さない）
