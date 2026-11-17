@@ -320,6 +320,14 @@ struct ContentView: View {
                 if showLevel {
                     LevelView()
                 }
+                if camera.shootingGuide {
+                    ShootingGuideView(feed: camera.poseFeed,
+                                      template: camera.template?.isObject == true ? nil : camera.template)
+                        // 左上（一致度の表示の下）に置く。まん中だと水平器の線と重なり、下だと足元とポーズの見本に重なる
+                        .padding(.leading, 10)
+                        .padding(.top, 48)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
             .allowsHitTesting(false)
             // タップ（ピント・露出）・長押し（AE/AF ロック）・上下（露出）・つまむ（ズーム）・本体のボタン（シャッター）
@@ -533,9 +541,10 @@ struct ContentView: View {
                          + "モニター（アプリ）につないでいるときは、モニターにも表示します。\n"
                          + "連続撮影の終わり: 背面カメラで連続撮影が終わったとき、ライトを 2 回点滅させて知らせます。")
                 }
-                Section("表示") {
+                Section {
                     Toggle("骨格を表示", isOn: $camera.showSkeleton)
                     Toggle("水平器", isOn: $showLevel)
+                    Toggle("撮ってもらう人ガイド", isOn: $camera.shootingGuide)
                     Picker(selection: $appearance) {
                         ForEach(Appearance.allCases) { item in
                             Text(item.label).tag(item)
@@ -544,6 +553,12 @@ struct ContentView: View {
                         Label("外観（ダーク・ライト）", systemImage: "circle.lefthalf.filled")
                     }
                     .pickerStyle(.menu)
+                } header: {
+                    Text("表示")
+                } footer: {
+                    Text("撮ってもらう人ガイド: 人に撮ってもらうとき、撮る人の画面の左に「撮影目標」のチェックリストを出します"
+                         + "（まっすぐ構える・頭の上の余白・足先まで入れる・顔の向き）。"
+                         + "足先は立ち姿の全身のときだけ、顔の向きはポーズを選んでいるときだけ確かめます。")
                 }
                 // リモートモニター・ライセンスは、この画面の中で横に送って開く。
                 // 閉じてから別のシートで出すと、iPhone（iOS 27.2）ではそのシートが見えないまま固まった
