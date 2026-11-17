@@ -268,5 +268,53 @@ float4 legStretch(sampler src, float h, float s, float a, float b, float u, floa
     return src.sample(src.transform(float2(p.x, h - source)));
 }
 
+
+/// 顔の形の補正（小顔・目・鼻）。出力の各画素が、元の画像のどこから来るかを返す（ワープ）。
+/// 動かす量は顔の幅に比べて小さい（数 %）ので、「その場所の動き」を引くだけで逆向きの対応として十分。
+/// - s0〜s7: 小顔で動かす輪郭の点 (x, y, 動かす量 dx, dy)。点から slimRadius の範囲を、点に近いほど大きく動かす
+/// - eyeL / eyeR: (中心 x, y, 半径, 拡大の強さ)。半径の内側を中心に寄せて取る＝目が大きくなる
+/// - noseA: (中心 x, y, 横の半径, 縦の半径)、noseB: (顔の横向きの単位ベクトル x, y, 細くする強さ, 0)
+static float falloff(float d, float r) {
+    float t = clamp(1.0 - (d * d) / (r * r), 0.0, 1.0);
+    return t * t;
+}
+
+static float2 slimShift(float2 p, float4 point, float radius) {
+    return point.zw * falloff(distance(p, point.xy), radius);
+}
+
+float2 faceWarp(float4 s0, float4 s1, float4 s2, float4 s3, float4 s4, float4 s5, float4 s6, float4 s7,
+                float slimRadius, float4 eyeL, float4 eyeR, float4 noseA, float4 noseB, destination dest) {
+    float2 p = dest.coord();
+    float2 shift = slimShift(p, s0, slimRadius) + slimShift(p, s1, slimRadius) + slimShift(p, s2, slimRadius)
+                 + slimShift(p, s3, slimRadius) + slimShift(p, s4, slimRadius) + slimShift(p, s5, slimRadius)
+                 + slimShift(p, s6, slimRadius) + slimShift(p, s7, slimRadius);
+    float2 q = p - shift;
+
+    // 目: 中心に近いほど中心寄りから取る（f(d) = d * (1 - k * w) は k <= 0.3 で単調なので折り返さない）
+    float4 eyes[2] = { eyeL, eyeR };
+    for (int i = 0; i < 2; i++) {
+        float4 e = eyes[i];
+        if (e.z > 0.0) {
+            float2 v = q - e.xy;
+            float w = falloff(length(v), e.z);
+            q = e.xy + v * (1.0 - e.w * w);
+        }
+    }
+
+    // 鼻: 顔の横方向だけ、外側から取る（＝小鼻が細くなる）
+    if (noseA.z > 0.0) {
+        float2 axis = noseB.xy;
+        float2 perp = float2(-axis.y, axis.x);
+        float2 v = q - noseA.xy;
+        float u = dot(v, axis);
+        float t = dot(v, perp);
+        float e = (u / noseA.z) * (u / noseA.z) + (t / noseA.w) * (t / noseA.w);
+        float w = clamp(1.0 - e, 0.0, 1.0);
+        q += axis * u * noseB.z * w * w;
+    }
+    return q;
+}
+
 }
 }

@@ -17,6 +17,12 @@ struct ProcessingSettings: Equatable {
     var beard: Double = 0
     /// あごの輪郭に影を入れて、美肌で消えたフェイスラインを出す
     var contour: Double = 0
+    /// 小顔（頬〜あごの輪郭を内側へ寄せる）
+    var faceSlim: Double = 0
+    /// 目を大きく
+    var eyeSize: Double = 0
+    /// 小鼻を細く
+    var noseSlim: Double = 0
     var legLength: Double = 0
     /// 脚長で伸ばす範囲を手で決めたとき（画像の上端 0・下端 1）。nil は骨格から自動で決める
     var legRange: ClosedRange<Double>?
@@ -24,8 +30,11 @@ struct ProcessingSettings: Equatable {
     /// 肌のマスクが必要な加工がひとつでも入っているか
     var needsSkinMask: Bool {
         smoothing > 0.01 || brightening > 0.01 || redness > 0.01 || blemish > 0.01 || wrinkle > 0.01
-            || beard > 0.01 || contour > 0.01
+            || beard > 0.01 || contour > 0.01 || needsFaceMesh
     }
+
+    /// 顔の形の補正（顔の 478 点が要る）が入っているか
+    var needsFaceMesh: Bool { faceSlim > 0.01 || eyeSize > 0.01 || noseSlim > 0.01 }
 
     /// 人物の領域が要るか（人物以外をモノクロにするフィルター）
     var needsPersonMask: Bool { filter.needsPersonMask }
@@ -60,7 +69,8 @@ struct ProcessingSettings: Equatable {
 /// 項目を足しても前回の保存が読めるよう、ない項目は初期値にする
 extension ProcessingSettings: Codable {
     private enum CodingKeys: String, CodingKey {
-        case filter, filterStrength, smoothing, brightening, redness, blemish, wrinkle, beard, contour, legLength
+        case filter, filterStrength, smoothing, brightening, redness, blemish, wrinkle, beard, contour, faceSlim, eyeSize, noseSlim,
+            legLength
     }
 
     init(from decoder: Decoder) throws {
@@ -77,6 +87,9 @@ extension ProcessingSettings: Codable {
         wrinkle = try c.decodeIfPresent(Double.self, forKey: .wrinkle) ?? wrinkle
         beard = try c.decodeIfPresent(Double.self, forKey: .beard) ?? beard
         contour = try c.decodeIfPresent(Double.self, forKey: .contour) ?? contour
+        faceSlim = try c.decodeIfPresent(Double.self, forKey: .faceSlim) ?? faceSlim
+        eyeSize = try c.decodeIfPresent(Double.self, forKey: .eyeSize) ?? eyeSize
+        noseSlim = try c.decodeIfPresent(Double.self, forKey: .noseSlim) ?? noseSlim
         legLength = try c.decodeIfPresent(Double.self, forKey: .legLength) ?? legLength
     }
 
@@ -91,6 +104,9 @@ extension ProcessingSettings: Codable {
         try c.encode(wrinkle, forKey: .wrinkle)
         try c.encode(beard, forKey: .beard)
         try c.encode(contour, forKey: .contour)
+        try c.encode(faceSlim, forKey: .faceSlim)
+        try c.encode(eyeSize, forKey: .eyeSize)
+        try c.encode(noseSlim, forKey: .noseSlim)
         try c.encode(legLength, forKey: .legLength)
     }
 }

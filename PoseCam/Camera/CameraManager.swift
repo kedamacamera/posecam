@@ -1491,7 +1491,8 @@ final class CameraManager: NSObject, ObservableObject {
         let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
         if settings.needsMasks || settings.legLength > 0.01 {
-            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask)
+            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask,
+                                        wantsMesh: settings.needsFaceMesh)
         }
         let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis.pose, manual: settings.legRange) : nil
         let output = processor.process(image, settings: settings, legs: legs, masks: analysis.masks)
@@ -2009,7 +2010,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 撮った写真は別に高画質で処理するので、写真の仕上がりは変わらない
         var masks: BeautyMasks?
         var needsNewMasks = false
-        let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)"
+        let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)|\(settings.needsFaceMesh)"
         if wantsMasks {
             let maxAge: CFTimeInterval = recording ? (heat >= 2 ? 1.0 / 15 : 0) : 0.1
             if let cached = cachedMasks, cached.key == maskKey, frameStarted - cached.time < maxAge {
@@ -2036,7 +2037,8 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
         if needsNewMasks, let visionBuffer {
             masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size,
-                                         skin: settings.needsSkinMask, person: settings.needsPersonMask)
+                                         skin: settings.needsSkinMask, person: settings.needsPersonMask,
+                                         mesh: settings.needsFaceMesh)
             cachedMasks = (maskKey, frameStarted, masks)
         }
         let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil

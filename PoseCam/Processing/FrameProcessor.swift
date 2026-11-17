@@ -18,6 +18,10 @@ final class FrameProcessor {
         var image = input
         if settings.needsSkinMask, let masks {
             image = beautify(image, settings: settings, masks: masks)
+            // 顔の形の補正は、肌の加工（マスクは元の顔の位置）の後でかける
+            if settings.needsFaceMesh {
+                image = FaceReshape.apply(image, meshes: masks.faceMeshes, settings: settings)
+            }
         }
         if settings.filter.needsPersonMask {
             // 人物以外をモノクロ（パートカラー）: 人物の領域がなければ全体をモノクロにはせず、そのまま

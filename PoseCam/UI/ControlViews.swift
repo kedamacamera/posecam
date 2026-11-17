@@ -782,6 +782,9 @@ enum BeautyItem: String, CaseIterable, Identifiable {
     case wrinkle = "シワ"
     case beard = "青ひげ"
     case contour = "輪郭"
+    case faceSlim = "小顔"
+    case eyeSize = "目"
+    case noseSlim = "鼻"
     case legLength = "脚長"
 
     var id: String { rawValue }
@@ -795,6 +798,9 @@ enum BeautyItem: String, CaseIterable, Identifiable {
         case .wrinkle: return "water.waves"
         case .beard: return "mustache"
         case .contour: return "face.smiling"
+        case .faceSlim: return "arrow.down.right.and.arrow.up.left"
+        case .eyeSize: return "eye"
+        case .noseSlim: return "arrowtriangle.down"
         case .legLength: return "arrow.up.and.down"
         }
     }
@@ -808,6 +814,9 @@ enum BeautyItem: String, CaseIterable, Identifiable {
         case .wrinkle: return \.wrinkle
         case .beard: return \.beard
         case .contour: return \.contour
+        case .faceSlim: return \.faceSlim
+        case .eyeSize: return \.eyeSize
+        case .noseSlim: return \.noseSlim
         case .legLength: return \.legLength
         }
     }
