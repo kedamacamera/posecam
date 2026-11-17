@@ -1,5 +1,5 @@
 import CoreImage.CIFilterBuiltins
-import MultipeerConnectivity
+import Network
 import SwiftUI
 
 /// モニター側（A: アプリ同士）。近くの撮る側から見つけてもらい、届いた映像を表示して、シャッターなどを送り返す。
@@ -13,93 +13,113 @@ final class RemoteMonitorClient: NSObject, ObservableObject {
     /// 撮る側が「撮影後にプレビューを表示」にしているとき、いま撮った写真
     @Published var incomingPreview: MonitorPhoto?
 
-    /// 撮る側とのつながり。誘われるたびに作り直す（失敗した後の古い状態を残さない）。メインスレッドで変える
-    private var session = RemoteHost.makeSession()
-    private var advertiser: MCNearbyServiceAdvertiser?
+    /// 撮る側とのつながり（1 本だけ）。新しくつながってきたら、前のつながりは切って入れ替える
+    /// （撮る側が試し直したとき、前のつながりが残っていて断ってしまうことがないように）。メインスレッドで変える
+    private var link: PeerLink?
+    /// 見つけてもらうための待ち受け（「モニターになる」を開いている間）
+    private var listener: NWListener?
     private let decodeQueue = DispatchQueue(label: "posecam.monitor", qos: .userInitiated)
 
-    override init() {
-        super.init()
-        session.delegate = self
-    }
-
     func start() {
-        guard advertiser == nil else { return }
-        let advertiser = MCNearbyServiceAdvertiser(peer: RemoteWire.peerID, discoveryInfo: nil,
-                                                   serviceType: RemoteWire.serviceType)
-        advertiser.delegate = self
-        advertiser.startAdvertisingPeer()
-        self.advertiser = advertiser
+        guard listener == nil else { return }
+        do {
+            let listener = try NWListener(using: PeerLink.parameters())
+            // サービスの名前は端末ごとに違うものにする（同じ「iPhone」が並んでも区別できるように）
+            let txt = NWTXTRecord([RemoteWire.deviceIDKey: RemoteWire.deviceID,
+                                   RemoteWire.nameKey: RemoteWire.deviceName])
+            listener.service = NWListener.Service(name: RemoteWire.deviceID, type: RemoteWire.bonjourType,
+                                                  domain: nil, txtRecord: txt)
+            listener.newConnectionHandler = { [weak self] connection in
+                DispatchQueue.main.async { self?.accept(connection) }
+            }
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                switch state {
+                case .ready:
+                    Diagnostics.log("モニター: 待ち受け開始")
+                case .failed(let error):
+                    Diagnostics.log("モニター: 待ち受けできません \(error)")
+                    // 開き直す
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        guard let self, let listener, listener === self.listener else { return }
+                        listener.cancel()
+                        self.listener = nil
+                        self.start()
+                    }
+                default:
+                    break
+                }
+            }
+            listener.start(queue: .main)
+            self.listener = listener
+        } catch {
+            Diagnostics.log("モニター: 開始できません \(error)")
+        }
     }
 
     func stop() {
-        advertiser?.stopAdvertisingPeer()
-        advertiser = nil
-        session.disconnect()
+        listener?.cancel()
+        listener = nil
+        link?.cancel()
+        link = nil
+        clearCamera()
     }
 
     func send(_ command: RemoteCommand) {
-        guard !session.connectedPeers.isEmpty, let json = try? JSONEncoder().encode(command) else { return }
-        try? session.send(RemoteWire.pack(RemoteWire.command, json), toPeers: session.connectedPeers, with: .reliable)
+        guard let link, link.isReady, let json = try? JSONEncoder().encode(command) else { return }
+        link.send(RemoteWire.pack(RemoteWire.command, json))
     }
 
     /// 撮る側にピント・露出を合わせてもらう（point は映像の中の位置 0...1、左上原点）
     func sendFocus(_ point: CGPoint, lock: Bool) {
-        guard !session.connectedPeers.isEmpty,
+        guard let link, link.isReady,
               let json = try? JSONEncoder().encode(RemoteFocus(x: point.x, y: point.y, lock: lock)) else { return }
-        try? session.send(RemoteWire.pack(RemoteWire.focus, json), toPeers: session.connectedPeers, with: .reliable)
+        link.send(RemoteWire.pack(RemoteWire.focus, json))
     }
 
-    private func sendAck(to peer: MCPeerID) {
-        try? session.send(Data([RemoteWire.ack]), toPeers: [peer], with: .reliable)
+    private func clearCamera() {
+        cameraName = nil
+        image = nil
+        state = nil
+    }
+
+    /// メインスレッドで呼ぶ
+    private func accept(_ connection: NWConnection) {
+        guard listener != nil else {
+            connection.cancel()
+            return
+        }
+        Diagnostics.log("モニター: つながってきた")
+        link?.cancel()
+        let link = PeerLink(connection: connection, role: .monitor)
+        self.link = link
+        link.onReady = { Diagnostics.log("モニター: つながった") }
+        link.onMessage = { [weak self, weak link] data in
+            guard let self, let link else { return }
+            self.receive(data, from: link)
+        }
+        link.onClose = { [weak self, weak link] in
+            DispatchQueue.main.async {
+                guard let self, let link, link === self.link else { return }
+                Diagnostics.log("モニター: 切れた")
+                self.link = nil
+                self.clearCamera()
+            }
+        }
+        link.start()
     }
 }
 
-extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDelegate {
-    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID,
-                    withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        // 「モニターになる」を開いている間だけ届く。撮る側を 1 台だけ受け入れる。
-        // つながっていなければ、新しいつながりを作ってから受け入れる
-        DispatchQueue.main.async {
-            guard self.advertiser != nil, self.session.connectedPeers.isEmpty else {
-                invitationHandler(false, nil)
-                return
-            }
-            let old = self.session
-            old.delegate = nil
-            old.disconnect()
-            let fresh = RemoteHost.makeSession()
-            fresh.delegate = self
-            self.session = fresh
-            Diagnostics.log("モニター: 誘いを受けた")
-            invitationHandler(true, fresh)
-        }
-    }
-
-    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        Diagnostics.log("モニター: 開始できません \(error.localizedDescription)")
-    }
-
-    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-        DispatchQueue.main.async {
-            switch state {
-            case .connected:
-                self.cameraName = peerID.displayName
-            case .notConnected:
-                if session.connectedPeers.isEmpty {
-                    self.cameraName = nil
-                    self.image = nil
-                    self.state = nil
-                }
-            default:
-                break
-            }
-        }
-    }
-
-    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+extension RemoteMonitorClient {
+    /// 撮る側から届いた（つながりのキューで呼ばれる）
+    fileprivate func receive(_ data: Data, from link: PeerLink) {
         guard let kind = data.first else { return }
         switch kind {
+        case RemoteWire.hello:
+            let name = String(decoding: data.dropFirst(), as: UTF8.self)
+            DispatchQueue.main.async {
+                guard link === self.link else { return }
+                self.cameraName = name.isEmpty ? "iPhone" : name
+            }
         case RemoteWire.frame:
             decodeQueue.async {
                 // 表示できる形にしてから出す（メインスレッドで JPEG を開くと、ボタンの反応が遅れる）
@@ -107,7 +127,7 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
                 DispatchQueue.main.async {
                     if let image { self.image = image }
                     // 表示したら次のコマを送ってもらう
-                    self.sendAck(to: peerID)
+                    link.send(Data([RemoteWire.ack]))
                 }
             }
         case RemoteWire.state:
@@ -131,11 +151,6 @@ extension RemoteMonitorClient: MCNearbyServiceAdvertiserDelegate, MCSessionDeleg
         }
     }
 
-    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
-    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID,
-                 with progress: Progress) {}
-    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID,
-                 at localURL: URL?, withError error: Error?) {}
 }
 
 /// モニターで受け取った写真
@@ -439,7 +454,7 @@ struct RemoteMonitorView: View {
             ProgressView().tint(.white)
             Text(client.cameraName == nil ? "撮る側を待っています" : "映像を待っています")
                 .font(.headline)
-            Text("撮る側の iPhone・iPad で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.peerID.displayName)」を選んでください。\n"
+            Text("撮る側の iPhone・iPad で「設定」→「リモートモニター」を開き、\n「\(RemoteWire.deviceName)」を選んでください。\n"
                  + "Wi-Fi がなくても、2 台が近く（5 m くらいまで）にあればつながります。")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
@@ -564,18 +579,18 @@ struct RemoteSheet: View {
                             Button("切る", role: .destructive) { remote.disconnectMonitor() }
                         }
                     }
-                    ForEach(remote.nearbyMonitors, id: \.self) { peer in
+                    ForEach(remote.nearbyMonitors) { peer in
                         Button {
                             remote.invite(peer)
                         } label: {
                             HStack {
                                 Image(systemName: "iphone")
-                                Text(peer.displayName)
+                                Text(peer.name)
                                 Spacer()
-                                if remote.invitingMonitor == peer {
+                                if remote.invitingMonitor?.id == peer.id {
                                     ProgressView()
                                     Text("つないでいます").font(.caption).foregroundStyle(.secondary)
-                                } else if remote.connectedMonitor == peer.displayName {
+                                } else if remote.connectedMonitor == peer.name {
                                     Text("表示中").font(.caption).foregroundStyle(.secondary)
                                 } else {
                                     Text("つなぐ").font(.caption.weight(.semibold))
@@ -596,7 +611,7 @@ struct RemoteSheet: View {
                         .textCase(nil)
                 } footer: {
                     Text("もう一台の iPhone・iPad でHameraを開き、「設定」→「リモートモニター」→「この iPhone（iPad）をモニターにする」を押すと、"
-                         + "ここに出ます。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながります。"
+                         + "ここに出ます（1 台だけなら自動でつなぎます）。Wi-Fi がなくても、近く（5 m くらいまで）にあればつながり、途中で切れてもつなぎ直します。"
                          + "シャッターを押すと、この \(Self.deviceWord) のカメラで撮ります。")
                 }
 
