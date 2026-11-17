@@ -192,10 +192,9 @@ final class RemoteHost: NSObject, ObservableObject {
     /// いまの相手に何回つなごうとしたか（メインスレッド用）
     private var inviteAttempts = 0
 
-    /// 暗号化はしない（.none）。.required だとつなぐときの鍵のやり取りが増え、Wi-Fi のない所
-    /// （Bluetooth・端末同士の Wi-Fi）では遅くなったり失敗したりしやすい。送るのは近くの 2 台の間だけ
+    /// 映像・撮った写真を送るので、暗号化する（.required）。近くの第三者に電波を拾われても中身は読めない
     static func makeSession() -> MCSession {
-        MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .none)
+        MCSession(peer: RemoteWire.peerID, securityIdentity: nil, encryptionPreference: .required)
     }
     private var browser: MCNearbyServiceBrowser?
     /// 見つけたモニターの端末の印（メインスレッド用）
