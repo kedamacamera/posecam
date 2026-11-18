@@ -94,6 +94,12 @@ final class CameraManager: NSObject, ObservableObject {
     /// 連続撮影の間隔（秒）。1 枚目もシャッターを押してからこの時間で撮る（構える時間）
     static let burstInterval: Double = 2
     static let snapMaxSeconds = 10
+    /// 自動撮影: 一致してから撮るまでに保つ時間（秒）。偶然の一致で撮らないための最低限
+    static let autoHoldSeconds: Double = 0.3
+    /// 自動撮影: この時間（秒）までしきい値を割っても、一致が続いているとみなす
+    static let autoDipTolerance: Double = 0.25
+    /// 自動撮影: 前の自動撮影からの間隔（秒）。ポーズを保っていれば 2 秒に 1 枚撮れる
+    static let autoShotInterval: Double = 2
 
     // MARK: 状態（表示用）
 
@@ -338,6 +344,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var countdownTimer: DispatchSourceTimer?
     private var matchStartedAt: Date?
     private var lastAutoShotAt = Date.distantPast
+    /// 最後に一致度がしきい値を超えていた時刻（自動撮影で、一瞬割っただけかを見る）
+    private var lastMatchAt: Date?
     private var pendingPhotos = 0 {
         didSet { savingPhotos = pendingPhotos }
     }
@@ -1156,7 +1164,8 @@ final class CameraManager: NSObject, ObservableObject {
     /// 撮影の時刻は開始時に「待ち時間の後、そこから間隔ごと」と決めておき、画面の処理とは別のキュー
     /// （sessionQueue）の正確なタイマーで撮る。前の撮影の終わりを待たないので、間隔がずれない。
     /// 連続撮影はタイマーなしでも、押してから 2 秒後に 1 枚目を撮る（構える時間）。
-    private func startPhotoSequence() {
+    /// auto: 自動撮影から呼んだ。もうポーズが決まっているので、連続撮影でも構える時間を置かずにすぐ 1 枚目を撮る
+    private func startPhotoSequence(auto: Bool = false) {
         guard !isSequenceRunning else { return }
         // 前の写真の加工・保存が詰まっているとき・メモリが少ないときは撮らない
         // （撮り続けると、メモリが足りずに加工に失敗して保存できなくなっていた）
@@ -1167,7 +1176,7 @@ final class CameraManager: NSObject, ObservableObject {
         isSequenceRunning = true
         let total = burstCount
         let interval = Self.burstInterval
-        let delay = timerSeconds > 0 ? Double(timerSeconds) : (total > 1 ? interval : 0)
+        let delay = timerSeconds > 0 ? Double(timerSeconds) : (total > 1 && !auto ? interval : 0)
         let options = ShotOptions(flash: flashOn, direct: flashOn && directFlash,
                                   directDark: flashOn && directFlash && directFlashDark, mute: muteShutter,
                                   silent: usesSilentFrames, fast: total > 1)
@@ -1176,7 +1185,7 @@ final class CameraManager: NSObject, ObservableObject {
         let start = Date()
         let firstShot = start.addingTimeInterval(delay)
         burstTimeline = total > 1
-            ? BurstTimeline(start: start, firstShot: firstShot, showsLeadIn: timerSeconds == 0,
+            ? BurstTimeline(start: start, firstShot: firstShot, showsLeadIn: timerSeconds == 0 && !auto,
                             interval: interval, total: total)
             : nil
 
@@ -1268,6 +1277,8 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func finishSequence() {
+        // 自動撮影の次の 1 枚は、最後に撮ったときから数える（連続撮影の後すぐ次を撮り始めない）
+        lastAutoShotAt = max(lastAutoShotAt, Date())
         burstTimeline = nil
         shotTimer = nil
         isSequenceRunning = false
@@ -1488,18 +1499,54 @@ final class CameraManager: NSObject, ObservableObject {
                                       darkBackground: ambient.dark)
         }
 
+        let started = CACurrentMediaTime()
         let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
         if settings.needsMasks || settings.legLength > 0.01 {
             analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask,
                                         wantsMesh: settings.needsFaceMesh)
         }
+        let analyzed = CACurrentMediaTime()
         let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis.pose, manual: settings.legRange) : nil
         let output = processor.process(image, settings: settings, legs: legs, masks: analysis.masks)
+        // 加工は 1 回だけ描き、その画像から JPEG とサムネイルを作る
+        // （以前はサムネイルのためにもう一度加工の全部を描いていた）
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let cgImage = renderer.ciContext.createCGImage(output, from: output.extent, format: .RGBA8,
+                                                            colorSpace: colorSpace) else { return nil }
+        let rendered = CACurrentMediaTime()
         // 撮影情報（Exif・レンズ名など）を付けて JPEG にする
-        guard let jpeg = PhotoMetadata.jpeg(output, metadata: metadata, context: renderer.ciContext,
-                                            orientation: orientation) else { return nil }
-        return (jpeg, makeThumbnail(output, orientation: orientation))
+        guard let jpeg = PhotoMetadata.jpeg(cgImage, metadata: metadata, orientation: orientation) else { return nil }
+        let thumbnail = Self.thumbnail(of: cgImage, orientation: orientation)
+        let done = CACurrentMediaTime()
+        Diagnostics.log(String(format: "写真の加工: 判定 %.2f 秒・加工 %.2f 秒・保存用 %.2f 秒（%dx%d）",
+                               analyzed - started, rendered - analyzed, done - rendered, cgImage.width, cgImage.height))
+        return (jpeg, thumbnail)
+    }
+
+    /// 描き終わった写真から、長い辺 240 ピクセルのサムネイルを作る（加工をもう一度描かない）
+    private static func thumbnail(of cgImage: CGImage, orientation: CGImagePropertyOrientation) -> UIImage? {
+        let scale = 240 / CGFloat(max(cgImage.width, cgImage.height))
+        let size = CGSize(width: max(1, (CGFloat(cgImage.width) * scale).rounded()),
+                          height: max(1, (CGFloat(cgImage.height) * scale).rounded()))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            context.cgContext.interpolationQuality = .medium
+            // UIKit の座標は上が原点なので、CGImage をそのまま描くと上下が逆になる
+            context.cgContext.translateBy(x: 0, y: size.height)
+            context.cgContext.scaleBy(x: 1, y: -1)
+            context.cgContext.draw(cgImage, in: CGRect(origin: .zero, size: size))
+        }
+        guard let smallImage = small.cgImage else { return nil }
+        let uiOrientation: UIImage.Orientation
+        switch orientation {
+        case .right: uiOrientation = .right
+        case .left: uiOrientation = .left
+        case .down: uiOrientation = .down
+        default: uiOrientation = .up
+        }
+        return UIImage(cgImage: smallImage, scale: 1, orientation: uiOrientation)
     }
 
     func makeThumbnail(_ image: CIImage, orientation: CGImagePropertyOrientation = .up) -> UIImage? {
@@ -1870,21 +1917,34 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// 一致度がしきい値を 0.8 秒保ったら自動で撮影する。連写しないよう 3 秒あける。
+    /// 一致度がしきい値を少し（autoHoldSeconds）保ったら自動で撮影する。前の自動撮影から autoShotInterval 秒はあける。
+    /// 判定は 1 秒に十数回で、一致度は 1 回だけしきい値を割ることがよくあるので、短く割っただけなら数え直さない
+    /// （以前は 0.8 秒保つ必要があり、1 回割るたびに数え直していたので、一致してから撮るまでが長かった）
     private func evaluateAutoShutter() {
-        guard autoShutter, mode == .photo, !isSequenceRunning,
-              let score = poseFeed.score, score >= Self.matchThreshold else {
+        let now = Date()
+        guard autoShutter, mode == .photo, !isSequenceRunning, let score = poseFeed.score else {
             matchStartedAt = nil
+            lastMatchAt = nil
             return
         }
-        let now = Date()
-        let startedAt = matchStartedAt ?? now
-        matchStartedAt = startedAt
-        if now.timeIntervalSince(startedAt) >= 0.8, now.timeIntervalSince(lastAutoShotAt) > 3 {
-            lastAutoShotAt = now
+        if score >= Self.matchThreshold {
+            lastMatchAt = now
+            if matchStartedAt == nil { matchStartedAt = now }
+        } else if let last = lastMatchAt, now.timeIntervalSince(last) <= Self.autoDipTolerance {
+            // 一瞬だけ割った: 数えた時間は残すが、割っている間は撮らない
+            return
+        } else {
             matchStartedAt = nil
-            startPhotoSequence()
+            lastMatchAt = nil
+            return
         }
+        guard let startedAt = matchStartedAt,
+              now.timeIntervalSince(startedAt) >= Self.autoHoldSeconds,
+              now.timeIntervalSince(lastAutoShotAt) >= Self.autoShotInterval else { return }
+        // 保存が詰まっていれば、詰まりが解けるまで待つ（「保存中です」を何度も出さない）
+        guard !isSaveBacklogged else { return }
+        lastAutoShotAt = now
+        startPhotoSequence(auto: true)
     }
 
     /// 脚長で伸ばす範囲を少しずつ追従させ、境目がちらつかないようにする。videoQueue から呼ぶ。
