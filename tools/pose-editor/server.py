@@ -15,6 +15,7 @@ Python 3.8 以上の標準ライブラリだけで動く（追加のインスト
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -70,6 +71,51 @@ def pose_labels():
     return labels
 
 
+# MARK: - 体に隠れた関節
+
+# 見本写真の自動解析で見つからなかった関節、または手直しで大きく動かした関節は、
+# 写真では体や物に隠れていて、iPhone の画像解析では読み取れない（読み違える）関節とみなす。
+# アプリはこの関節を一致度の判定から外す（ガイドの表示には使う）。
+# 撮るときもその関節は同じように隠れるので、判定に入れると「映っていない」「位置が違う」と減点され、
+# 型どおりのポーズをしても一致判定が通らなかった。
+HIDDEN_MOVE = 0.12      # 手直しで体の高さのこの割合より動かした関節は、読み違えていたとみなす
+SAME_PERSON = 0.2       # 自動解析の人と手直しの人の関節のずれ（中央値）がこれ以下なら同じ人とみなす
+
+
+def hidden_joints(people, analysis_people, iso):
+    """型の人ごとに、隠れた関節の名前の一覧を返す（分からない人は None）。
+    people / analysis_people は写真の上の座標の {関節: [x, y]} の一覧。"""
+    result = []
+    for joints in people:
+        if len(joints) < 3:
+            result.append(None)
+            continue
+        points = {k: iso(v) for k, v in joints.items()}
+        ys = [p[1] for p in points.values()]
+        body = max(max(ys) - min(ys), 0.35)
+        best = None
+        for detected in analysis_people:
+            common = [k for k in joints if k in detected]
+            # 自動解析で関節がほとんど取れなかった人は、どれが隠れているか分からない
+            if len(detected) < 4 or len(common) < 3:
+                continue
+            moved = {}
+            for k in common:
+                d = iso(detected[k])
+                moved[k] = math.hypot(points[k][0] - d[0], points[k][1] - d[1]) / body
+            values = sorted(moved.values())
+            middle = (values[(len(values) - 1) // 2] + values[len(values) // 2]) / 2
+            if best is None or middle < best[0]:
+                best = (middle, detected, moved)
+        # 自動解析が別の人を拾っているときも分からない
+        if best is None or best[0] > SAME_PERSON:
+            result.append(None)
+            continue
+        _, detected, moved = best
+        result.append(sorted(k for k in joints if k not in detected or moved[k] > HIDDEN_MOVE))
+    return result
+
+
 # MARK: - 型の形への変換（アプリの PoseImporter.shape と同じ計算）
 
 def convert_shape(record, edit):
@@ -112,7 +158,12 @@ def convert_shape(record, edit):
     # 2 人以上の写真の、2 人目以降の骨格と顔（[{points, face}]）
     others = edit["others"] if "others" in edit else (record.get("others") or [])
 
+    analysis_people = [record.get("joints") or {}] + [o.get("points") or {} for o in record.get("others") or []]
+    hidden = hidden_joints([joints] + [o.get("points") or {} for o in others], analysis_people, iso)
+
     shape = {"points": {k: iso(v) for k, v in joints.items()}}
+    if hidden[0]:
+        shape["hidden"] = hidden[0]
     if outlines:
         shape["outline"] = [iso(p) for p in outlines[0]]
     if len(outlines) > 1:
@@ -125,6 +176,8 @@ def convert_shape(record, edit):
         people = []
         for other in others:
             person = {"points": {k: iso(v) for k, v in (other.get("points") or {}).items()}}
+            if hidden[len(people) + 1]:
+                person["hidden"] = hidden[len(people) + 1]
             if other.get("face"):
                 person["face"] = convert_face(other["face"])
             people.append(person)

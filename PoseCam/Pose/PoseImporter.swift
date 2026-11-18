@@ -64,6 +64,11 @@ struct FaceShape: Codable, Equatable {
 struct PersonShape: Codable, Equatable {
     var points: [String: CGPoint]
     var face: FaceShape?
+    /// 体や物に隠れていて、画像解析では読み取れない関節の名前（PoseTemplate.hidden と同じ）
+    var hidden: [String]?
+
+    /// 一致度の判定から外す関節
+    var hiddenJoints: Set<Joint> { Set((hidden ?? []).compactMap(Joint.init(rawValue:))) }
 
     var joints: [Joint: CGPoint] {
         Dictionary(uniqueKeysWithValues: points.compactMap { key, value in Joint(rawValue: key).map { ($0, value) } })
@@ -75,7 +80,9 @@ struct PersonShape: Codable, Equatable {
     }
 
     func map(_ transform: (CGPoint) -> CGPoint) -> PersonShape {
-        PersonShape(points: points.mapValues(transform), face: face?.map(transform))
+        var result = PersonShape(points: points.mapValues(transform), face: face?.map(transform))
+        result.hidden = hidden
+        return result
     }
 
     init(points: [String: CGPoint], face: FaceShape?) {
@@ -97,6 +104,8 @@ struct PoseShape: Codable {
     var lines: [[CGPoint]]?
     /// 2 人以上のポーズの、2 人目以降の骨格と顔
     var extraPeople: [PersonShape]?
+    /// 体や物に隠れていて、画像解析では読み取れない関節の名前（PoseTemplate.hidden と同じ）
+    var hidden: [String]?
 }
 
 /// 写真を解析した結果。座標は写真の画像座標（左上原点・0...1）。
@@ -269,6 +278,26 @@ enum PoseImporter {
         return shape
     }
 
+    /// 手で直した関節のうち、体や物に隠れていて画像解析では読み取れない関節。
+    /// 自動で見つからず手で足した関節と、体の高さの 12% より大きく動かした（読み違えていた）関節。
+    /// 撮るときも同じように読み取れないので、一致度の判定から外す（tools/pose-editor の hidden_joints と同じ考え方）
+    static func hiddenJoints(edited: [Joint: CGPoint], detected: [Joint: CGPoint], size: CGSize) -> Set<Joint> {
+        let ys = edited.values.map { $0.y * size.height }
+        // 自動でほとんど見つからなかった写真では、どれが隠れているのか分からない
+        guard detected.count >= 4, let minY = ys.min(), let maxY = ys.max() else { return [] }
+        let body = max(maxY - minY, size.height * 0.35)
+        var result = Set<Joint>()
+        for (joint, point) in edited {
+            guard let original = detected[joint] else {
+                result.insert(joint)
+                continue
+            }
+            let moved = hypot((point.x - original.x) * size.width, (point.y - original.y) * size.height)
+            if moved > body * 0.12 { result.insert(joint) }
+        }
+        return result
+    }
+
     static func makeTemplate(name: String, shape: PoseShape) -> PoseTemplate {
         var template = PoseTemplate(name: name, category: PoseTemplate.userCategory, joints: [:],
                                     isUserCreated: true, recommendedZoom: 1, outline: shape.outline)
@@ -277,6 +306,7 @@ enum PoseImporter {
         template.face = shape.face
         template.lines = shape.lines
         template.extraPeople = shape.extraPeople
+        template.hidden = shape.hidden
         return template
     }
 }

@@ -27,10 +27,19 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
     var lines: [[CGPoint]]?
     /// 2 人以上のポーズの、2 人目以降の骨格と顔（等方座標）
     var extraPeople: [PersonShape]?
+    /// 1 人目の関節のうち、体や物に隠れていて画像解析では読み取れない関節の名前。
+    /// 見本写真の自動解析で見つからなかった（手で足した）関節・大きく読み違えていた関節で、
+    /// 撮るときも同じように隠れて読み取れないので、一致度の判定から外す（ガイドの表示には使う）
+    var hidden: [String]?
+
+    /// 一致度の判定から外す関節
+    var hiddenJoints: Set<Joint> { Set((hidden ?? []).compactMap(Joint.init(rawValue:))) }
 
     /// 型の人全員（1 人目は points と face）
     var people: [PersonShape] {
-        [PersonShape(points: points, face: face)] + (extraPeople ?? [])
+        var first = PersonShape(points: points, face: face)
+        first.hidden = hidden
+        return [first] + (extraPeople ?? [])
     }
 
     init(id: String = UUID().uuidString, name: String, category: String,
@@ -68,10 +77,13 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
         result.face = face?.mirrored()
         result.lines = lines?.map { $0.map { CGPoint(x: -$0.x, y: $0.y) } }
         result.extraPeople = extraPeople?.map { person in
-            PersonShape(joints: Dictionary(uniqueKeysWithValues: person.joints.map {
+            var mirrored = PersonShape(joints: Dictionary(uniqueKeysWithValues: person.joints.map {
                 ($0.key.mirrored, CGPoint(x: -$0.value.x, y: $0.value.y))
             }), face: person.face?.mirrored())
+            mirrored.hidden = person.hidden.map(Self.mirroredNames)
+            return mirrored
         }
+        result.hidden = hidden.map(Self.mirroredNames)
         return result
     }
 
@@ -92,12 +104,18 @@ struct PoseTemplate: Identifiable, Codable, Hashable {
             result.face = shape
         }
         result.lines = lines?.map { $0.map(f) }
+        result.hidden = hidden
         result.extraPeople = extraPeople?.map { person in
             var mapped = person.map(f)
             mapped.face?.height *= k
             return mapped
         }
         return result
+    }
+
+    /// 関節の名前の左右を入れ替える
+    private static func mirroredNames(_ names: [String]) -> [String] {
+        names.map { Joint(rawValue: $0)?.mirrored.rawValue ?? $0 }
     }
 
     /// 描く輪郭すべて
