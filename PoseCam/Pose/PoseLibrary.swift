@@ -104,6 +104,7 @@ final class PoseLibrary: ObservableObject {
             builtInPoses[index].face = shape.face
             builtInPoses[index].lines = shape.lines
             builtInPoses[index].extraPeople = shape.extraPeople
+            builtInPoses[index].hidden = shape.hidden
         }
     }
 
@@ -147,6 +148,7 @@ final class PoseLibrary: ObservableObject {
                     updated[index].face = shape.face
                     updated[index].lines = shape.lines
                     updated[index].extraPeople = shape.extraPeople
+                    updated[index].hidden = shape.hidden
                 }
             }
 

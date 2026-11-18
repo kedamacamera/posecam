@@ -18,6 +18,13 @@ enum PoseMatcher {
         (.leftShoulder, .rightShoulder),
     ]
 
+    /// 腕・脚（付け根 → 中の関節 → 先）。中の関節（ひじ・ひざ）が隠れて付け根と先しか比べられないときは、
+    /// 付け根 → 先の向きで比べる（腕の向きをまったく見なくなるのを防ぐ）
+    private static let limbs: [(Joint, Joint, Joint)] = [
+        (.leftShoulder, .leftElbow, .leftWrist), (.rightShoulder, .rightElbow, .rightWrist),
+        (.leftHip, .leftKnee, .leftAnkle), (.rightHip, .rightKnee, .rightAnkle),
+    ]
+
     /// 向きのずれがこの角度までは満点（人の体型・関節の検出のぶれで 15 度では厳しかった）
     private static let angleSlack = 20.0 * Double.pi / 180
     /// 向きのずれがこの角度で 0 点
@@ -30,11 +37,15 @@ enum PoseMatcher {
     /// 関節の位置と向きでの一致度。どちらも等方座標で渡す。
     /// aspect は画面の縦横比（横 / 縦）で、画面内に見えているはずの関節を決めるのに使う。
     /// 比べられる関節が 3 つ未満のとき（顔のアップなどで体の関節が取れないとき）は nil。
-    static func score(template: [Joint: CGPoint], detected: [Joint: CGPoint], aspect: CGFloat? = nil) -> Double? {
+    /// hidden は型の関節のうち体や物に隠れていて読み取れない関節（PoseTemplate.hidden）で、判定から外す。
+    /// 撮るときも同じように隠れるので、数えると「映っていない」「位置が違う」と減点されて一致判定が通らなかった
+    static func score(template: [Joint: CGPoint], detected: [Joint: CGPoint], aspect: CGFloat? = nil,
+                      hidden: Set<Joint> = []) -> Double? {
         guard !template.isEmpty else { return nil }
         // インカメラ（鏡像）や後ろ向きでは左右のラベルが入れ替わるので、両方試して良い方を採る
         let swapped = Dictionary(uniqueKeysWithValues: detected.map { ($0.key.mirrored, $0.value) })
-        let scores = [evaluate(template, detected, aspect: aspect), evaluate(template, swapped, aspect: aspect)]
+        let scores = [evaluate(template, detected, aspect: aspect, hidden: hidden),
+                      evaluate(template, swapped, aspect: aspect, hidden: hidden)]
         return scores.compactMap { $0 }.max()
     }
 
@@ -66,10 +77,13 @@ enum PoseMatcher {
 
     /// 2 人以上の型の関節の一致度。型の人と映っている人を、一致度の合計がいちばん高くなるように組み合わせ、
     /// 型の人ごとの一致度を平均する（映っていない人・比べられない人は 0 点）。どの人も比べられなければ nil。
-    static func score(people: [[Joint: CGPoint]], detected: [[Joint: CGPoint]], aspect: CGFloat? = nil) -> Double? {
+    static func score(people: [PersonShape], detected: [[Joint: CGPoint]], aspect: CGFloat? = nil) -> Double? {
         // 体の取れなかった「顔だけの人」（関節がない人）は、関節では比べない（顔の一致度で比べる）
-        let people = people.filter { !$0.isEmpty }
-        let table = people.map { person in detected.map { score(template: person, detected: $0, aspect: aspect) } }
+        let people = people.filter { !$0.points.isEmpty }
+        let table = people.map { person in
+            let joints = person.joints, hidden = person.hiddenJoints
+            return detected.map { score(template: joints, detected: $0, aspect: aspect, hidden: hidden) }
+        }
         let assignment = bestAssignment(table)
         let scores = assignment.enumerated().map { row, column in column.flatMap { table[row][$0] } }
         guard scores.contains(where: { $0 != nil }) else { return nil }
@@ -95,9 +109,12 @@ enum PoseMatcher {
         return scores.isEmpty ? nil : scores.reduce(0, +) / Double(scores.count)
     }
 
-    private static func evaluate(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint], aspect: CGFloat?) -> Double? {
+    private static func evaluate(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint], aspect: CGFloat?,
+                                 hidden: Set<Joint>) -> Double? {
+        // 比べる型の関節（体や物に隠れて読み取れない関節は外す）
+        let visible = hidden.isEmpty ? template : template.filter { !hidden.contains($0.key) }
         // 画面内に見えているはずの型の関節（上半身だけの型なら、画面外の脚は数えない）
-        let expected = template.filter { _, p in
+        let expected = visible.filter { _, p in
             guard let aspect else { return true }
             return abs(p.x) <= aspect / 2 + 0.02 && p.y >= -0.02 && p.y <= 1.02
         }
@@ -107,7 +124,11 @@ enum PoseMatcher {
         let coverage = Double(found.count) / Double(expected.count)
         let coverageFactor = 0.55 + 0.45 * coverage
 
-        let angle = angleScore(template, detected) ?? 0.6
+        // 向きを比べられる骨が 2 本未満のとき: 型の側にも骨がない（隠れた関節を外すと点だけになる型）なら
+        // 向きは比べようがないので位置だけで決める。型には骨があるのに映っていなければ、従来どおり 0.6 にする
+        let angle = angleScore(visible, detected)
+            ?? (comparableBones(expected, expected).count >= 2 ? 0.6 : 1)
+        // 体の高さ（位置のずれの基準）は、隠れた関節も含めた型全体で測る
         let position = positionScore(template, detected, joints: found)
         // 掛け算にして、位置か向きのどちらかが大きくずれていれば 0 点になるようにする
         return angle * position * coverageFactor * 100
@@ -116,9 +137,8 @@ enum PoseMatcher {
     /// 骨ごとの向きの差。20 度までは満点、90 度ずれた骨は 0 点。
     private static func angleScore(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint]) -> Double? {
         var scores: [Double] = []
-        for (a, b) in bones {
-            guard let ta = template[a], let tb = template[b],
-                  let da = detected[a], let db = detected[b] else { continue }
+        for (a, b) in comparableBones(template, detected) {
+            let ta = template[a]!, tb = template[b]!, da = detected[a]!, db = detected[b]!
             let tx = Double(tb.x - ta.x), ty = Double(tb.y - ta.y)
             let dx = Double(db.x - da.x), dy = Double(db.y - da.y)
             let tLength = hypot(tx, ty), dLength = hypot(dx, dy)
@@ -131,6 +151,17 @@ enum PoseMatcher {
         let mean = scores.reduce(0, +) / Double(scores.count)
         // 平均だけだと腕 1 本の違いが薄まるので、いちばんずれている骨の点数も少し反映する
         return mean * 0.85 + (scores.min() ?? 0) * 0.15
+    }
+
+    /// 型と映っている人の両方にある骨。腕・脚の中の関節（ひじ・ひざ）がどちらかで欠けているときは、
+    /// 付け根 → 先を代わりに比べる
+    private static func comparableBones(_ template: [Joint: CGPoint], _ detected: [Joint: CGPoint]) -> [(Joint, Joint)] {
+        func has(_ joint: Joint) -> Bool { template[joint] != nil && detected[joint] != nil }
+        var result = bones.filter { has($0.0) && has($0.1) }
+        for (root, middle, tip) in limbs where has(root) && has(tip) && !has(middle) {
+            result.append((root, tip))
+        }
+        return result
     }
 
     /// 関節の位置の差。型の体の高さの 8% までは満点、50% ずれると 0 点。
