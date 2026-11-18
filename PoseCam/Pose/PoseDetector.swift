@@ -349,6 +349,7 @@ final class PoseDetector {
                                               model: VNCoreMLModel, imageSize: CGSize) -> CIImage {
         let bounds = CGRect(origin: .zero, size: imageSize)
         var result = whole
+        var refined = false
         let largest = faces.sorted { $0.boundingBox.width > $1.boundingBox.width }.prefix(2)
         for face in largest {
             let box = face.boundingBox
@@ -385,8 +386,24 @@ final class PoseDetector {
                     kCIInputMaskImageKey: weight,
                 ])
                 .cropped(to: bounds)
+            refined = true
         }
-        return result
+        return refined ? bake(result, bounds: bounds) : result
+    }
+
+    /// マスクを作るときに使う CIContext（色の変換はしない）
+    private static let maskContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+
+    /// 重ねたマスクを、長い辺 512 ピクセルの画像に一度だけ描いておく。
+    /// 描かずに渡すと、重ね合わせと縁のぼかしがプレビューの毎コマ描き直されて重くなる（マスクはもともと粗いので画質は変わらない）
+    private static func bake(_ mask: CIImage, bounds: CGRect) -> CIImage {
+        let scale = min(1, 512 / max(bounds.width, bounds.height))
+        let size = CGRect(x: 0, y: 0, width: (bounds.width * scale).rounded(.up), height: (bounds.height * scale).rounded(.up))
+        let small = mask.transformed(by: CGAffineTransform(scaleX: scale, y: scale)).cropped(to: size)
+        guard let cg = maskContext.createCGImage(small, from: size, format: .RGBA8, colorSpace: nil) else { return mask }
+        return CIImage(cgImage: cg)
+            .transformed(by: CGAffineTransform(scaleX: bounds.width / size.width, y: bounds.height / size.height))
+            .cropped(to: bounds)
     }
 
     /// 顔の 478 点を求めるモデル（Google の MediaPipe Face Mesh V2 を変換したもの）。アプリに入っていなければ nil

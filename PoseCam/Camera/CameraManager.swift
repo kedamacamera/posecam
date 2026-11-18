@@ -291,6 +291,9 @@ final class CameraManager: NSObject, ObservableObject {
     // 映像のキュー専用: プレビューのコマを間引く・美肌のマスクを使い回す
     private var nextPreviewFrameDue: CFTimeInterval = 0
     private var cachedMasks: (key: String, time: CFTimeInterval, masks: BeautyMasks?)?
+    // プレビューの美肌のマスクを、映像のキューを止めずに裏で求める（求めている間は前のマスクで表示する）
+    private let maskQueue = DispatchQueue(label: "posecam.mask", qos: .userInitiated)
+    private let isMasking = Locked(false)
     private var lastSlowFrameLog: CFTimeInterval = 0
     private var smoothedLegs: LegLayout?
     private var lastFrameSize: CGSize = .zero
@@ -2010,11 +2013,22 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 撮った写真は別に高画質で処理するので、写真の仕上がりは変わらない
         var masks: BeautyMasks?
         var needsNewMasks = false
+        // 録画していないときは、新しいマスクを裏（maskQueue）で求め、できるまで前のマスクで表示する。
+        // 肌の範囲を顔の周りで求め直す・顔の 478 点を求めるようになってマスク作りが重くなり、
+        // 映像のキューで待つとそのコマだけ表示が遅れてカクついていた
+        var refreshInBackground = false
         let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)|\(settings.needsFaceMesh)"
         if wantsMasks {
             let maxAge: CFTimeInterval = recording ? (heat >= 2 ? 1.0 / 15 : 0) : 0.1
-            if let cached = cachedMasks, cached.key == maskKey, frameStarted - cached.time < maxAge {
-                masks = cached.masks
+            if let cached = cachedMasks, cached.key == maskKey {
+                if frameStarted - cached.time < maxAge {
+                    masks = cached.masks
+                } else if !recording {
+                    masks = cached.masks
+                    refreshInBackground = !isMasking.value
+                } else {
+                    needsNewMasks = true
+                }
             } else {
                 needsNewMasks = true
             }
@@ -2026,7 +2040,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）。
         // このコマで判定しないときは作らない
         var visionBuffer: CVPixelBuffer?
-        if needsNewMasks || poseDue {
+        if needsNewMasks || refreshInBackground || poseDue {
             // 動画・スナップでは毎コマ判定するので小さめにして、コマ落ちを減らす
             visionBuffer = makeVisionBuffer(image, maxLongSide: isPhoto ? 960 : 640)
             // 判定用のコマが描けなかったときは、美肌のかからないコマが混ざらないよう、このコマを捨てる
@@ -2040,6 +2054,20 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                          skin: settings.needsSkinMask, person: settings.needsPersonMask,
                                          mesh: settings.needsFaceMesh)
             cachedMasks = (maskKey, frameStarted, masks)
+        }
+        if refreshInBackground, let visionBuffer {
+            isMasking.value = true
+            let size = image.extent.size
+            let skin = settings.needsSkinMask, person = settings.needsPersonMask, mesh = settings.needsFaceMesh
+            maskQueue.async {
+                let fresh = self.detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: size,
+                                                      skin: skin, person: person, mesh: mesh)
+                self.videoQueue.async {
+                    // 求めている間に設定や大きさが変わっていたら捨てる
+                    if self.cachedMasks?.key == maskKey { self.cachedMasks = (maskKey, frameStarted, fresh) }
+                    self.isMasking.value = false
+                }
+            }
         }
         let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil
         let processed = processor.process(image, settings: settings, legs: legs, masks: masks)
