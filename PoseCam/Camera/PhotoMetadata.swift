@@ -114,6 +114,12 @@ enum PhotoMetadata {
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let cgImage = context.createCGImage(image, from: image.extent, format: .RGBA8,
                                                   colorSpace: colorSpace) else { return nil }
+        return jpeg(cgImage, metadata: metadata, orientation: orientation)
+    }
+
+    /// 描き終わった画像から JPEG を作る（同じ画像からサムネイルも作るとき、加工を 2 回描かないように）
+    static func jpeg(_ cgImage: CGImage, metadata: [String: Any],
+                     orientation: CGImagePropertyOrientation = .up) -> Data? {
         var properties = metadata
         // 画素は縦向きに直してあるので、向きは撮ったときの端末の向き（縦なら 1）。
         // 画素数は保存する大きさ。元の写真の大きさ・サムネイルの情報は消す
