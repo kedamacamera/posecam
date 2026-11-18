@@ -226,9 +226,10 @@ final class PoseDetector {
     func beautyMasks(pixelBuffer: CVPixelBuffer, outputSize: CGSize, skin: Bool = true,
                      person: Bool = false, mesh: Bool = false) -> BeautyMasks? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        // 顔の周りで肌の範囲を求め直すのは写真だけ（モデルを顔ごとにもう一度動かすので、プレビューでは加工が遅れてついてくる）
         return perform(handler, source: mesh ? CIImage(cvPixelBuffer: pixelBuffer) : nil, imageSize: outputSize,
                        maskQuality: skin ? .balanced : nil, includePose: false,
-                       person: person ? .balanced : nil).masks
+                       person: person ? .balanced : nil, refineSkin: false).masks
     }
 
     /// 写真用。マスクは精度優先で求める。
@@ -263,7 +264,8 @@ final class PoseDetector {
     private func perform(_ handler: VNImageRequestHandler, source: CIImage? = nil, imageSize: CGSize,
                          maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?,
                          includePose: Bool = true,
-                         person: VNGeneratePersonSegmentationRequest.QualityLevel? = nil) -> Result {
+                         person: VNGeneratePersonSegmentationRequest.QualityLevel? = nil,
+                         refineSkin: Bool = true) -> Result {
         let poseRequest = VNDetectHumanBodyPoseRequest()
         var requests: [VNRequest] = includePose ? [poseRequest] : []
         var skinRequest: VNCoreMLRequest?
@@ -313,7 +315,7 @@ final class PoseDetector {
         if skinBuffer != nil || personBuffer != nil {
             let faces = landmarks?.results ?? []
             var skin = skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) }
-            if let whole = skin, let model = Self.skinModel {
+            if refineSkin, let whole = skin, let model = Self.skinModel {
                 skin = Self.refineSkinAroundFaces(whole, faces: faces, handler: handler, model: model, imageSize: imageSize)
             }
             result.masks = BeautyMasks(
@@ -417,6 +419,18 @@ final class PoseDetector {
 
     static var hasFaceMeshModel: Bool { faceMeshModel != nil }
 
+    private static func render256(_ image: CIImage) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]]
+        CVPixelBufferCreate(nil, 256, 256, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
+        guard let buffer else { return nil }
+        // 描き終わるまで待ってから判定する（描きかけのコマで点を求めないように）
+        let destination = CIRenderDestination(pixelBuffer: buffer)
+        guard let task = try? maskContext.startTask(toRender: image, to: destination),
+              (try? task.waitUntilCompleted()) != nil else { return nil }
+        return buffer
+    }
+
     /// 大きい顔から 2 つまで、顔の 478 点を求める（左下原点・imageSize の座標）。
     /// Vision の顔の枠を 1.5 倍の正方形に広げ、両目が水平になるよう回して 256x256 に切り抜いてモデルに入れる
     /// （MediaPipe と同じ切り抜き方。傾いた顔のままだと点がずれる）。
@@ -455,7 +469,9 @@ final class PoseDetector {
                 .cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
             let request = VNCoreMLRequest(model: model)
             request.imageCropAndScaleOption = .scaleFill
-            let handler = VNImageRequestHandler(ciImage: crop, orientation: .up, options: [:])
+            // 切り抜きは自分で 256x256 の画像に描いてから渡す（CIImage のまま渡すと Vision が毎回描き直しの準備をして遅い）
+            guard let cropBuffer = render256(crop) else { continue }
+            let handler = VNImageRequestHandler(cvPixelBuffer: cropBuffer, orientation: .up, options: [:])
             guard (try? handler.perform([request])) != nil,
                   let results = request.results as? [VNCoreMLFeatureValueObservation],
                   let points = results.first(where: { $0.featureName == "landmarks" })?.featureValue.multiArrayValue,
