@@ -232,6 +232,18 @@ final class PoseDetector {
                        person: person ? .balanced : nil, refineSkin: false).masks
     }
 
+    /// プレビュー用。肌のモデルだけを動かして肌の範囲を求める（軽いので毎コマ求め、顔が動いても加工が遅れてつかないようにする）。
+    /// pixelBuffer はモデルの入力と同じ 256x256 に縮めたコマ。モデルがなければ nil
+    func skinMask(pixelBuffer: CVPixelBuffer, outputSize: CGSize) -> CIImage? {
+        guard let model = Self.skinModel else { return nil }
+        let request = VNCoreMLRequest(model: model)
+        request.imageCropAndScaleOption = .scaleFill
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let buffer = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else { return nil }
+        return Self.scaled(CIImage(cvPixelBuffer: buffer), to: outputSize)
+    }
+
     /// 写真用。マスクは精度優先で求める。
     func analyze(ciImage: CIImage, wantsMasks: Bool, wantsPerson: Bool = false, wantsMesh: Bool = false) -> Result {
         let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])

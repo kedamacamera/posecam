@@ -338,6 +338,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var framesToSkip = 0
     /// 判定（Vision）用に縮小したコマを入れる入れ物
     private var visionPool: CVPixelBufferPool?
+    private var skinPool: CVPixelBufferPool?
     private var visionPoolSize: CGSize = .zero
 
     // メインスレッド専用
@@ -2084,9 +2085,9 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                 if recording, frameStarted - cached.time < maxAge {
                     masks = cached.masks
                 } else if !recording {
-                    // 前のマスクができたらすぐ次を求め始める（1 秒に 20 回まで）。加工が顔に遅れてつかないように
+                    // 顔のパーツ・顔の点は 1 秒に 10 回まで裏で求め直す（肌の範囲は下で毎コマ求める）
                     masks = cached.masks
-                    refreshInBackground = !isMasking.value && frameStarted - cached.time >= 0.05
+                    refreshInBackground = !isMasking.value && frameStarted - cached.time >= 0.1
                 } else {
                     needsNewMasks = true
                 }
@@ -2115,6 +2116,13 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
                                          skin: settings.needsSkinMask, person: settings.needsPersonMask,
                                          mesh: settings.needsFaceMesh)
             cachedMasks = (maskKey, frameStarted, masks)
+        }
+        // 顔のパーツ・顔の点は裏で求めた少し前のものを使うが、肌の範囲だけは毎コマこのコマから求める
+        // （肌の範囲が遅れると、顔が動いたときに顔のあった所の髪や背景がぼけ、加工が遅れてついてくるように見えた）
+        if !recording, !needsNewMasks, masks != nil, settings.needsSkinMask, PoseDetector.hasSkinModel,
+           let skinBuffer = makeSkinBuffer(image),
+           let skin = detector.skinMask(pixelBuffer: skinBuffer, outputSize: image.extent.size) {
+            masks?.skin = skin
         }
         if refreshInBackground, let visionBuffer {
             isMasking.value = true
@@ -2198,6 +2206,33 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
     }
 
     /// 判定用に、長辺 maxLongSide ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。
+    /// 肌のモデル用に、コマを縦横比に関係なく 256x256 に縮める（モデルの入力と同じ大きさなので軽い）
+    private func makeSkinBuffer(_ image: CIImage) -> CVPixelBuffer? {
+        let side = 256
+        if skinPool == nil {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: side,
+                kCVPixelBufferHeightKey as String: side,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            ]
+            var pool: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
+            skinPool = pool
+        }
+        guard let skinPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, skinPool, &buffer)
+        guard let buffer else { return nil }
+        let extent = image.extent
+        let size = CGSize(width: side, height: side)
+        let small = image
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: size.width / extent.width, y: size.height / extent.height))
+        guard renderer.ciContext.renderAndWait(small, to: buffer, size: size) else { return nil }
+        return buffer
+    }
+
     private func makeVisionBuffer(_ image: CIImage, maxLongSide: CGFloat) -> CVPixelBuffer? {
         let extent = image.extent
         let scale = min(1, maxLongSide / max(extent.width, extent.height))
