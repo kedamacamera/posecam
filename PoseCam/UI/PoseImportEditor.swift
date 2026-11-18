@@ -91,7 +91,11 @@ struct PoseImportEditor: View {
                         var analysis = draft.analysis
                         analysis.joints = joints
                         analysis.face = face
-                        onSave(PoseImporter.shape(for: analysis, crop: crop))
+                        var shape = PoseImporter.shape(for: analysis, crop: crop)
+                        let hidden = PoseImporter.hiddenJoints(edited: joints, detected: draft.analysis.joints,
+                                                               size: draft.analysis.size)
+                        shape.hidden = hidden.isEmpty ? nil : hidden.map(\.rawValue).sorted()
+                        onSave(shape)
                         dismiss()
                     }
                     .disabled(crop.isEmpty)

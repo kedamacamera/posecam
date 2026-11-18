@@ -1797,7 +1797,7 @@ final class CameraManager: NSObject, ObservableObject {
                 // 2 人以上の型: 型の人と映っている人を組み合わせて、人ごとの一致度を平均する
                 let detected = result.poses.map { $0.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) } }
                 let people = template.people
-                let jointScore = PoseMatcher.score(people: people.map(\.joints), detected: detected, aspect: aspect)
+                let jointScore = PoseMatcher.score(people: people, detected: detected, aspect: aspect)
                 var silhouetteScore: Double?
                 if let silhouette = result.silhouette {
                     let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
@@ -1820,7 +1820,8 @@ final class CameraManager: NSObject, ObservableObject {
             } else if let template {
                 let jointScore = pose.flatMap { pose -> Double? in
                     let isotropic = pose.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) }
-                    return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect)
+                    return PoseMatcher.score(template: template.joints, detected: isotropic, aspect: aspect,
+                                             hidden: template.hiddenJoints)
                 }
                 var silhouetteScore: Double?
                 if let silhouette = result.silhouette {
