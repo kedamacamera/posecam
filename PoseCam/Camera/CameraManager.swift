@@ -2019,13 +2019,14 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         var refreshInBackground = false
         let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)|\(settings.needsFaceMesh)"
         if wantsMasks {
-            let maxAge: CFTimeInterval = recording ? (heat >= 2 ? 1.0 / 15 : 0) : 0.1
+            let maxAge: CFTimeInterval = heat >= 2 ? 1.0 / 15 : 0
             if let cached = cachedMasks, cached.key == maskKey {
-                if frameStarted - cached.time < maxAge {
+                if recording, frameStarted - cached.time < maxAge {
                     masks = cached.masks
                 } else if !recording {
+                    // 前のマスクができたらすぐ次を求め始める（1 秒に 20 回まで）。加工が顔に遅れてつかないように
                     masks = cached.masks
-                    refreshInBackground = !isMasking.value
+                    refreshInBackground = !isMasking.value && frameStarted - cached.time >= 0.05
                 } else {
                     needsNewMasks = true
                 }
