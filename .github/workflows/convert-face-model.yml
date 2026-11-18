@@ -1,0 +1,52 @@
+# 顔のランドマーク（478 点）の Core ML モデルを作る。結果は FaceLandmarks-mlmodel として取り出せる。
+name: Convert face landmark model
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths:
+      - 'tools/convert_face_landmarks.py'
+      - '.github/workflows/convert-face-model.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # GPU 用の部品を入れるとディスクが足りなくなるので、CPU 版だけを入れる
+      - name: Install converters
+        run: |
+          pip install --no-cache-dir "torch==2.2.*" "torchvision==0.17.*" --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir "tensorflow-cpu==2.15.*" "tf2onnx==1.16.*" "onnx==1.15.*" \
+            "coremltools==7.2" tflite-support pillow "numpy<2"
+          pip install --no-cache-dir --no-deps onnx2torch
+
+      - name: Convert
+        run: python tools/convert_face_landmarks.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FaceLandmarks-mlmodel
+          path: out/FaceLandmarks.mlmodel
+
+      # 変換したモデルを、このブランチのアプリの中（Resources/Models）に入れる
+      - name: Commit model
+        if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p PoseCam/Resources/Models
+          cp out/FaceLandmarks.mlmodel PoseCam/Resources/Models/
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add PoseCam/Resources/Models/FaceLandmarks.mlmodel
+          git diff --cached --quiet || git commit -m "顔のランドマークのモデル（FaceLandmarks.mlmodel）を入れる"
+          git push origin HEAD:${GITHUB_REF_NAME}

@@ -291,6 +291,9 @@ final class CameraManager: NSObject, ObservableObject {
     // 映像のキュー専用: プレビューのコマを間引く・美肌のマスクを使い回す
     private var nextPreviewFrameDue: CFTimeInterval = 0
     private var cachedMasks: (key: String, time: CFTimeInterval, masks: BeautyMasks?)?
+    // プレビューの美肌のマスクを、映像のキューを止めずに裏で求める（求めている間は前のマスクで表示する）
+    private let maskQueue = DispatchQueue(label: "posecam.mask", qos: .userInitiated)
+    private let isMasking = Locked(false)
     private var lastSlowFrameLog: CFTimeInterval = 0
     private var smoothedLegs: LegLayout?
     private var lastFrameSize: CGSize = .zero
@@ -329,6 +332,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var framesToSkip = 0
     /// 判定（Vision）用に縮小したコマを入れる入れ物
     private var visionPool: CVPixelBufferPool?
+    private var skinPool: CVPixelBufferPool?
     private var visionPoolSize: CGSize = .zero
 
     // メインスレッド専用
@@ -1491,7 +1495,8 @@ final class CameraManager: NSObject, ObservableObject {
         let wantsMasks = settings.needsSkinMask
         var analysis = PoseDetector.Result()
         if settings.needsMasks || settings.legLength > 0.01 {
-            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask)
+            analysis = detector.analyze(ciImage: image, wantsMasks: wantsMasks, wantsPerson: settings.needsPersonMask,
+                                        wantsMesh: settings.needsFaceMesh)
         }
         let legs = settings.legLength > 0.01 ? LegLayout.make(pose: analysis.pose, manual: settings.legRange) : nil
         let output = processor.process(image, settings: settings, legs: legs, masks: analysis.masks)
@@ -2009,11 +2014,23 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 撮った写真は別に高画質で処理するので、写真の仕上がりは変わらない
         var masks: BeautyMasks?
         var needsNewMasks = false
-        let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)"
+        // 録画していないときは、新しいマスクを裏（maskQueue）で求め、できるまで前のマスクで表示する。
+        // 肌の範囲を顔の周りで求め直す・顔の 478 点を求めるようになってマスク作りが重くなり、
+        // 映像のキューで待つとそのコマだけ表示が遅れてカクついていた
+        var refreshInBackground = false
+        let maskKey = "\(Int(image.extent.width))x\(Int(image.extent.height))|\(settings.needsSkinMask)|\(settings.needsPersonMask)|\(settings.needsFaceMesh)"
         if wantsMasks {
-            let maxAge: CFTimeInterval = recording ? (heat >= 2 ? 1.0 / 15 : 0) : 0.1
-            if let cached = cachedMasks, cached.key == maskKey, frameStarted - cached.time < maxAge {
-                masks = cached.masks
+            let maxAge: CFTimeInterval = heat >= 2 ? 1.0 / 15 : 0
+            if let cached = cachedMasks, cached.key == maskKey {
+                if recording, frameStarted - cached.time < maxAge {
+                    masks = cached.masks
+                } else if !recording {
+                    // 顔のパーツ・顔の点は 1 秒に 10 回まで裏で求め直す（肌の範囲は下で毎コマ求める）
+                    masks = cached.masks
+                    refreshInBackground = !isMasking.value && frameStarted - cached.time >= 0.1
+                } else {
+                    needsNewMasks = true
+                }
             } else {
                 needsNewMasks = true
             }
@@ -2025,7 +2042,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         // 判定（骨格・肌・顔のパーツ）は、切り抜いて小さくしたコマで行う（大きなコマのままだと重い）。
         // このコマで判定しないときは作らない
         var visionBuffer: CVPixelBuffer?
-        if needsNewMasks || poseDue {
+        if needsNewMasks || refreshInBackground || poseDue {
             // 動画・スナップでは毎コマ判定するので小さめにして、コマ落ちを減らす
             visionBuffer = makeVisionBuffer(image, maxLongSide: isPhoto ? 960 : 640)
             // 判定用のコマが描けなかったときは、美肌のかからないコマが混ざらないよう、このコマを捨てる
@@ -2036,8 +2053,30 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
         if needsNewMasks, let visionBuffer {
             masks = detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: image.extent.size,
-                                         skin: settings.needsSkinMask, person: settings.needsPersonMask)
+                                         skin: settings.needsSkinMask, person: settings.needsPersonMask,
+                                         mesh: settings.needsFaceMesh)
             cachedMasks = (maskKey, frameStarted, masks)
+        }
+        // 顔のパーツ・顔の点は裏で求めた少し前のものを使うが、肌の範囲だけは毎コマこのコマから求める
+        // （肌の範囲が遅れると、顔が動いたときに顔のあった所の髪や背景がぼけ、加工が遅れてついてくるように見えた）
+        if !recording, !needsNewMasks, masks != nil, settings.needsSkinMask, PoseDetector.hasSkinModel,
+           let skinBuffer = makeSkinBuffer(image),
+           let skin = detector.skinMask(pixelBuffer: skinBuffer, outputSize: image.extent.size) {
+            masks?.skin = skin
+        }
+        if refreshInBackground, let visionBuffer {
+            isMasking.value = true
+            let size = image.extent.size
+            let skin = settings.needsSkinMask, person = settings.needsPersonMask, mesh = settings.needsFaceMesh
+            maskQueue.async {
+                let fresh = self.detector.beautyMasks(pixelBuffer: visionBuffer, outputSize: size,
+                                                      skin: skin, person: person, mesh: mesh)
+                self.videoQueue.async {
+                    // 求めている間に設定や大きさが変わっていたら捨てる
+                    if self.cachedMasks?.key == maskKey { self.cachedMasks = (maskKey, frameStarted, fresh) }
+                    self.isMasking.value = false
+                }
+            }
         }
         let legs = settings.legLength > 0.01 ? updatedLegs(manual: settings.legRange) : nil
         let processed = processor.process(image, settings: settings, legs: legs, masks: masks)
@@ -2107,6 +2146,33 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
     }
 
     /// 判定用に、長辺 maxLongSide ピクセルまで縮小したコマを作る。videoQueue から呼ぶ。
+    /// 肌のモデル用に、コマを縦横比に関係なく 256x256 に縮める（モデルの入力と同じ大きさなので軽い）
+    private func makeSkinBuffer(_ image: CIImage) -> CVPixelBuffer? {
+        let side = 256
+        if skinPool == nil {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: side,
+                kCVPixelBufferHeightKey as String: side,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            ]
+            var pool: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool)
+            skinPool = pool
+        }
+        guard let skinPool else { return nil }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, skinPool, &buffer)
+        guard let buffer else { return nil }
+        let extent = image.extent
+        let size = CGSize(width: side, height: side)
+        let small = image
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: size.width / extent.width, y: size.height / extent.height))
+        guard renderer.ciContext.renderAndWait(small, to: buffer, size: size) else { return nil }
+        return buffer
+    }
+
     private func makeVisionBuffer(_ image: CIImage, maxLongSide: CGFloat) -> CVPixelBuffer? {
         let extent = image.extent
         let scale = min(1, maxLongSide / max(extent.width, extent.height))

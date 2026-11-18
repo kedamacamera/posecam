@@ -217,7 +217,7 @@ struct PhotoEditorView: View {
         small = reduced
         schedulePreview()
         Task.detached(priority: .userInitiated) {
-            let analysis = PoseDetector().analyze(ciImage: reduced, wantsMasks: true, wantsPerson: true)
+            let analysis = PoseDetector().analyze(ciImage: reduced, wantsMasks: true, wantsPerson: true, wantsMesh: true)
             await MainActor.run {
                 smallAnalysis = analysis
                 legFeed.showStill(pose: analysis.pose)
@@ -249,7 +249,7 @@ struct PhotoEditorView: View {
             var analysis = PoseDetector.Result()
             if settings.needsMasks || settings.legLength > 0.01 {
                 analysis = PoseDetector().analyze(ciImage: source, wantsMasks: settings.needsSkinMask,
-                                                  wantsPerson: settings.needsPersonMask)
+                                                  wantsPerson: settings.needsPersonMask, wantsMesh: settings.needsFaceMesh)
             }
             let image = Self.applyEffects(source, settings: settings, analysis: analysis)
             let output = geometry.apply(to: image, fill: fill)

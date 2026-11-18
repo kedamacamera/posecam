@@ -20,6 +20,11 @@ struct BeautyMasks {
     var upperFace: CIImage?
     /// 顔のある範囲（顔の枠を広げたもの・画像の座標）。重い処理をこの中だけで行う。顔がなければ nil
     var faceRegion: CGRect?
+    /// いちばん大きい顔の幅（画像のピクセル）。美肌の強さ（ならす範囲など）を顔の大きさに合わせるのに使う。顔がなければ nil
+    var faceWidth: CGFloat?
+    /// 顔の 478 点（MediaPipe の顔のメッシュの番号順・左下原点の画像の座標）。大きい顔から 2 つまで。
+    /// 小顔・目・鼻の形の補正に使う。モデルがない・顔が見つからなければ空
+    var faceMeshes: [[CGPoint]] = []
 
     /// 大きさの確認に使う
     var extent: CGRect? { (skin ?? person)?.extent }
@@ -28,7 +33,7 @@ struct BeautyMasks {
         BeautyMasks(skin: skin.map(transform), person: person.map(transform),
                     features: features.map(transform), redFeatures: redFeatures.map(transform),
                     beard: beard.map(transform), jawShade: jawShade.map(transform),
-                    upperFace: upperFace.map(transform), faceRegion: nil)
+                    upperFace: upperFace.map(transform), faceRegion: nil, faceWidth: nil, faceMeshes: [])
     }
 }
 
@@ -219,16 +224,30 @@ final class PoseDetector {
     /// pixelBuffer は判定用に縮小したコマ。マスクは outputSize（実際に加工する画像の大きさ）に引き伸ばして返す。
     /// skin: 肌・顔のパーツのマスクが要るか、person: 人物の領域が要るか（人物以外をモノクロにするフィルター）
     func beautyMasks(pixelBuffer: CVPixelBuffer, outputSize: CGSize, skin: Bool = true,
-                     person: Bool = false) -> BeautyMasks? {
+                     person: Bool = false, mesh: Bool = false) -> BeautyMasks? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        return perform(handler, imageSize: outputSize, maskQuality: skin ? .balanced : nil, includePose: false,
-                       person: person ? .balanced : nil).masks
+        // 顔の周りで肌の範囲を求め直すのは写真だけ（モデルを顔ごとにもう一度動かすので、プレビューでは加工が遅れてついてくる）
+        return perform(handler, source: mesh ? CIImage(cvPixelBuffer: pixelBuffer) : nil, imageSize: outputSize,
+                       maskQuality: skin ? .balanced : nil, includePose: false,
+                       person: person ? .balanced : nil, refineSkin: false).masks
+    }
+
+    /// プレビュー用。肌のモデルだけを動かして肌の範囲を求める（軽いので毎コマ求め、顔が動いても加工が遅れてつかないようにする）。
+    /// pixelBuffer はモデルの入力と同じ 256x256 に縮めたコマ。モデルがなければ nil
+    func skinMask(pixelBuffer: CVPixelBuffer, outputSize: CGSize) -> CIImage? {
+        guard let model = Self.skinModel else { return nil }
+        let request = VNCoreMLRequest(model: model)
+        request.imageCropAndScaleOption = .scaleFill
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let buffer = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else { return nil }
+        return Self.scaled(CIImage(cvPixelBuffer: buffer), to: outputSize)
     }
 
     /// 写真用。マスクは精度優先で求める。
-    func analyze(ciImage: CIImage, wantsMasks: Bool, wantsPerson: Bool = false) -> Result {
+    func analyze(ciImage: CIImage, wantsMasks: Bool, wantsPerson: Bool = false, wantsMesh: Bool = false) -> Result {
         let handler = VNImageRequestHandler(ciImage: ciImage, orientation: .up, options: [:])
-        return perform(handler, imageSize: ciImage.extent.size, maskQuality: wantsMasks ? .accurate : nil,
+        return perform(handler, source: wantsMesh ? ciImage : nil, imageSize: ciImage.extent.size, maskQuality: wantsMasks ? .accurate : nil,
                        person: wantsPerson ? .accurate : nil)
     }
 
@@ -253,10 +272,12 @@ final class PoseDetector {
 
     static var hasSkinModel: Bool { skinModel != nil }
 
-    private func perform(_ handler: VNImageRequestHandler, imageSize: CGSize,
+    /// source: handler に渡した画像そのもの。渡したときだけ顔の 478 点を求める（顔を回して切り抜くのに使う）
+    private func perform(_ handler: VNImageRequestHandler, source: CIImage? = nil, imageSize: CGSize,
                          maskQuality: VNGeneratePersonSegmentationRequest.QualityLevel?,
                          includePose: Bool = true,
-                         person: VNGeneratePersonSegmentationRequest.QualityLevel? = nil) -> Result {
+                         person: VNGeneratePersonSegmentationRequest.QualityLevel? = nil,
+                         refineSkin: Bool = true) -> Result {
         let poseRequest = VNDetectHumanBodyPoseRequest()
         var requests: [VNRequest] = includePose ? [poseRequest] : []
         var skinRequest: VNCoreMLRequest?
@@ -305,15 +326,21 @@ final class PoseDetector {
         let personBuffer = segmentation?.results?.first?.pixelBuffer
         if skinBuffer != nil || personBuffer != nil {
             let faces = landmarks?.results ?? []
+            var skin = skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) }
+            if refineSkin, let whole = skin, let model = Self.skinModel {
+                skin = Self.refineSkinAroundFaces(whole, faces: faces, handler: handler, model: model, imageSize: imageSize)
+            }
             result.masks = BeautyMasks(
-                skin: skinBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
+                skin: skin,
                 person: personBuffer.map { Self.scaled(CIImage(cvPixelBuffer: $0), to: imageSize) },
                 features: Self.featureMask(faces, imageSize: imageSize, forRedness: false),
                 redFeatures: Self.featureMask(faces, imageSize: imageSize, forRedness: true),
                 beard: Self.beardMask(faces, imageSize: imageSize),
                 jawShade: Self.jawShadeMask(faces, imageSize: imageSize),
                 upperFace: Self.upperFaceMask(faces, imageSize: imageSize),
-                faceRegion: Self.faceRegion(faces, imageSize: imageSize))
+                faceRegion: Self.faceRegion(faces, imageSize: imageSize),
+                faceWidth: faces.map { $0.boundingBox.width * imageSize.width }.max(),
+                faceMeshes: source.map { Self.faceMeshes(faces, source: $0, imageSize: imageSize) } ?? [])
         }
         return result
     }
@@ -326,6 +353,155 @@ final class PoseDetector {
             result[joint] = CGPoint(x: point.location.x, y: 1 - point.location.y)
         }
         return result
+    }
+
+    /// 顔のまわりだけを切り出して、肌のモデルにもう一度かける。
+    /// モデルは 256x256 の画像しか受け取らないので、写真全体を入れると全身の写真では顔が数十マスにしかならず、
+    /// 髪の生え際・顔の輪郭・眉の周りの肌の範囲がにじんでいた。顔の周りの正方形だけを入れれば、顔が 256 マスいっぱいになる。
+    /// 結果は写真全体の結果の上に、切り出した範囲の縁をなだらかにして重ねる（大きい顔から 2 つまで）。
+    private static func refineSkinAroundFaces(_ whole: CIImage, faces: [VNFaceObservation], handler: VNImageRequestHandler,
+                                              model: VNCoreMLModel, imageSize: CGSize) -> CIImage {
+        let bounds = CGRect(origin: .zero, size: imageSize)
+        var result = whole
+        var refined = false
+        let largest = faces.sorted { $0.boundingBox.width > $1.boundingBox.width }.prefix(2)
+        for face in largest {
+            let box = face.boundingBox
+            let faceRect = CGRect(x: box.minX * imageSize.width, y: box.minY * imageSize.height,
+                                  width: box.width * imageSize.width, height: box.height * imageSize.height)
+            // 髪の生え際・首まで入るよう、顔の幅の 2.2 倍の正方形（画像からはみ出す分は内側へずらす）
+            let side = min(max(faceRect.width, faceRect.height) * 2.2, imageSize.width, imageSize.height)
+            // 写真全体の 6 割以上を占めるなら、全体の結果と変わらないので切り出さない
+            guard side < max(imageSize.width, imageSize.height) * 0.6, side >= 8 else { continue }
+            var square = CGRect(x: faceRect.midX - side / 2, y: faceRect.midY - side / 2, width: side, height: side)
+            square.origin.x = min(max(square.minX, 0), imageSize.width - side)
+            square.origin.y = min(max(square.minY, 0), imageSize.height - side)
+
+            let request = VNCoreMLRequest(model: model)
+            request.imageCropAndScaleOption = .scaleFill
+            // Vision の範囲は左下原点の 0...1。CIImage の座標と同じ向き
+            request.regionOfInterest = CGRect(x: square.minX / imageSize.width, y: square.minY / imageSize.height,
+                                              width: side / imageSize.width, height: side / imageSize.height)
+            guard (try? handler.perform([request])) != nil,
+                  let buffer = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else { continue }
+            let crop = CIImage(cvPixelBuffer: buffer)
+            let placed = crop
+                .transformed(by: CGAffineTransform(scaleX: side / crop.extent.width, y: side / crop.extent.height))
+                .transformed(by: CGAffineTransform(translationX: square.minX, y: square.minY))
+            // 切り出した範囲の縁（外側 15%）は全体の結果となだらかにつなぐ
+            let feather = side * 0.15
+            let weight = CIImage(color: .white).cropped(to: square.insetBy(dx: feather, dy: feather))
+                .composited(over: CIImage(color: .black))
+                .applyingGaussianBlur(sigma: feather * 0.4)
+                .cropped(to: bounds)
+            result = placed.composited(over: result)
+                .applyingFilter("CIBlendWithMask", parameters: [
+                    kCIInputBackgroundImageKey: result,
+                    kCIInputMaskImageKey: weight,
+                ])
+                .cropped(to: bounds)
+            refined = true
+        }
+        return refined ? bake(result, bounds: bounds) : result
+    }
+
+    /// マスクを作るときに使う CIContext（色の変換はしない）
+    private static let maskContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+
+    /// 重ねたマスクを、長い辺 512 ピクセルの画像に一度だけ描いておく。
+    /// 描かずに渡すと、重ね合わせと縁のぼかしがプレビューの毎コマ描き直されて重くなる（マスクはもともと粗いので画質は変わらない）
+    private static func bake(_ mask: CIImage, bounds: CGRect) -> CIImage {
+        let scale = min(1, 512 / max(bounds.width, bounds.height))
+        let size = CGRect(x: 0, y: 0, width: (bounds.width * scale).rounded(.up), height: (bounds.height * scale).rounded(.up))
+        let small = mask.transformed(by: CGAffineTransform(scaleX: scale, y: scale)).cropped(to: size)
+        guard let cg = maskContext.createCGImage(small, from: size, format: .RGBA8, colorSpace: nil) else { return mask }
+        return CIImage(cgImage: cg)
+            .transformed(by: CGAffineTransform(scaleX: bounds.width / size.width, y: bounds.height / size.height))
+            .cropped(to: bounds)
+    }
+
+    /// 顔の 478 点を求めるモデル（Google の MediaPipe Face Mesh V2 を変換したもの）。アプリに入っていなければ nil
+    private static let faceMeshModel: VNCoreMLModel? = {
+        guard let url = Bundle.main.url(forResource: "FaceLandmarks", withExtension: "mlmodelc") else { return nil }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .all
+        guard let model = try? MLModel(contentsOf: url, configuration: configuration) else { return nil }
+        return try? VNCoreMLModel(for: model)
+    }()
+
+    static var hasFaceMeshModel: Bool { faceMeshModel != nil }
+
+    private static func render256(_ image: CIImage) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        let attributes: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]]
+        CVPixelBufferCreate(nil, 256, 256, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
+        guard let buffer else { return nil }
+        // 描き終わるまで待ってから判定する（描きかけのコマで点を求めないように）
+        let destination = CIRenderDestination(pixelBuffer: buffer)
+        guard let task = try? maskContext.startTask(toRender: image, to: destination),
+              (try? task.waitUntilCompleted()) != nil else { return nil }
+        return buffer
+    }
+
+    /// 大きい顔から 2 つまで、顔の 478 点を求める（左下原点・imageSize の座標）。
+    /// Vision の顔の枠を 1.5 倍の正方形に広げ、両目が水平になるよう回して 256x256 に切り抜いてモデルに入れる
+    /// （MediaPipe と同じ切り抜き方。傾いた顔のままだと点がずれる）。
+    private static func faceMeshes(_ faces: [VNFaceObservation], source: CIImage, imageSize: CGSize) -> [[CGPoint]] {
+        guard let model = faceMeshModel else { return [] }
+        let size = CGFloat(256)
+        let origin = source.extent.origin
+        let sourceSize = source.extent.size
+        let toOutput = CGAffineTransform(scaleX: imageSize.width / sourceSize.width, y: imageSize.height / sourceSize.height)
+        var meshes: [[CGPoint]] = []
+        for face in faces.sorted(by: { $0.boundingBox.width > $1.boundingBox.width }).prefix(2) {
+            let box = face.boundingBox
+            let rect = CGRect(x: origin.x + box.minX * sourceSize.width, y: origin.y + box.minY * sourceSize.height,
+                              width: box.width * sourceSize.width, height: box.height * sourceSize.height)
+            guard rect.width >= 24 else { continue }
+            // 両目を結ぶ線の傾き（画像の左にある目 → 右にある目）
+            var angle: CGFloat = 0
+            if let marks = face.landmarks, let a = marks.leftEye, let b = marks.rightEye {
+                func center(_ region: VNFaceLandmarkRegion2D) -> CGPoint {
+                    let points = region.pointsInImage(imageSize: sourceSize)
+                    let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+                    return CGPoint(x: origin.x + sum.x / CGFloat(max(points.count, 1)),
+                                   y: origin.y + sum.y / CGFloat(max(points.count, 1)))
+                }
+                let p = center(a), q = center(b)
+                let (left, right) = p.x < q.x ? (p, q) : (q, p)
+                angle = atan2(right.y - left.y, right.x - left.x)
+            }
+            let side = max(rect.width, rect.height) * 1.5
+            // 画像 → 切り抜き（顔の中心を原点へ・傾きを戻す・256 に縮める・切り抜きの中心へ）
+            let toCrop = CGAffineTransform(translationX: -rect.midX, y: -rect.midY)
+                .concatenating(CGAffineTransform(rotationAngle: -angle))
+                .concatenating(CGAffineTransform(scaleX: size / side, y: size / side))
+                .concatenating(CGAffineTransform(translationX: size / 2, y: size / 2))
+            let crop = source.clampedToExtent().transformed(by: toCrop)
+                .cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
+            let request = VNCoreMLRequest(model: model)
+            request.imageCropAndScaleOption = .scaleFill
+            // 切り抜きは自分で 256x256 の画像に描いてから渡す（CIImage のまま渡すと Vision が毎回描き直しの準備をして遅い）
+            guard let cropBuffer = render256(crop) else { continue }
+            let handler = VNImageRequestHandler(cvPixelBuffer: cropBuffer, orientation: .up, options: [:])
+            guard (try? handler.perform([request])) != nil,
+                  let results = request.results as? [VNCoreMLFeatureValueObservation],
+                  let points = results.first(where: { $0.featureName == "landmarks" })?.featureValue.multiArrayValue,
+                  let score = results.first(where: { $0.featureName == "face" })?.featureValue.multiArrayValue,
+                  score.count > 0, score[0].doubleValue > 0.5, points.count >= 478 * 3 else { continue }
+            let toImage = toCrop.inverted().concatenating(
+                CGAffineTransform(translationX: -origin.x, y: -origin.y)).concatenating(toOutput)
+            var mesh: [CGPoint] = []
+            mesh.reserveCapacity(478)
+            for i in 0..<478 {
+                // モデルの座標は左上原点（下向きが正）なので、左下原点に直す
+                let x = CGFloat(points[i * 3].doubleValue)
+                let y = size - CGFloat(points[i * 3 + 1].doubleValue)
+                mesh.append(CGPoint(x: x, y: y).applying(toImage))
+            }
+            meshes.append(mesh)
+        }
+        return meshes
     }
 
     private static func scaled(_ image: CIImage, to size: CGSize) -> CIImage {

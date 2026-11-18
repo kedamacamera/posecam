@@ -8,7 +8,8 @@ namespace coreimage {
 /// 肌のむらや毛穴はならされるが、メガネのフチ・眉・目のように色が大きく違う境目は混ざらずに残る。
 /// 重みで割って平均するので、全体の明るさや色は変わらない。
 /// radius: ならす範囲（ピクセル）、sigmaColor: 「色が近い」とみなす差（0〜1）
-float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) {
+/// neighbors: src を点の間隔の半分ほどぼかしたもの（周りの画素はここから取る）
+float4 bilateral(sampler src, sampler neighbors, float radius, float sigmaColor, destination dest) {
     float2 coord = dest.coord();
     float4 center = src.sample(src.transform(coord));
     float4 sum = float4(0.0);
@@ -19,7 +20,9 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
     for (int y = -4; y <= 4; y++) {
         for (int x = -4; x <= 4; x++) {
             float2 offset = float2(float(x), float(y)) * step;
-            float4 color = src.sample(src.transform(coord + offset));
+            // 周りの画素は、少しぼかした画像から取る。範囲が広いと 9x9 の点の間が空き、
+            // 1 画素ずつ拾うと毛穴などの細かい模様が飛び飛びに拾われて、まだらなむらになるため
+            float4 color = neighbors.sample(neighbors.transform(coord + offset));
             float3 difference = color.rgb - center.rgb;
             float weight = exp(-dot(offset, offset) / spatialDenominator)
                          * exp(-dot(difference, difference) / colorDenominator);
@@ -28,6 +31,24 @@ float4 bilateral(sampler src, float radius, float sigmaColor, destination dest) 
         }
     }
     return sum / weightSum;
+}
+
+/// 質感を戻す。なめらかにした画像（smooth）に、なめらかにする前にあった細かい凹凸（毛穴・うぶ毛・肌のきめ）のうち、
+/// なめらかにして消えた分を keep の割合だけ足し戻す（周波数分離: 色むら・くすみの大きな模様はならしたまま、細かい質感だけ残す）。
+/// 細かい凹凸 = 画像 - ごく少しぼかした画像。src と smooth それぞれで求めて差をとるので、
+/// なめらかにしても残っていた輪郭（鼻の縁など）には何も足さない（二重に足して縁が白く光るのを防ぐ）。
+/// limit を超える大きな差（ほくろ・ニキビの芯・影の縁）は戻さない。
+float4 restoreTexture(sampler src, sampler srcBlur, sampler smooth, sampler smoothBlur,
+                      float keep, float limit, destination dest) {
+    float2 coord = dest.coord();
+    float4 s = smooth.sample(smooth.transform(coord));
+    float3 fineSrc = src.sample(src.transform(coord)).rgb - srcBlur.sample(srcBlur.transform(coord)).rgb;
+    float3 fineSmooth = s.rgb - smoothBlur.sample(smoothBlur.transform(coord)).rgb;
+    float3 lost = fineSrc - fineSmooth;
+    // 明るさの凹凸として戻す（色の凹凸まで戻すと、赤み消しで消した細かい赤い点が戻るため）
+    float l = dot(lost, float3(0.299, 0.587, 0.114));
+    l = clamp(l, -limit, limit) * keep;
+    return float4(clamp(s.rgb + l, 0.0, 1.0), s.a);
 }
 
 /// 周りより「少しだけ」暗い部分（シミ・シワ）を、周りの平均の色で埋める。
@@ -245,6 +266,59 @@ float4 legStretch(sampler src, float h, float s, float a, float b, float u, floa
         source = y;
     }
     return src.sample(src.transform(float2(p.x, h - source)));
+}
+
+
+/// 顔の形の補正（小顔・目・鼻）。出力の各画素が、元の画像のどこから来るかを返す（ワープ）。
+/// 動かす量は顔の幅に比べて小さい（数 %）ので、「その場所の動き」を引くだけで逆向きの対応として十分。
+/// - s0〜s9: 小顔で動かす輪郭の点 (x, y, 動かす量 dx, dy)。点から slimRadius の範囲を、点に近いほど大きく動かす
+/// - eyeL / eyeR: (中心 x, y, 半径, 拡大の強さ)。半径の内側を中心に寄せて取る＝目が大きくなる
+/// - noseA: (中心 x, y, 横の半径, 縦の半径)、noseB: (顔の横向きの単位ベクトル x, y, 細くする強さ, 0)
+static float falloff(float d, float r) {
+    float t = clamp(1.0 - (d * d) / (r * r), 0.0, 1.0);
+    return t * t;
+}
+
+float2 faceWarp(float4 s0, float4 s1, float4 s2, float4 s3, float4 s4, float4 s5, float4 s6, float4 s7,
+                float4 s8, float4 s9, float slimRadius, float4 eyeL, float4 eyeR, float4 noseA, float4 noseB,
+                destination dest) {
+    float2 p = dest.coord();
+    // 輪郭の点どうしは範囲が重なるので、動きを足し合わせると何倍にもなり、点の間がへこんでいた。
+    // 近い点ほど重くした「動きの平均」をとり、近くに点がある度合い（重みの合計、1 で頭打ち）を掛ける
+    float4 points[10] = { s0, s1, s2, s3, s4, s5, s6, s7, s8, s9 };
+    float2 weighted = float2(0.0);
+    float weightSum = 0.0;
+    for (int i = 0; i < 10; i++) {
+        float w = falloff(distance(p, points[i].xy), slimRadius);
+        weighted += points[i].zw * w;
+        weightSum += w;
+    }
+    float2 shift = weightSum > 0.0001 ? weighted / weightSum * min(weightSum, 1.0) : float2(0.0);
+    float2 q = p - shift;
+
+    // 目: 中心に近いほど中心寄りから取る（f(d) = d * (1 - k * w) は k <= 0.3 で単調なので折り返さない）
+    float4 eyes[2] = { eyeL, eyeR };
+    for (int i = 0; i < 2; i++) {
+        float4 e = eyes[i];
+        if (e.z > 0.0) {
+            float2 v = q - e.xy;
+            float w = falloff(length(v), e.z);
+            q = e.xy + v * (1.0 - e.w * w);
+        }
+    }
+
+    // 鼻: 顔の横方向だけ、外側から取る（＝小鼻が細くなる）
+    if (noseA.z > 0.0) {
+        float2 axis = noseB.xy;
+        float2 perp = float2(-axis.y, axis.x);
+        float2 v = q - noseA.xy;
+        float u = dot(v, axis);
+        float t = dot(v, perp);
+        float e = (u / noseA.z) * (u / noseA.z) + (t / noseA.w) * (t / noseA.w);
+        float w = clamp(1.0 - e, 0.0, 1.0);
+        q += axis * u * noseB.z * w * w;
+    }
+    return q;
 }
 
 }
