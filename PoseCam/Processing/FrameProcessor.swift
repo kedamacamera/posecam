@@ -143,7 +143,8 @@ final class FrameProcessor {
     static func beautyUnit(_ extent: CGRect, masks: BeautyMasks) -> CGFloat {
         let longSide = max(extent.width, extent.height)
         guard let face = masks.faceWidth, face > 0 else { return longSide }
-        return min(max(face * 3, longSide * 0.06), longSide * 1.5)
+        // 顔のアップでは前と同じ（長い辺）を上限にする。それより広げると、顔が動いたときに髪や背景までぼけて見えた
+        return min(max(face * 3, longSide * 0.06), longSide)
     }
 
     /// 1 チャンネルのマスク（肌のモデル・人物の判定の結果は赤にしか値がない）を、R・G・B すべて同じ値の灰色にする。
