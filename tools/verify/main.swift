@@ -654,4 +654,42 @@ do {
     let failed = context.renderAndWait(CIImage.empty(), to: empty, size: CGSize(width: w, height: h))
     report.append("record render of empty image (black expected, ok true): ok \(failed) [\(top(empty))]")
 }
+// 背景の人を無視できるか（作った骨格で確かめる）
+do {
+    func person(centerX: CGFloat, top: CGFloat, height h: CGFloat, armsUp: Bool) -> [Joint: CGPoint] {
+        let u = h / 7
+        var p: [Joint: CGPoint] = [
+            .nose: CGPoint(x: centerX, y: top + u * 0.5), .neck: CGPoint(x: centerX, y: top + u * 1.2),
+            .leftShoulder: CGPoint(x: centerX + u, y: top + u * 1.3), .rightShoulder: CGPoint(x: centerX - u, y: top + u * 1.3),
+            .leftHip: CGPoint(x: centerX + u * 0.6, y: top + u * 3.5), .rightHip: CGPoint(x: centerX - u * 0.6, y: top + u * 3.5),
+            .leftKnee: CGPoint(x: centerX + u * 0.6, y: top + u * 5.2), .rightKnee: CGPoint(x: centerX - u * 0.6, y: top + u * 5.2),
+            .leftAnkle: CGPoint(x: centerX + u * 0.6, y: top + h), .rightAnkle: CGPoint(x: centerX - u * 0.6, y: top + h),
+        ]
+        p[.leftElbow] = CGPoint(x: centerX + u * 1.5, y: top + (armsUp ? u * 0.4 : u * 2.4))
+        p[.rightElbow] = CGPoint(x: centerX - u * 1.5, y: top + (armsUp ? u * 0.4 : u * 2.4))
+        p[.leftWrist] = CGPoint(x: centerX + u * 1.6, y: top + (armsUp ? -u * 0.6 : u * 3.4))
+        p[.rightWrist] = CGPoint(x: centerX - u * 1.6, y: top + (armsUp ? -u * 0.6 : u * 3.4))
+        return p
+    }
+    let template = person(centerX: 0, top: 0.1, height: 0.8, armsUp: true)
+    let main = person(centerX: 0.05, top: 0.12, height: 0.78, armsUp: false)       // 型の位置にいるが、まだポーズしていない
+    let mainPosing = person(centerX: 0.03, top: 0.11, height: 0.79, armsUp: true)
+    let background = person(centerX: -0.25, top: 0.35, height: 0.25, armsUp: true) // 奥にいて小さい・同じポーズ
+    let side = person(centerX: 0.9, top: 0.1, height: 0.8, armsUp: true)           // 横に大きくずれた人
+    let a = PoseMatcher.chooseSubject(from: [background, main], template: template, aspect: 0.75)
+    let b = PoseMatcher.chooseSubject(from: [background, mainPosing], template: template, aspect: 0.75)
+    let c = PoseMatcher.chooseSubject(from: [background], template: template, aspect: 0.75)
+    let d = PoseMatcher.chooseSubject(from: [side, main], template: template, aspect: 0.75)
+    let e = PoseMatcher.chooseSubject(from: [background, main], template: nil)
+    report.append("subject: not posing -> \(a.map(String.init) ?? "nil") (1 expected), posing -> \(b.map(String.init) ?? "nil") (1), "
+        + "only background -> \(c.map(String.init) ?? "nil") (nil), side person -> \(d.map(String.init) ?? "nil") (1), "
+        + "no template -> \(e.map(String.init) ?? "nil") (1)")
+    // 人の形: 左に主役、右に背景の人の塊。主役の関節に触れる塊だけ残るか
+    let w = 10, h = 4
+    var cells = [Bool](repeating: false, count: w * h)
+    for y in 0..<h { cells[y * w + 1] = true; cells[y * w + 2] = true; cells[y * w + 8] = true }
+    let kept = PoseMatcher.filterSilhouette(cells, width: w, keep: [CGPoint(x: 0.15, y: 0.5)], drop: [CGPoint(x: 0.85, y: 0.5)])
+    let dropped = PoseMatcher.filterSilhouette(cells, width: w, keep: [], drop: [CGPoint(x: 0.85, y: 0.5)])
+    report.append("silhouette filter: kept \(kept.filter { $0 }.count) cells (8 expected), dropped-only \(dropped.filter { $0 }.count) (8)")
+}
 try? report.joined(separator: "\n").write(to: outDir.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)

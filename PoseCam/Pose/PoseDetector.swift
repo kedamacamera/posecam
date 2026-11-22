@@ -296,9 +296,9 @@ final class PoseDetector {
 
         var result = Result()
         if includePose, let observations = poseRequest.results {
-            // 複数人写っているときは、検出できた関節がいちばん多い人を使う
-            let best = observations.map(points(from:)).max { $0.count < $1.count }
-            if let best, best.count >= 4 { result.pose = best }
+            // 複数人写っているときは、いちばん大きく写っている人を使う（背景の人は小さく写るため）
+            let people = observations.map(points(from:)).filter { $0.count >= 4 }
+            if let index = PoseMatcher.chooseSubject(from: people, template: nil) { result.pose = people[index] }
         }
 
         let skinBuffer = (skinRequest?.results?.first as? VNPixelBufferObservation)?.pixelBuffer
