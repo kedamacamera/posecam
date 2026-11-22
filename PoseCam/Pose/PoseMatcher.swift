@@ -181,6 +181,124 @@ enum PoseMatcher {
         return max(0, min(1, 1 - (distance - positionSlack) / (positionTolerance - positionSlack)))
     }
 
+    // MARK: - 主役を選ぶ（背景の人を無視する）
+
+    /// 体の大きさの目安。胴の長さ（肩→腰）を基準にし、取れなければ肩幅・腰幅・関節の広がりから見積もる。
+    /// 肩幅は横を向くと縮むので、胴が取れるときは胴だけを使う。
+    static func bodyScale(_ joints: [Joint: CGPoint]) -> Double? {
+        func distance(_ a: Joint, _ b: Joint) -> Double? {
+            guard let p = joints[a], let q = joints[b] else { return nil }
+            return hypot(Double(p.x - q.x), Double(p.y - q.y))
+        }
+        let torso = [distance(.leftShoulder, .leftHip), distance(.rightShoulder, .rightHip)].compactMap { $0 }
+        if !torso.isEmpty { return torso.reduce(0, +) / Double(torso.count) }
+        if let shoulders = distance(.leftShoulder, .rightShoulder) { return shoulders * 1.3 }
+        if let hips = distance(.leftHip, .rightHip) { return hips * 2 }
+        let xs = joints.values.map(\.x), ys = joints.values.map(\.y)
+        guard joints.count >= 3, let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max()
+        else { return nil }
+        return Double(max(maxX - minX, maxY - minY)) * 0.5
+    }
+
+    /// 映っている人が、型からどれだけ離れているか（大きさの比と、位置のずれ）。どちらも等方座標。
+    /// 位置のずれは、共通する関節の重心どうしの距離を型の体の高さ（画面の 35% 以上とみなす）で割った値。
+    private static func separation(template: [Joint: CGPoint], detected: [Joint: CGPoint])
+        -> (ratio: Double, offset: Double)? {
+        guard let tScale = bodyScale(template), let dScale = bodyScale(detected), tScale > 1e-4 else { return nil }
+        let common = template.keys.filter { detected[$0] != nil }
+        let joints = common.isEmpty ? nil : common
+        func center(_ points: [Joint: CGPoint], _ keys: [Joint]?) -> CGPoint {
+            let values = keys.map { $0.compactMap { points[$0] } } ?? Array(points.values)
+            let n = CGFloat(max(values.count, 1))
+            return CGPoint(x: values.map(\.x).reduce(0, +) / n, y: values.map(\.y).reduce(0, +) / n)
+        }
+        let tc = center(template, joints), dc = center(detected, joints)
+        let ys = template.values.map(\.y)
+        let bodyHeight = max(Double((ys.max() ?? 0) - (ys.min() ?? 0)), 0.35)
+        return (dScale / tScale, hypot(Double(tc.x - dc.x), Double(tc.y - dc.y)) / bodyHeight)
+    }
+
+    /// 型の大きさの 40% より小さい人（＝奥にいる人）と、型から体の高さの 90% 以上離れた人は、型の人ではないとみなす
+    private static let minimumSizeRatio = 0.4
+    private static let maximumOffset = 0.9
+
+    /// 型からあまりに離れている（背景の人など）か。比べられなければ離れていないとみなす。
+    static func isFarFromTemplate(_ detected: [Joint: CGPoint], template: [Joint: CGPoint]) -> Bool {
+        guard !template.isEmpty, let s = separation(template: template, detected: detected) else { return false }
+        return s.ratio < minimumSizeRatio || s.offset > maximumOffset
+    }
+
+    /// 映っている人の中から主役（型の人）を選ぶ。どれも等方座標。番号を返し、該当する人がいなければ nil。
+    /// - 型があるとき: 型からあまりに離れた人は無視し、残りの中で一致度がいちばん高い人。
+    ///   まだポーズを取っていなくて誰も点が取れないときは、型の位置・大きさにいちばん近い人。
+    /// - 型がないとき: いちばん大きく映っている人（背景の人は小さく映るため。以前は関節の多い人を選んでいた）
+    static func chooseSubject(from detected: [[Joint: CGPoint]], template: [Joint: CGPoint]?,
+                              aspect: CGFloat? = nil) -> Int? {
+        guard !detected.isEmpty else { return nil }
+        guard let template, !template.isEmpty else {
+            return detected.indices.max { (bodyScale(detected[$0]) ?? 0) < (bodyScale(detected[$1]) ?? 0) }
+        }
+        let candidates = detected.indices.filter { !isFarFromTemplate(detected[$0], template: template) }
+        let scored = candidates.map { ($0, score(template: template, detected: detected[$0], aspect: aspect) ?? 0) }
+        if let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= 10 { return best.0 }
+        return candidates.min { a, b in
+            func distance(_ i: Int) -> Double {
+                guard let s = separation(template: template, detected: detected[i]) else { return .infinity }
+                return s.offset + abs(log(max(s.ratio, 1e-3))) * 0.5
+            }
+            return distance(a) < distance(b)
+        }
+    }
+
+    /// 人の形のマス目から、背景の人の塊を取り除く（つながった塊ごとに判定する）。
+    /// keep の点（画像座標 0〜1）に触れる塊だけを残す。keep が空なら、drop の点に触れる塊を消す。
+    /// 主役と背景の人が重なって 1 つの塊になっているときは、そのまま残す。
+    static func filterSilhouette(_ cells: [Bool], width: Int, keep: [CGPoint], drop: [CGPoint]) -> [Bool] {
+        guard width > 0, !cells.isEmpty, !(keep.isEmpty && drop.isEmpty) else { return cells }
+        let height = cells.count / width
+        var labels = [Int](repeating: -1, count: cells.count)
+        var next = 0
+        for start in cells.indices where cells[start] && labels[start] < 0 {
+            var stack = [start]
+            labels[start] = next
+            while let i = stack.popLast() {
+                let x = i % width, y = i / width
+                for dy in -1...1 {
+                    for dx in -1...1 {
+                        let nx = x + dx, ny = y + dy
+                        guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                        let j = ny * width + nx
+                        if cells[j] && labels[j] < 0 { labels[j] = next; stack.append(j) }
+                    }
+                }
+            }
+            next += 1
+        }
+        guard next > 1 else { return cells }
+        func touched(_ points: [CGPoint]) -> Set<Int> {
+            var result = Set<Int>()
+            for p in points {
+                let cx = Int(p.x * CGFloat(width)), cy = Int(p.y * CGFloat(height))
+                for dy in -1...1 {
+                    for dx in -1...1 {
+                        let x = cx + dx, y = cy + dy
+                        guard x >= 0, x < width, y >= 0, y < height else { continue }
+                        let label = labels[y * width + x]
+                        if label >= 0 { result.insert(label) }
+                    }
+                }
+            }
+            return result
+        }
+        if !keep.isEmpty {
+            let kept = touched(keep)
+            guard !kept.isEmpty else { return cells }
+            return labels.map { kept.contains($0) }
+        }
+        let removed = touched(drop)
+        return labels.map { $0 >= 0 && !removed.contains($0) }
+    }
+
     // MARK: - 人の形（シルエット）の重なり
 
     /// 型の輪郭（等方座標の閉じた多角形）を、width × height のマス目に塗る（上の行から順、true が型の内側）。

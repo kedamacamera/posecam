@@ -29,6 +29,8 @@ jobs:
           # 1 枚目は一致度の確認にも使うので全身の写真にする
           ./bin/verify PoseCam/Resources/Poses/pose_00.jpg PoseCam/Resources/Poses/pose_23.jpg \
             PoseCam/Resources/Poses/pose_24.jpg PoseCam/Resources/Poses/pose_25.jpg
+          # 数値の結果はログでも読めるようにする（成果物をダウンロードできない環境向け）
+          cat out/report.txt
 
       - uses: actions/upload-artifact@v4
         if: always()

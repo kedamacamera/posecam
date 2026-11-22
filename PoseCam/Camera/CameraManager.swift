@@ -1841,17 +1841,46 @@ final class CameraManager: NSObject, ObservableObject {
                                                          silhouetteWidth: outlines.isEmpty ? nil : gridWidth,
                                                          face: wantsFace)
             let face = result.face
-            let pose = result.pose
+            let isGroup = !(template?.extraPeople ?? []).isEmpty
+            // 背景に映り込んだ人の骨格は使わない。型からあまりに離れた人（奥にいて小さい・位置が全然違う）は無視し、
+            // 型に近い人を主役にする。型がないときは、いちばん大きく映っている人
+            let isotropicPoses = result.poses.map { $0.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) } }
+            var subjects: [[Joint: CGPoint]] = []   // 使う人（主役が先頭・画像座標）
+            var ignored: [[Joint: CGPoint]] = []  // 無視する人
+            if let template, isGroup {
+                let templatePeople = template.people.map(\.joints).filter { !$0.isEmpty }
+                for (index, pose) in result.poses.enumerated() {
+                    let far = !templatePeople.isEmpty && templatePeople.allSatisfy {
+                        PoseMatcher.isFarFromTemplate(isotropicPoses[index], template: $0)
+                    }
+                    if far { ignored.append(pose) } else { subjects.append(pose) }
+                }
+            } else {
+                let joints = template.map(\.joints)
+                if let index = PoseMatcher.chooseSubject(from: isotropicPoses, template: joints, aspect: aspect) {
+                    subjects = [result.poses[index]]
+                }
+                ignored = result.poses.filter { pose in !subjects.contains(pose) }
+            }
+            let pose = subjects.first
+            var silhouette = result.silhouette
+            if let original = silhouette, !ignored.isEmpty {
+                // 人の形からも、背景の人の塊を取り除く（主役と離れて映っているときだけ取り除ける）
+                let cells = PoseMatcher.filterSilhouette(original.cells, width: original.width,
+                                                         keep: subjects.flatMap { Array($0.values) },
+                                                         drop: ignored.flatMap { Array($0.values) })
+                silhouette = PoseDetector.Silhouette(width: original.width, height: original.height, cells: cells)
+            }
+            let otherPeople = isGroup ? Array(subjects.dropFirst()) : []
             self.poseBox.value = pose
             var score: Double?
-            let isGroup = !(template?.extraPeople ?? []).isEmpty
             if let template, isGroup {
                 // 2 人以上の型: 型の人と映っている人を組み合わせて、人ごとの一致度を平均する
-                let detected = result.poses.map { $0.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) } }
+                let detected = subjects.map { $0.mapValues { PoseSpace.toIsotropic($0, aspect: aspect) } }
                 let people = template.people
                 let jointScore = PoseMatcher.score(people: people, detected: detected, aspect: aspect)
                 var silhouetteScore: Double?
-                if let silhouette = result.silhouette {
+                if let silhouette {
                     let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
                     if self.templateCells?.key != key {
                         self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
@@ -1866,7 +1895,7 @@ final class CameraManager: NSObject, ObservableObject {
                 let faceScore = PoseMatcher.faceScore(
                     templates: templateFaces,
                     detected: result.faces.map { $0.map { PoseSpace.toIsotropic($0, aspect: aspect) } },
-                    personFound: !result.poses.isEmpty || silhouetteScore != nil)
+                    personFound: !detected.isEmpty || silhouetteScore != nil)
                 score = PoseMatcher.combine(joints: jointScore, silhouette: silhouetteScore, face: faceScore,
                                             faceWidth: templateFaces.map(\.width).max() ?? 0)
             } else if let template {
@@ -1876,7 +1905,7 @@ final class CameraManager: NSObject, ObservableObject {
                                              hidden: template.hiddenJoints)
                 }
                 var silhouetteScore: Double?
-                if let silhouette = result.silhouette {
+                if let silhouette {
                     let key = "\(template.id)|\(silhouette.width)x\(silhouette.height)"
                     if self.templateCells?.key != key {
                         self.templateCells = (key, PoseMatcher.rasterize(outlines, aspect: aspect,
@@ -1911,7 +1940,7 @@ final class CameraManager: NSObject, ObservableObject {
                 guard self.poseNeeded.value else { return }
                 if self.poseFeed.detected != pose { self.poseFeed.detected = pose }
                 if self.poseFeed.face != face { self.poseFeed.face = face }
-                let others = isGroup ? Array(result.poses.dropFirst()) : []
+                let others = otherPeople
                 let otherFaces = isGroup ? Array(result.faces.dropFirst()) : []
                 if self.poseFeed.others != others { self.poseFeed.others = others }
                 if self.poseFeed.otherFaces != otherFaces { self.poseFeed.otherFaces = otherFaces }
