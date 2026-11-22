@@ -16,7 +16,7 @@ jobs:
         run: |
           mkdir -p bin
           swiftc -O -target x86_64-apple-macos14 -o bin/shapes \
-            PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseTemplate.swift \
+            PoseCam/Pose/Joint.swift PoseCam/Pose/PoseDetector.swift PoseCam/Pose/PoseMatcher.swift PoseCam/Pose/PoseTemplate.swift \
             PoseCam/Pose/PoseImporter.swift tools/shapes/main.swift
 
       - name: Run
